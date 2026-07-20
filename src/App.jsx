@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, LogOut } from 'lucide-react';
+import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud , LogOut } from 'lucide-react';
 import { loadKey, saveKey } from './lib/storage';
 import { supabase } from './lib/supabaseClient';
 import LoginScreen from './LoginScreen';
 
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
-const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes'];
+const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento'];
 const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'financeiro'];
 const SETOR_VENDAS_TABS = ['orcamentos', 'vendas', 'expedicao'];
 
@@ -643,6 +643,7 @@ function consumirEstoque(estoqueAtual, carrinho) {
     const idx = novoEstoque.findIndex(i => i.id === it.itemId);
     if (idx === -1) { erros.push(`${it.descricao}: produto não encontrado`); continue; }
     let custoTotal = 0;
+    let itemFinal = it;
 
     if (it.unidadeId) {
       const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === it.unidadeId);
@@ -652,6 +653,21 @@ function consumirEstoque(estoqueAtual, carrinho) {
       }
       custoTotal = novoEstoque[idx].unidades[uIdx].custoCompra;
       novoEstoque[idx].unidades[uIdx].status = 'Vendido';
+    } else if (novoEstoque[idx].serializado) {
+      // Nenhuma série foi escolhida na venda: atribui automaticamente a unidade mais antiga
+      // disponível no depósito (FIFO). O número exato é conferido depois, na expedição.
+      const disponiveis = novoEstoque[idx].unidades
+        .filter(u => u.status === 'Disponível' && u.depositoId === it.depositoId)
+        .sort((a, b) => new Date(a.dataEntrada) - new Date(b.dataEntrada));
+      if (disponiveis.length === 0) {
+        erros.push(`${it.descricao}: nenhuma unidade disponível em ${it.depositoNome || 'depósito selecionado'}`);
+        continue;
+      }
+      const escolhida = disponiveis[0];
+      const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === escolhida.id);
+      custoTotal = novoEstoque[idx].unidades[uIdx].custoCompra;
+      novoEstoque[idx].unidades[uIdx].status = 'Vendido';
+      itemFinal = { ...it, unidadeId: escolhida.id, serial: escolhida.serial };
     } else {
       const lotesDoDeposito = novoEstoque[idx].lotes.filter(l => l.depositoId === it.depositoId);
       const disponivel = lotesDoDeposito.reduce((acc, l) => acc + l.quantidadeDisponivel, 0);
@@ -671,20 +687,21 @@ function consumirEstoque(estoqueAtual, carrinho) {
       }
       novoEstoque[idx].lotes = novoEstoque[idx].lotes.map(l => lotesOrdenados.find(lo => lo.id === l.id) || l);
     }
-    itensResultado.push({ ...it, custoTotal, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
+    itensResultado.push({ ...itemFinal, custoTotal, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
   }
 
   const totalCusto = itensResultado.reduce((acc, i) => acc + i.custoTotal, 0);
   return { novoEstoque, itensResultado, totalCusto, erros };
 }
 
-function fileToCompressedDataUrl(file, maxWidth = 900, quality = 0.55) {
+function fileToCompressedDataUrl(file, maxDimension = 1280, quality = 0.8) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const scale = Math.min(1, maxWidth / img.width);
+        const maiorLado = Math.max(img.width, img.height);
+        const scale = Math.min(1, maxDimension / maiorLado);
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
@@ -695,6 +712,16 @@ function fileToCompressedDataUrl(file, maxWidth = 900, quality = 0.55) {
       img.onerror = reject;
       img.src = e.target.result;
     };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Lê qualquer arquivo (ex: PDF) como data URL, sem comprimir — usado para comprovantes de pagamento
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result);
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -723,6 +750,7 @@ function AppInner() {
   const [recebimentos, setRecebimentos] = useState([]);
   const [depositos, setDepositos] = useState([]);
   const [transferencias, setTransferencias] = useState([]);
+  const [formasRecebimento, setFormasRecebimento] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -782,7 +810,7 @@ function AppInner() {
 
   useEffect(() => {
     (async () => {
-      const [e, c, f, v, or, ex, pc, rc, dp, tr] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr] = await Promise.all([
         loadKey('sgm:estoque', []),
         loadKey('sgm:clientes', []),
         loadKey('sgm:fornecedores', []),
@@ -793,6 +821,7 @@ function AppInner() {
         loadKey('sgm:recebimentos', []),
         loadKey('sgm:depositos', []),
         loadKey('sgm:transferencias', []),
+        loadKey('sgm:formasRecebimento', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -820,8 +849,18 @@ function AppInner() {
       });
       if (mudou) await saveKey('sgm:estoque', estoqueFinal);
 
+      let formasFinal = fr;
+      if (formasFinal.length === 0) {
+        formasFinal = [
+          'Pix JCL Stone', 'PIx JCL BB', 'Dinheiro', 'PIx Terceiros', 'Pix Senio Com', 'Pix KMX', 'Cartão de Crédito',
+        ].map(nome => ({ id: uid(), nome, multipla: false }));
+        formasFinal.push({ id: uid(), nome: 'Múltiplas formas de pagamento', multipla: true });
+        await saveKey('sgm:formasRecebimento', formasFinal);
+      }
+
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
       setExpedicoes(ex); setPedidosCompra(pc); setRecebimentos(rc); setDepositos(depositosFinal); setTransferencias(tr);
+      setFormasRecebimento(formasFinal);
       setLoading(false);
     })();
   }, []);
@@ -843,6 +882,7 @@ function AppInner() {
   async function persistRecebimentos(next) { await persist('sgm:recebimentos', setRecebimentos, next); }
   async function persistDepositos(next) { await persist('sgm:depositos', setDepositos, next); }
   async function persistTransferencias(next) { await persist('sgm:transferencias', setTransferencias, next); }
+  async function persistFormasRecebimento(next) { await persist('sgm:formasRecebimento', setFormasRecebimento, next); }
 
   if (loading) {
     return (
@@ -889,6 +929,7 @@ function AppInner() {
                 <SubTabButton icon={Warehouse} label="Depósitos" active={tab === 'depositos'} onClick={() => setTab('depositos')} />
                 <SubTabButton icon={Building2} label="Fornecedores" active={tab === 'fornecedores'} onClick={() => setTab('fornecedores')} />
                 <SubTabButton icon={Users} label="Clientes" active={tab === 'clientes'} onClick={() => setTab('clientes')} />
+                <SubTabButton icon={HandCoins} label="Formas de recebimento" active={tab === 'formasRecebimento'} onClick={() => setTab('formasRecebimento')} />
               </nav>
             </div>
           </div>
@@ -950,6 +991,7 @@ function AppInner() {
           />
         )}
         {tab === 'clientes' && <ClientesModule clientes={clientes} setClientes={persistClientes} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'formasRecebimento' && <FormasRecebimentoModule formasRecebimento={formasRecebimento} setFormasRecebimento={persistFormasRecebimento} askConfirm={askConfirm} notify={notify} />}
         {tab === 'orcamentos' && (
           <OrcamentoModule
             orcamentos={orcamentos} setOrcamentos={persistOrcamentos}
@@ -958,12 +1000,12 @@ function AppInner() {
           />
         )}
         {tab === 'vendas' && (
-          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} notify={notify} />
+          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} askConfirm={askConfirm} notify={notify} />
         )}
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} />}
       </main>
 
       {toast && (
@@ -1032,12 +1074,37 @@ function StatCard({ label, value, highlight, warn }) {
   );
 }
 
+// Barra reutilizável de busca + filtro (opcional) + ordenação (opcional)
+function FiltroBar({ busca, setBusca, buscaPlaceholder, filtroValue, setFiltro, filtroOptions, ordenacaoValue, setOrdenacao, ordenacaoOptions }) {
+  return (
+    <div className="flex flex-col gap-2 mb-3">
+      <div className="relative">
+        <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
+        <input value={busca} onChange={e => setBusca(e.target.value)} placeholder={buscaPlaceholder || 'Buscar...'} className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400" />
+      </div>
+      {(filtroOptions || ordenacaoOptions) && (
+        <div className="flex flex-col sm:flex-row gap-2">
+          {filtroOptions && (
+            <select value={filtroValue} onChange={e => setFiltro(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+              {filtroOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          )}
+          {ordenacaoOptions && (
+            <select value={ordenacaoValue} onChange={e => setOrdenacao(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+              {ordenacaoOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- CARRINHO (compartilhado por Vendas e Orçamentos) ---------------- */
 
 function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
   const [produtoSel, setProdutoSel] = useState('');
   const [depositoSel, setDepositoSel] = useState(depositos.length === 1 ? depositos[0].id : '');
-  const [serialSel, setSerialSel] = useState('');
   const [qtdSel, setQtdSel] = useState(1);
   const [precoSel, setPrecoSel] = useState('');
 
@@ -1050,17 +1117,21 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
     if (!produtoAtual || !depositoSel) return;
     const preco = parseFloat(precoSel) || 0;
     const depositoNome = depositos.find(d => d.id === depositoSel)?.nome || '';
+    const qtd = parseInt(qtdSel) || 1;
+    if (qtd < 1 || qtd > availableQty(produtoAtual, depositoSel)) { notify('Quantidade indisponível nesse depósito'); return; }
     if (produtoAtual.serializado) {
-      if (!serialSel) return;
-      const unidade = produtoAtual.unidades.find(u => u.id === serialSel);
-      setCarrinho(c => [...c, { id: uid(), itemId: produtoAtual.id, unidadeId: unidade.id, categoria: produtoAtual.categoria, descricao: `${produtoAtual.marca} ${produtoAtual.modelo}`, serial: unidade.serial, quantidade: 1, precoVendaUnitario: preco, depositoId: depositoSel, depositoNome }]);
-      setSerialSel('');
+      // A série exata não é escolhida aqui — é atribuída automaticamente (FIFO) ao finalizar,
+      // e confirmada de fato depois, na expedição. Uma linha por unidade.
+      const novasLinhas = Array.from({ length: qtd }, () => ({
+        id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria,
+        descricao: `${produtoAtual.marca} ${produtoAtual.modelo}`, quantidade: 1,
+        precoVendaUnitario: preco, depositoId: depositoSel, depositoNome,
+      }));
+      setCarrinho(c => [...c, ...novasLinhas]);
     } else {
-      const qtd = parseInt(qtdSel) || 1;
-      if (qtd < 1 || qtd > availableQty(produtoAtual, depositoSel)) { notify('Quantidade indisponível nesse depósito'); return; }
       setCarrinho(c => [...c, { id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria, descricao: `${produtoAtual.marca} ${produtoAtual.modelo}`, quantidade: qtd, precoVendaUnitario: preco, depositoId: depositoSel, depositoNome }]);
-      setQtdSel(1);
     }
+    setQtdSel(1);
     setProdutoSel(''); setDepositoSel(depositos.length === 1 ? depositos[0].id : '');
   }
 
@@ -1071,7 +1142,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
     <>
       <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
         <p className="text-xs text-slate-500 font-medium">Adicionar produto do estoque</p>
-        <select value={produtoSel} onChange={e => { setProdutoSel(e.target.value); setSerialSel(''); setDepositoSel(depositos.length === 1 ? depositos[0].id : ''); }} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
+        <select value={produtoSel} onChange={e => { setProdutoSel(e.target.value); setDepositoSel(depositos.length === 1 ? depositos[0].id : ''); }} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
           <option value="">Selecione o produto...</option>
           {estoque.map(i => {
             const disp = availableQty(i);
@@ -1079,23 +1150,14 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
           })}
         </select>
         {produtoAtual && depositos.length > 1 && (
-          <select value={depositoSel} onChange={e => { setDepositoSel(e.target.value); setSerialSel(''); }} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
+          <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o depósito...</option>
             {depositosComEstoque.map(d => <option key={d.id} value={d.id}>{d.nome} ({availableQty(produtoAtual, d.id)} disp.)</option>)}
           </select>
         )}
         {produtoAtual && depositoSel && (
           <div className="flex flex-col sm:flex-row gap-2">
-            {produtoAtual.serializado ? (
-              <select value={serialSel} onChange={e => setSerialSel(e.target.value)} className="flex-1 border border-slate-200 rounded-md px-2 py-2 text-sm">
-                <option value="">Número de série (mais antigo primeiro)...</option>
-                {produtoAtual.unidades.filter(u => u.status === 'Disponível' && u.depositoId === depositoSel).sort((a, b) => new Date(a.dataEntrada) - new Date(b.dataEntrada)).map((u, idx) => (
-                  <option key={u.id} value={u.id}>{u.serial}{idx === 0 ? ' (mais antigo)' : ''}</option>
-                ))}
-              </select>
-            ) : (
-              <input type="number" min={1} max={availableQty(produtoAtual, depositoSel)} value={qtdSel} onChange={e => setQtdSel(e.target.value)} placeholder="Qtd" className="sm:w-24 border border-slate-200 rounded-md px-2 py-2 text-sm" />
-            )}
+            <input type="number" min={1} max={availableQty(produtoAtual, depositoSel)} value={qtdSel} onChange={e => setQtdSel(e.target.value)} placeholder="Qtd" className="sm:w-24 border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input type="number" step="0.01" value={precoSel} onChange={e => setPrecoSel(e.target.value)} placeholder="Preço de venda unit." className="sm:w-40 border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <button type="button" onClick={addItem} className="bg-slate-900 text-white text-sm px-3 py-2 rounded-md">Adicionar</button>
           </div>
@@ -1133,6 +1195,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [filtroCategoria, setFiltroCategoria] = useState('Todos');
+  const [ordenacao, setOrdenacao] = useState('alfabetica');
   const [busca, setBusca] = useState('');
   const [form, setForm] = useState(emptyForm());
   const [editandoPrecoId, setEditandoPrecoId] = useState(null);
@@ -1196,10 +1259,31 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
     notify(`${criados.length} produto(s) importado(s) do catálogo Atacado`);
   }
 
-  const filtrado = useMemo(() => estoque.filter(i => {
-    if (filtroCategoria !== 'Todos' && i.categoria !== filtroCategoria) return false;
-    return `${i.marca} ${i.modelo} ${i.potencia}`.toLowerCase().includes(busca.toLowerCase());
-  }), [estoque, filtroCategoria, busca]);
+  const filtrado = useMemo(() => {
+    const lista = estoque.filter(i => {
+      if (filtroCategoria !== 'Todos' && i.categoria !== filtroCategoria) return false;
+      return `${i.marca} ${i.modelo} ${i.potencia}`.toLowerCase().includes(busca.toLowerCase());
+    });
+    const dataUltimaEntrada = item => {
+      const datas = item.serializado ? (item.unidades || []).map(u => u.dataEntrada) : (item.lotes || []).map(l => l.dataEntrada);
+      return datas.length ? Math.max(...datas.map(d => new Date(d).getTime())) : 0;
+    };
+    const ordenado = lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'alfabetica': return `${a.marca} ${a.modelo}`.localeCompare(`${b.marca} ${b.modelo}`, 'pt-BR');
+        case 'categoria': return a.categoria.localeCompare(b.categoria, 'pt-BR') || `${a.marca} ${a.modelo}`.localeCompare(`${b.marca} ${b.modelo}`, 'pt-BR');
+        case 'precoDesc': return b.precoVenda - a.precoVenda;
+        case 'precoAsc': return a.precoVenda - b.precoVenda;
+        case 'valorTotalDesc': return (b.precoVenda * availableQty(b)) - (a.precoVenda * availableQty(a));
+        case 'qtdDesc': return availableQty(b) - availableQty(a);
+        case 'qtdAsc': return availableQty(a) - availableQty(b);
+        case 'estoqueBaixo': return (availableQty(a) - (a.quantidadeMinima || 0)) - (availableQty(b) - (b.quantidadeMinima || 0));
+        case 'recente': return dataUltimaEntrada(b) - dataUltimaEntrada(a);
+        default: return 0;
+      }
+    });
+    return ordenado;
+  }, [estoque, filtroCategoria, busca, ordenacao]);
 
   const resumo = useMemo(() => {
     const totalItens = estoque.length;
@@ -1216,20 +1300,33 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
         <StatCard label="Estoque baixo" value={resumo.estoqueBaixo} warn={resumo.estoqueBaixo > 0} />
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-2 mb-3">
-        <div className="relative flex-1">
+      <div className="flex flex-col gap-2 mb-3">
+        <div className="relative">
           <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
           <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por marca ou modelo..." className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400" />
         </div>
-        <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
-          <option>Todos</option>{CATEGORIAS.map(c => <option key={c}>{c}</option>)}
-        </select>
-        <button onClick={() => setShowForm(s => !s)} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
-          <Plus size={16} /> Novo produto
-        </button>
-        <button onClick={handleImportarCatalogo} className="flex items-center justify-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap">
-          Importar Atacado
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+            <option>Todos</option>{CATEGORIAS.map(c => <option key={c}>{c}</option>)}
+          </select>
+          <select value={ordenacao} onChange={e => setOrdenacao(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+            <option value="alfabetica">Ordem alfabética (A-Z)</option>
+            <option value="categoria">Categoria</option>
+            <option value="precoDesc">Preço de venda (maior primeiro)</option>
+            <option value="precoAsc">Preço de venda (menor primeiro)</option>
+            <option value="valorTotalDesc">Valor total em estoque (maior primeiro)</option>
+            <option value="qtdDesc">Quantidade disponível (maior primeiro)</option>
+            <option value="qtdAsc">Quantidade disponível (menor primeiro)</option>
+            <option value="estoqueBaixo">Mais próximos do estoque mínimo primeiro</option>
+            <option value="recente">Entrada mais recente primeiro</option>
+          </select>
+          <button onClick={() => setShowForm(s => !s)} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
+            <Plus size={16} /> Novo produto
+          </button>
+          <button onClick={handleImportarCatalogo} className="flex items-center justify-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap">
+            Importar Atacado
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -1417,6 +1514,8 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
   const [unidadeId, setUnidadeId] = useState('');
   const [quantidade, setQuantidade] = useState(1);
   const [enviando, setEnviando] = useState(false);
+  const [busca, setBusca] = useState('');
+  const [ordenacao, setOrdenacao] = useState('recente');
 
   const produto = estoque.find(p => p.id === produtoId);
   const produtosComEstoqueNaOrigem = origemId ? estoque.filter(p => availableQty(p, origemId) > 0) : [];
@@ -1475,6 +1574,19 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
     resetSelecao();
   }
 
+  const transferenciasFiltradas = useMemo(() => {
+    const lista = transferencias.filter(t => `${t.descricao} ${t.origemNome} ${t.destinoNome}`.toLowerCase().includes(busca.toLowerCase()));
+    return lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.data) - new Date(a.data);
+        case 'antigo': return new Date(a.data) - new Date(b.data);
+        case 'produto': return a.descricao.localeCompare(b.descricao, 'pt-BR');
+        case 'qtdDesc': return b.quantidade - a.quantidade;
+        default: return 0;
+      }
+    });
+  }, [transferencias, busca, ordenacao]);
+
   if (depositos.length < 2) {
     return <p className="text-sm text-slate-400 text-center py-8">Cadastre pelo menos 2 depósitos para poder transferir itens entre eles.</p>;
   }
@@ -1517,9 +1629,15 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       </div>
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Histórico de transferências</h3>
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por produto ou depósito..."
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'produto', label: 'Produto (A-Z)' }, { value: 'qtdDesc', label: 'Maior quantidade primeiro' }]}
+      />
       <div className="space-y-2">
         {transferencias.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma transferência registrada.</p>}
-        {transferencias.map(t => (
+        {transferencias.length > 0 && transferenciasFiltradas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma transferência encontrada com esse filtro.</p>}
+        {transferenciasFiltradas.map(t => (
           <div key={t.id} className="bg-white border border-slate-200 rounded-lg p-3 text-sm">
             <p className="font-medium">{t.descricao} {t.serial && <span className="text-xs font-mono text-slate-400">· SN {t.serial}</span>}</p>
             <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
@@ -1689,6 +1807,25 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
     return pendente ? { label: 'Aguardando recebimento', style: 'bg-amber-100 text-amber-700' } : { label: 'Recebido', style: 'bg-emerald-100 text-emerald-700' };
   }
 
+  const [busca, setBusca] = useState('');
+  const [filtroStatus, setFiltroStatus] = useState('Todos');
+  const [ordenacao, setOrdenacao] = useState('recente');
+
+  const pedidosFiltrados = useMemo(() => {
+    let lista = pedidos.filter(p => `${p.fornecedorNome} ${p.numeroPedidoFornecedor} ${p.numeroNotaFiscal || ''}`.toLowerCase().includes(busca.toLowerCase()));
+    if (filtroStatus !== 'Todos') lista = lista.filter(p => statusPedido(p).label === filtroStatus);
+    return lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.data) - new Date(a.data);
+        case 'antigo': return new Date(a.data) - new Date(b.data);
+        case 'valorDesc': return b.valorTotal - a.valorTotal;
+        case 'valorAsc': return a.valorTotal - b.valorTotal;
+        case 'fornecedor': return a.fornecedorNome.localeCompare(b.fornecedorNome, 'pt-BR');
+        default: return 0;
+      }
+    });
+  }, [pedidos, busca, filtroStatus, ordenacao, recebimentos]);
+
   return (
     <div>
       <div className="flex justify-end mb-3">
@@ -1779,9 +1916,17 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
       )}
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Pedidos de compra</h3>
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por fornecedor, pedido ou NF..."
+        filtroValue={filtroStatus} setFiltro={setFiltroStatus}
+        filtroOptions={[{ value: 'Todos', label: 'Todos os status' }, { value: 'Aguardando recebimento', label: 'Aguardando recebimento' }, { value: 'Recebido', label: 'Recebido' }, { value: 'Cancelado', label: 'Cancelado' }]}
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'fornecedor', label: 'Fornecedor (A-Z)' }]}
+      />
       <div className="space-y-2">
         {pedidos.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum pedido registrado.</p>}
-        {pedidos.map(p => {
+        {pedidos.length > 0 && pedidosFiltrados.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum pedido encontrado com esse filtro.</p>}
+        {pedidosFiltrados.map(p => {
           const status = statusPedido(p);
           return (
             <div key={p.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -1819,16 +1964,32 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
 /* ---------------- RECEBIMENTO (entrada item a item, com foto e nº de série) ---------------- */
 
 function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, notify }) {
+  const [busca, setBusca] = useState('');
+  const [ordenacao, setOrdenacao] = useState('recente');
+
+  function ordenar(lista) {
+    return lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.data) - new Date(a.data);
+        case 'antigo': return new Date(a.data) - new Date(b.data);
+        case 'fornecedor': return a.fornecedorNome.localeCompare(b.fornecedorNome, 'pt-BR');
+        default: return 0;
+      }
+    });
+  }
+
+  function combina(p) { return `${p.fornecedorNome} ${p.numeroPedidoFornecedor} ${p.numeroNotaFiscal || ''}`.toLowerCase().includes(busca.toLowerCase()); }
+
   const pedidosComPendencia = useMemo(() => {
-    return pedidos
-      .filter(p => !p.cancelado)
+    return ordenar(pedidos
+      .filter(p => !p.cancelado && combina(p))
       .map(p => ({ ...p, itensPendentes: p.itens.map(it => ({ ...it, pendente: it.quantidade - qtdRecebida(recebimentos, p.id, it.id) })).filter(it => it.pendente > 0) }))
-      .filter(p => p.itensPendentes.length > 0);
-  }, [pedidos, recebimentos]);
+      .filter(p => p.itensPendentes.length > 0));
+  }, [pedidos, recebimentos, busca, ordenacao]);
 
   const pedidosConcluidos = useMemo(() => {
-    return pedidos.filter(p => !p.cancelado && p.itens.every(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) <= 0));
-  }, [pedidos, recebimentos]);
+    return ordenar(pedidos.filter(p => !p.cancelado && combina(p) && p.itens.every(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) <= 0)));
+  }, [pedidos, recebimentos, busca, ordenacao]);
 
   const [expandedPedido, setExpandedPedido] = useState({});
   const [formItem, setFormItem] = useState(null);
@@ -1837,6 +1998,12 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
   return (
     <div>
       <p className="text-xs text-slate-400 mb-4">A entrada só pode ser feita a partir de um pedido de compra já cadastrado. Para cada inversor, tire uma foto da etiqueta e digite o número de série na hora — item por item — até completar a quantidade do pedido.</p>
+
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por fornecedor, pedido ou NF..."
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'fornecedor', label: 'Fornecedor (A-Z)' }]}
+      />
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Aguardando recebimento</h3>
       <div className="space-y-2 mb-6">
@@ -1914,7 +2081,7 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                           {!r.serial && <span className="text-slate-500">{r.quantidade} un.</span>}
                           {r.depositoNome && <span className="text-slate-400 flex items-center gap-0.5"><Warehouse size={10} /> {r.depositoNome}</span>}
                           <span className="text-slate-400">{formatDate(r.data)}</span>
-                          {r.foto && <img src={r.foto} alt="Foto da entrada" className="w-10 h-10 object-cover rounded border border-slate-200" />}
+                          {r.foto && <a href={r.foto} target="_blank" rel="noreferrer"><img src={r.foto} alt="Foto da entrada" className="w-10 h-10 object-cover rounded border border-slate-200" /></a>}
                         </div>
                       ))}
                     </div>
@@ -2025,6 +2192,64 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
           <CheckCircle2 size={13} /> Confirmar recebimento
         </button>
         <button onClick={onCancel} className="text-xs text-slate-500 px-3 py-2">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- FORMAS DE RECEBIMENTO (opções de pagamento) ---------------- */
+
+function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askConfirm, notify }) {
+  const [showForm, setShowForm] = useState(false);
+  const [nome, setNome] = useState('');
+  const [multipla, setMultipla] = useState(false);
+
+  async function handleAdd() {
+    if (!nome.trim()) { notify('Digite o nome da forma de recebimento'); return; }
+    await setFormasRecebimento([...formasRecebimento, { id: uid(), nome: nome.trim(), multipla }]);
+    notify('Forma de recebimento cadastrada');
+    setNome(''); setMultipla(false); setShowForm(false);
+  }
+
+  async function handleDelete(id) {
+    if (!(await askConfirm('Remover esta forma de recebimento?'))) return;
+    await setFormasRecebimento(formasRecebimento.filter(f => f.id !== id));
+    notify('Forma de recebimento removida');
+  }
+
+  return (
+    <div>
+      <p className="text-xs text-slate-400 mb-3">Essas opções aparecem na hora de anexar o comprovante de pagamento, na aba Vendas.</p>
+      <div className="flex justify-end mb-3">
+        <button onClick={() => setShowForm(s => !s)} className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
+          <Plus size={16} /> Nova forma de recebimento
+        </button>
+      </div>
+      {showForm && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
+          <div className="flex justify-between items-center">
+            <h3 className="font-medium text-sm">Nova forma de recebimento</h3>
+            <button onClick={() => setShowForm(false)}><X size={16} className="text-slate-400" /></button>
+          </div>
+          <input placeholder="Ex: Pix Fulano, Cartão de Débito..." value={nome} onChange={e => setNome(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input type="checkbox" checked={multipla} onChange={e => setMultipla(e.target.checked)} />
+            Marcar como "múltiplas formas de pagamento" (permite anexar vários comprovantes na mesma venda)
+          </label>
+          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar</button>
+        </div>
+      )}
+      <div className="space-y-2">
+        {formasRecebimento.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma forma de recebimento cadastrada.</p>}
+        {formasRecebimento.map(f => (
+          <div key={f.id} className="bg-white border border-slate-200 rounded-lg p-3 flex justify-between items-center gap-2">
+            <p className="text-sm text-slate-700 flex items-center gap-1.5">
+              {f.nome}
+              {f.multipla && <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">múltiplas</span>}
+            </p>
+            <button onClick={() => handleDelete(f.id)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -2150,6 +2375,25 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     return <span className={`text-[11px] px-1.5 py-0.5 rounded ${styles[status]}`}>{status}</span>;
   }
 
+  const [busca, setBusca] = useState('');
+  const [filtroStatus, setFiltroStatus] = useState('Todos');
+  const [ordenacao, setOrdenacao] = useState('recente');
+
+  const orcamentosFiltrados = useMemo(() => {
+    let lista = orcamentos.filter(o => o.clienteNome.toLowerCase().includes(busca.toLowerCase()));
+    if (filtroStatus !== 'Todos') lista = lista.filter(o => o.status === filtroStatus);
+    return lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.data) - new Date(a.data);
+        case 'antigo': return new Date(a.data) - new Date(b.data);
+        case 'valorDesc': return b.total - a.total;
+        case 'valorAsc': return a.total - b.total;
+        case 'cliente': return a.clienteNome.localeCompare(b.clienteNome, 'pt-BR');
+        default: return 0;
+      }
+    });
+  }, [orcamentos, busca, filtroStatus, ordenacao]);
+
   return (
     <div>
       <div className="flex justify-end mb-3">
@@ -2179,9 +2423,17 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
       )}
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Orçamentos</h3>
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por cliente..."
+        filtroValue={filtroStatus} setFiltro={setFiltroStatus}
+        filtroOptions={[{ value: 'Todos', label: 'Todos os status' }, { value: 'Aberto', label: 'Aberto' }, { value: 'Convertido', label: 'Convertido' }, { value: 'Cancelado', label: 'Cancelado' }]}
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
+      />
       <div className="space-y-2">
         {orcamentos.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum orçamento criado.</p>}
-        {orcamentos.map(o => (
+        {orcamentos.length > 0 && orcamentosFiltrados.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum orçamento encontrado com esse filtro.</p>}
+        {orcamentosFiltrados.map(o => (
           <div key={o.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [o.id]: !x[o.id] }))}>
               <div className="flex items-center gap-2 min-w-0">
@@ -2218,7 +2470,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
 /* ---------------- VENDAS (com baixa FIFO de custo) ---------------- */
 
-function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, notify }) {
+function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
@@ -2240,6 +2492,26 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 
   function resetForm() { setCarrinho([]); setClienteId(''); setOrcamentoOrigemId(''); setShowForm(false); }
 
+  const [busca, setBusca] = useState('');
+  const [filtroComprovante, setFiltroComprovante] = useState('Todos');
+  const [ordenacao, setOrdenacao] = useState('recente');
+
+  const vendasFiltradas = useMemo(() => {
+    let lista = vendas.filter(v => v.clienteNome.toLowerCase().includes(busca.toLowerCase()));
+    if (filtroComprovante === 'Com') lista = lista.filter(v => (v.comprovantes || []).length > 0);
+    if (filtroComprovante === 'Sem') lista = lista.filter(v => !(v.comprovantes || []).length);
+    return lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.data) - new Date(a.data);
+        case 'antigo': return new Date(a.data) - new Date(b.data);
+        case 'valorDesc': return b.totalVenda - a.totalVenda;
+        case 'valorAsc': return a.totalVenda - b.totalVenda;
+        case 'cliente': return a.clienteNome.localeCompare(b.clienteNome, 'pt-BR');
+        default: return 0;
+      }
+    });
+  }, [vendas, busca, filtroComprovante, ordenacao]);
+
   async function finalizarVenda() {
     if (!clienteId || carrinho.length === 0) return;
     const cliente = clientes.find(c => c.id === clienteId);
@@ -2253,6 +2525,23 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     }
     notify('Venda registrada e estoque atualizado');
     resetForm();
+  }
+
+  async function anexarComprovante(vendaId, file, formaId, formaNome) {
+    if (!file) return;
+    const isImage = file.type.startsWith('image/');
+    const dataUrl = isImage ? await fileToCompressedDataUrl(file) : await fileToDataUrl(file);
+    const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '' };
+    const next = vendas.map(v => v.id === vendaId ? { ...v, comprovantes: [...(v.comprovantes || []), comprovante] } : v);
+    await setVendas(next);
+    notify('Comprovante de pagamento anexado');
+  }
+
+  async function removerComprovante(vendaId, comprovanteId) {
+    if (!(await askConfirm('Remover este comprovante?'))) return;
+    const next = vendas.map(v => v.id === vendaId ? { ...v, comprovantes: (v.comprovantes || []).filter(c => c.id !== comprovanteId) } : v);
+    await setVendas(next);
+    notify('Comprovante removido');
   }
 
   return (
@@ -2295,9 +2584,17 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
       )}
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Histórico de vendas</h3>
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por cliente..."
+        filtroValue={filtroComprovante} setFiltro={setFiltroComprovante}
+        filtroOptions={[{ value: 'Todos', label: 'Todas as vendas' }, { value: 'Com', label: 'Com comprovante' }, { value: 'Sem', label: 'Sem comprovante' }]}
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
+      />
       <div className="space-y-2">
         {vendas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma venda registrada.</p>}
-        {vendas.map(v => (
+        {vendas.length > 0 && vendasFiltradas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma venda encontrada com esse filtro.</p>}
+        {vendasFiltradas.map(v => (
           <div key={v.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [v.id]: !x[v.id] }))}>
               <div className="flex items-center gap-2 min-w-0">
@@ -2307,13 +2604,45 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                   <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns)</p>
                 </div>
               </div>
-              <span className="font-medium text-sm shrink-0">{currency(v.totalVenda)}</span>
+              <span className="font-medium text-sm shrink-0 flex items-center gap-1.5">
+                {(v.comprovantes || []).length > 0 ? (
+                  <FileText size={13} className="text-emerald-500" />
+                ) : (
+                  <FileText size={13} className="text-slate-300" />
+                )}
+                {currency(v.totalVenda)}
+              </span>
             </div>
             {expanded[v.id] && (
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1">
                 {v.itens.map((it, i) => (
                   <p key={i} className="text-xs text-slate-600">{it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}</p>
                 ))}
+
+                <div className="pt-2 mt-2 border-t border-slate-200">
+                  <p className="text-xs text-slate-500 font-medium mb-1.5">Comprovante de pagamento</p>
+                  {(v.comprovantes || []).length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {v.comprovantes.map(c => (
+                        <div key={c.id} className="relative w-16">
+                          {c.tipo.startsWith('image/') ? (
+                            <a href={c.dataUrl} target="_blank" rel="noreferrer">
+                              <img src={c.dataUrl} alt={c.nome} className="w-16 h-16 object-cover rounded-md border border-slate-200" />
+                            </a>
+                          ) : (
+                            <a href={c.dataUrl} download={c.nome} className="w-16 h-16 flex flex-col items-center justify-center gap-1 rounded-md border border-slate-200 bg-white text-slate-500">
+                              <FileText size={18} />
+                              <span className="text-[9px]">PDF</span>
+                            </a>
+                          )}
+                          {c.formaRecebimentoNome && <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={c.formaRecebimentoNome}>{c.formaRecebimentoNome}</p>}
+                          <button onClick={() => removerComprovante(v.id, c.id)} className="absolute -top-1.5 -right-1.5 bg-slate-900 text-white rounded-full w-4 h-4 flex items-center justify-center"><X size={10} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <ComprovanteUploader vendaId={v.id} formasRecebimento={formasRecebimento} onAnexar={anexarComprovante} notify={notify} />
+                </div>
               </div>
             )}
           </div>
@@ -2325,14 +2654,97 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 
 /* ---------------- EXPEDIÇÃO (confirmação de entrega com fotos e nº de série) ---------------- */
 
+/* ---------------- UPLOAD DE COMPROVANTE (com forma de recebimento) ---------------- */
+
+function ComprovanteUploader({ vendaId, formasRecebimento, onAnexar, notify }) {
+  const [formaId, setFormaId] = useState('');
+  const [qtdMultipla, setQtdMultipla] = useState('');
+  const [slots, setSlots] = useState(null); // array de { formaId } quando "múltiplas formas" está ativo
+
+  const formaSelecionada = formasRecebimento.find(f => f.id === formaId);
+  const opcoesSimples = formasRecebimento.filter(f => !f.multipla);
+
+  function confirmarQuantidade() {
+    const n = parseInt(qtdMultipla) || 0;
+    if (n < 2) { notify('Informe pelo menos 2 formas de pagamento'); return; }
+    setSlots(Array.from({ length: n }, () => ({ formaId: '' })));
+  }
+
+  function atualizarSlot(idx, novaFormaId) {
+    setSlots(s => s.map((slot, i) => i === idx ? { formaId: novaFormaId } : slot));
+  }
+
+  async function anexarSlot(idx, file) {
+    const slot = slots[idx];
+    const forma = formasRecebimento.find(f => f.id === slot.formaId);
+    if (!forma) { notify('Selecione a forma de pagamento desta parcela antes de anexar o arquivo'); return; }
+    await onAnexar(vendaId, file, forma.id, forma.nome);
+  }
+
+  function resetar() {
+    setFormaId(''); setQtdMultipla(''); setSlots(null);
+  }
+
+  if (slots) {
+    return (
+      <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
+        <div className="flex justify-between items-center">
+          <p className="text-xs text-slate-500 font-medium">{slots.length} formas de pagamento</p>
+          <button onClick={resetar} className="text-[11px] text-slate-400 hover:text-slate-600">Cancelar</button>
+        </div>
+        {slots.map((slot, idx) => (
+          <div key={idx} className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+            <span className="text-xs text-slate-400 w-16 shrink-0">Parte {idx + 1}</span>
+            <select value={slot.formaId} onChange={e => atualizarSlot(idx, e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs flex-1">
+              <option value="">Forma de pagamento...</option>
+              {opcoesSimples.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+            <label className="inline-flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1.5 rounded-md cursor-pointer whitespace-nowrap">
+              <Camera size={11} /> Anexar
+              <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => e.target.files[0] && anexarSlot(idx, e.target.files[0])} />
+            </label>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+      <select value={formaId} onChange={e => setFormaId(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
+        <option value="">Forma de recebimento...</option>
+        {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+      </select>
+
+      {formaSelecionada && formaSelecionada.multipla ? (
+        <>
+          <input type="number" min={2} placeholder="Qtd. de formas" value={qtdMultipla} onChange={e => setQtdMultipla(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
+          <button onClick={confirmarQuantidade} className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">Continuar</button>
+        </>
+      ) : (
+        <label className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md ${formaId ? 'bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer' : 'bg-slate-100 text-slate-400'}`}>
+          <Camera size={12} /> Anexar comprovante
+          <input type="file" accept="image/*,application/pdf" className="hidden" disabled={!formaId} onChange={e => { if (e.target.files[0]) { onAnexar(vendaId, e.target.files[0], formaSelecionada?.id, formaSelecionada?.nome); resetar(); } }} />
+        </label>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- EXPEDIÇÃO (confirmação de entrega com fotos e nº de série) ---------------- */
 function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify }) {
   const regFor = (chave, etapa) => expedicoes.find(ex => ex.chave === chave && ex.etapa === etapa);
+
+  const [busca, setBusca] = useState('');
+  const [ordenacao, setOrdenacao] = useState('recente');
+
+  const vendasFiltradas = useMemo(() => vendas.filter(v => v.clienteNome.toLowerCase().includes(busca.toLowerCase())), [vendas, busca]);
 
   const itensClassificados = useMemo(() => {
     const aguardandoSaida = [];
     const emRota = [];
     const concluidos = [];
-    for (const v of vendas) {
+    for (const v of vendasFiltradas) {
       for (const it of v.itens) {
         const chave = chaveItemVenda(v.id, it);
         const saida = regFor(chave, 'saida');
@@ -2344,7 +2756,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
       }
     }
     return { aguardandoSaida, emRota, concluidos };
-  }, [vendas, expedicoes]);
+  }, [vendasFiltradas, expedicoes]);
 
   function agruparPorVenda(lista) {
     const map = new Map();
@@ -2352,7 +2764,15 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
       if (!map.has(entry.venda.id)) map.set(entry.venda.id, { venda: entry.venda, itens: [] });
       map.get(entry.venda.id).itens.push(entry);
     }
-    return Array.from(map.values());
+    const grupos = Array.from(map.values());
+    return grupos.sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.venda.data) - new Date(a.venda.data);
+        case 'antigo': return new Date(a.venda.data) - new Date(b.venda.data);
+        case 'cliente': return a.venda.clienteNome.localeCompare(b.venda.clienteNome, 'pt-BR');
+        default: return 0;
+      }
+    });
   }
 
   const gruposSaida = agruparPorVenda(itensClassificados.aguardandoSaida);
@@ -2365,6 +2785,12 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
   return (
     <div>
       <p className="text-xs text-slate-400 mb-4">A expedição tem dupla verificação: primeiro a <strong>saída da empresa</strong>, depois a <strong>entrega ao cliente</strong> — cada etapa exige foto e, para inversores, confirmação do número de série. Só é possível expedir produtos que tiveram entrada e passaram pelo estoque.</p>
+
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por cliente..."
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Venda mais recente primeiro' }, { value: 'antigo', label: 'Venda mais antiga primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
+      />
 
       <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><TruckIcon size={14} /> Aguardando saída da empresa</h3>
       <div className="space-y-2 mb-6">
@@ -2438,6 +2864,15 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                       <div>
                         <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
                         <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Saída confirmada em {formatDate(saida.data)}</p>
+                        {saida.fotos && saida.fotos.length > 0 && (
+                          <div className="flex gap-1.5 mt-1.5">
+                            {saida.fotos.map((f, i) => (
+                              <a key={i} href={f} target="_blank" rel="noreferrer">
+                                <img src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
+                              </a>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <button onClick={() => setFormAtivo({ chave, etapa: 'entrega' })} className="flex items-center gap-1 text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">
                         <Camera size={12} /> Registrar entrega
@@ -2493,7 +2928,11 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         <p className="text-slate-400">{formatDate(saida.data)}</p>
                         {saida.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
-                            {saida.fotos.map((f, i) => <img key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded border border-slate-200" />)}
+                            {saida.fotos.map((f, i) => (
+                              <a key={i} href={f} target="_blank" rel="noreferrer">
+                                <img src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded border border-slate-200" />
+                              </a>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -2507,7 +2946,11 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         <p className="text-slate-400">{formatDate(entrega.data)}</p>
                         {entrega.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
-                            {entrega.fotos.map((f, i) => <img key={i} src={f} alt="Foto da entrega" className="w-12 h-12 object-cover rounded border border-slate-200" />)}
+                            {entrega.fotos.map((f, i) => (
+                              <a key={i} href={f} target="_blank" rel="noreferrer">
+                                <img src={f} alt="Foto da entrega" className="w-12 h-12 object-cover rounded border border-slate-200" />
+                              </a>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -2616,17 +3059,33 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 
 /* ---------------- FINANCEIRO (custo, margem, reposição) ---------------- */
 
-function FinanceiroModule({ vendas, estoque, pedidosCompra }) {
+function FinanceiroModule({ vendas, estoque, pedidosCompra, recebimentos }) {
   const [periodo, setPeriodo] = useState('mes');
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
 
   const vendasFiltradas = useMemo(() => {
     if (periodo === 'tudo') return vendas;
+    if (periodo === 'personalizado') {
+      if (!dataInicio && !dataFim) return vendas;
+      const inicio = dataInicio ? new Date(dataInicio + 'T00:00:00') : null;
+      const fim = dataFim ? new Date(dataFim + 'T23:59:59') : null;
+      return vendas.filter(v => {
+        const d = new Date(v.data);
+        return (!inicio || d >= inicio) && (!fim || d <= fim);
+      });
+    }
     const agora = new Date();
+    if (periodo === 'mesPassado') {
+      const inicio = new Date(agora.getFullYear(), agora.getMonth() - 1, 1);
+      const fim = new Date(agora.getFullYear(), agora.getMonth(), 0, 23, 59, 59);
+      return vendas.filter(v => { const d = new Date(v.data); return d >= inicio && d <= fim; });
+    }
     const limite = new Date();
     if (periodo === '30dias') limite.setDate(agora.getDate() - 30);
     if (periodo === 'mes') { limite.setDate(1); limite.setHours(0, 0, 0, 0); }
     return vendas.filter(v => new Date(v.data) >= limite);
-  }, [vendas, periodo]);
+  }, [vendas, periodo, dataInicio, dataFim]);
 
   const totais = useMemo(() => {
     const totalVenda = vendasFiltradas.reduce((acc, v) => acc + v.totalVenda, 0);
@@ -2642,6 +3101,36 @@ function FinanceiroModule({ vendas, estoque, pedidosCompra }) {
     return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado };
   }, [vendas, pedidosCompra]);
 
+  // Balanço da distribuidora: retrato do momento atual (não filtra por período)
+  const balanco = useMemo(() => {
+    let valorEstoqueDisponivel = 0;
+    for (const item of estoque) {
+      if (item.serializado) {
+        valorEstoqueDisponivel += (item.unidades || []).filter(u => u.status === 'Disponível').reduce((acc, u) => acc + (u.custoCompra || 0), 0);
+      } else {
+        valorEstoqueDisponivel += (item.lotes || []).reduce((acc, l) => acc + l.quantidadeDisponivel * l.custoUnitario, 0);
+      }
+    }
+
+    let valorEstoqueAguardando = 0;
+    for (const p of (pedidosCompra || [])) {
+      if (p.cancelado) continue;
+      for (const it of p.itens) {
+        const recebido = qtdRecebida(recebimentos || [], p.id, it.id);
+        const pendente = it.quantidade - recebido;
+        if (pendente > 0) valorEstoqueAguardando += pendente * it.custoUnitario;
+      }
+    }
+
+    const valoresAReceber = vendas
+      .filter(v => !(v.comprovantes && v.comprovantes.length > 0))
+      .reduce((acc, v) => acc + v.totalVenda, 0);
+
+    return { valorEstoqueDisponivel, valorEstoqueAguardando, valoresAReceber };
+  }, [estoque, pedidosCompra, recebimentos, vendas]);
+
+  const totalImobilizado = balanco.valorEstoqueDisponivel + balanco.valorEstoqueAguardando + saldoReposicao.saldo + balanco.valoresAReceber;
+
   const custoPorCategoria = useMemo(() => {
     const map = {};
     for (const v of vendasFiltradas) {
@@ -2655,7 +3144,7 @@ function FinanceiroModule({ vendas, estoque, pedidosCompra }) {
   return (
     <div>
       <div className={`rounded-lg p-4 mb-5 border ${saldoReposicao.saldo > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
-        <p className={`text-xs ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado, todas as vendas menos todos os pedidos de compra)</p>
+        <p className={`text-xs ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado: custo de todas as vendas, menos todos os pedidos de compra)</p>
         <p className={`text-2xl font-semibold ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{currency(saldoReposicao.saldo)}</p>
         <div className="flex gap-4 mt-2 text-xs text-slate-500">
           <span>CMV acumulado: {currency(saldoReposicao.cmvAcumulado)}</span>
@@ -2664,11 +3153,50 @@ function FinanceiroModule({ vendas, estoque, pedidosCompra }) {
         <p className="text-[11px] text-slate-400 mt-1">{saldoReposicao.saldo > 0 ? 'Esse valor ainda precisa ser reservado no banco para repor o que já foi vendido.' : 'A reposição está em dia — os pedidos de compra já cobrem o custo do que foi vendido.'}</p>
       </div>
 
-      <div className="flex gap-2 mb-4">
-        {[['mes', 'Este mês'], ['30dias', 'Últimos 30 dias'], ['tudo', 'Tudo']].map(([v, l]) => (
+      <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
+        <h3 className="text-sm font-medium mb-1">Balanço da distribuidora</h3>
+        <p className="text-[11px] text-slate-400 mb-3">Retrato do momento atual (não muda com o filtro de período abaixo)</p>
+        <div className="space-y-2">
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Valor do estoque disponível <span className="text-slate-400">(a custo)</span></span>
+            <span className="font-medium">{currency(balanco.valorEstoqueDisponivel)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Valor do estoque aguardando chegada <span className="text-slate-400">(pedidos não recebidos)</span></span>
+            <span className="font-medium">{currency(balanco.valorEstoqueAguardando)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Saldo de reposição</span>
+            <span className="font-medium">{currency(saldoReposicao.saldo)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem comprovante de pagamento)</span></span>
+            <span className="font-medium">{currency(balanco.valoresAReceber)}</span>
+          </div>
+          <div className="flex justify-between text-sm pt-2 border-t border-slate-200">
+            <span className="text-slate-800 font-medium">Total imobilizado</span>
+            <span className="font-semibold text-base">{currency(totalImobilizado)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-2 flex-wrap">
+        {[['mes', 'Este mês'], ['mesPassado', 'Mês passado'], ['30dias', 'Últimos 30 dias'], ['tudo', 'Tudo'], ['personalizado', 'Período personalizado']].map(([v, l]) => (
           <button key={v} onClick={() => setPeriodo(v)} className={`text-xs px-3 py-1.5 rounded-full border ${periodo === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
         ))}
       </div>
+      {periodo === 'personalizado' && (
+        <div className="flex flex-wrap items-center gap-2 mb-4 bg-white border border-slate-200 rounded-lg p-3">
+          <label className="text-xs text-slate-500">De</label>
+          <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          <label className="text-xs text-slate-500">Até</label>
+          <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          {(dataInicio || dataFim) && (
+            <button onClick={() => { setDataInicio(''); setDataFim(''); }} className="text-xs text-slate-400 hover:text-slate-600">Limpar</button>
+          )}
+        </div>
+      )}
+      <div className="mb-2" />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
         <div className="bg-white border border-slate-200 rounded-lg p-4">
