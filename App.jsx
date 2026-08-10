@@ -951,6 +951,51 @@ function AppInner() {
       });
       if (mudou) await saveKey('sgm:estoque', estoqueFinal);
 
+      // Migração: corrige a descrição (marca + modelo + potência) de itens já lançados em
+      // pedidos, recebimentos e transferências antes dessa informação completa existir.
+      const produtoPorId = Object.fromEntries(estoqueFinal.map(p => [p.id, p]));
+
+      let pedidosFinal = pc;
+      let pedidosMudou = false;
+      pedidosFinal = pc.map(pedido => {
+        let alterado = false;
+        const itens = pedido.itens.map(it => {
+          const produto = produtoPorId[it.produtoId];
+          if (produto) {
+            const novaDescricao = descricaoProduto(produto);
+            if (novaDescricao && novaDescricao !== it.descricao) { alterado = true; return { ...it, descricao: novaDescricao }; }
+          }
+          return it;
+        });
+        if (alterado) { pedidosMudou = true; return { ...pedido, itens }; }
+        return pedido;
+      });
+      if (pedidosMudou) await saveKey('sgm:pedidosCompra', pedidosFinal);
+
+      let recebimentosFinal = rc;
+      let recebimentosMudou = false;
+      recebimentosFinal = rc.map(r => {
+        const produto = produtoPorId[r.produtoId];
+        if (produto) {
+          const novaDescricao = descricaoProduto(produto);
+          if (novaDescricao && novaDescricao !== r.descricao) { recebimentosMudou = true; return { ...r, descricao: novaDescricao }; }
+        }
+        return r;
+      });
+      if (recebimentosMudou) await saveKey('sgm:recebimentos', recebimentosFinal);
+
+      let transferenciasFinal = tr;
+      let transferenciasMudou = false;
+      transferenciasFinal = tr.map(t => {
+        const produto = produtoPorId[t.produtoId];
+        if (produto) {
+          const novaDescricao = descricaoProduto(produto);
+          if (novaDescricao && novaDescricao !== t.descricao) { transferenciasMudou = true; return { ...t, descricao: novaDescricao }; }
+        }
+        return t;
+      });
+      if (transferenciasMudou) await saveKey('sgm:transferencias', transferenciasFinal);
+
       let formasFinal = fr;
       if (formasFinal.length === 0) {
         formasFinal = [
@@ -961,7 +1006,7 @@ function AppInner() {
       }
 
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
-      setExpedicoes(ex); setPedidosCompra(pc); setRecebimentos(rc); setDepositos(depositosFinal); setTransferencias(tr);
+      setExpedicoes(ex); setPedidosCompra(pedidosFinal); setRecebimentos(recebimentosFinal); setDepositos(depositosFinal); setTransferencias(transferenciasFinal);
       setSenhaAprovacao(sa);
       setPagamentos(pg);
       setAjustesReposicao(aj);
@@ -2032,6 +2077,42 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
     notify('Pedido de compra anulado');
   }
 
+  const [editandoItem, setEditandoItem] = useState(null); // { pedidoId, itemId }
+  const [qtdEditada, setQtdEditada] = useState('');
+  const [custoEditado, setCustoEditado] = useState('');
+
+  function abrirEdicaoItem(pedido, item) {
+    setEditandoItem({ pedidoId: pedido.id, itemId: item.id });
+    setQtdEditada(String(item.quantidade));
+    setCustoEditado(String(item.custoUnitario));
+  }
+  function cancelarEdicaoItem() { setEditandoItem(null); setQtdEditada(''); setCustoEditado(''); }
+
+  async function salvarEdicaoItem(pedido, item) {
+    const novaQtd = parseInt(qtdEditada);
+    const novoCusto = parseValorBR(custoEditado);
+    if (isNaN(novaQtd) || novaQtd <= 0) { notify('Informe uma quantidade válida'); return; }
+    if (isNaN(novoCusto) || novoCusto < 0) { notify('Informe um custo unitário válido'); return; }
+    const recebido = qtdRecebida(recebimentos, pedido.id, item.id);
+    if (novaQtd < recebido) { notify(`Não é possível informar quantidade menor que o já recebido (${recebido})`); return; }
+    if (novaQtd === item.quantidade && novoCusto === item.custoUnitario) { cancelarEdicaoItem(); return; }
+
+    const ok = await askSenha(
+      `Alterar "${item.descricao}" no pedido ${pedido.numeroPedidoFornecedor}? Quantidade: ${item.quantidade} → ${novaQtd}. Custo unitário: ${currency(item.custoUnitario)} → ${currency(novoCusto)}.`,
+      { label: 'Salvar alteração', destrutivo: false }
+    );
+    if (!ok) return;
+
+    await setPedidos(pedidos.map(p => {
+      if (p.id !== pedido.id) return p;
+      const itens = p.itens.map(i => i.id === item.id ? { ...i, quantidade: novaQtd, custoUnitario: novoCusto } : i);
+      const valorTotal = itens.reduce((acc, i) => acc + i.quantidade * i.custoUnitario, 0);
+      return { ...p, itens, valorTotal };
+    }));
+    notify('Item do pedido atualizado');
+    cancelarEdicaoItem();
+  }
+
   function statusPedido(p) {
     if (p.anulado) return { label: 'Anulado', style: 'bg-red-100 text-red-600' };
     if (p.cancelado) return { label: 'Cancelado', style: 'bg-red-100 text-red-600' };
@@ -2181,10 +2262,31 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                 </div>
               </div>
               {expanded[p.id] && (
-                <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1">
+                <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1.5">
                   {p.itens.map((i, idx) => {
                     const recebido = qtdRecebida(recebimentos, p.id, i.id);
-                    return <p key={idx} className="text-xs text-slate-600">{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</p>;
+                    const editando = editandoItem && editandoItem.pedidoId === p.id && editandoItem.itemId === i.id;
+                    if (editando) {
+                      return (
+                        <div key={idx} className="bg-white border border-slate-200 rounded-md p-2 space-y-1.5">
+                          <p className="text-xs text-slate-500">{i.descricao} <span className="text-slate-400">(recebido {recebido})</span></p>
+                          <div className="flex flex-col sm:flex-row gap-1.5">
+                            <input type="number" min={recebido || 1} value={qtdEditada} onChange={e => setQtdEditada(e.target.value)} placeholder="Quantidade" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
+                            <input type="text" inputMode="decimal" value={custoEditado} onChange={e => setCustoEditado(e.target.value)} placeholder="Custo unitário" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-32" />
+                            <button onClick={() => salvarEdicaoItem(p, i)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1.5 rounded-md">Salvar</button>
+                            <button onClick={cancelarEdicaoItem} className="text-xs text-slate-500 px-2.5 py-1.5">Cancelar</button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={idx} className="flex justify-between items-center text-xs text-slate-600">
+                        <span>{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</span>
+                        {!p.anulado && (
+                          <button onClick={() => abrirEdicaoItem(p, i)} title="Editar item"><Pencil size={12} className="text-slate-300 hover:text-slate-600" /></button>
+                        )}
+                      </div>
+                    );
                   })}
                 </div>
               )}
