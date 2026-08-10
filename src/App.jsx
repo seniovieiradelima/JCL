@@ -7,7 +7,15 @@ import LoginScreen from './LoginScreen';
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
 const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao'];
-const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'financeiro'];
+const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'pagamentos', 'financeiro'];
+const PAGAMENTO_CATEGORIAS_SAIDA = [
+  'Salários e encargos', 'Pró-labore / retirada de sócio', 'Aluguel', 'Energia elétrica', 'Água',
+  'Internet / Telefone', 'Combustível', 'Manutenção de veículo', 'Contador / Consultoria',
+  'Impostos e taxas', 'Marketing / Publicidade', 'Material de escritório', 'Manutenção e reparos', 'Outros',
+];
+const PAGAMENTO_CATEGORIAS_ENTRADA = [
+  'Aporte de sócio', 'Empréstimo recebido', 'Reembolso', 'Rendimento financeiro', 'Venda de ativo', 'Outros',
+];
 const SETOR_VENDAS_TABS = ['orcamentos', 'vendas', 'expedicao'];
 
 const CATALOGO_ATACADO = [
@@ -774,7 +782,7 @@ function qtdRecebida(recebimentos, pedidoId, itemLineId) {
   return recebimentos.filter(r => r.pedidoId === pedidoId && r.itemLineId === itemLineId && !r.anulado).reduce((a, r) => a + r.quantidade, 0);
 }
 
-function SenhaDialogModal({ message, senhaCorreta, onResolve }) {
+function SenhaDialogModal({ message, senhaCorreta, label = 'Apagar', destrutivo = true, onResolve }) {
   const [valor, setValor] = useState('');
   const [erro, setErro] = useState('');
 
@@ -788,7 +796,7 @@ function SenhaDialogModal({ message, senhaCorreta, onResolve }) {
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-4">
         <div className="flex items-center gap-2 mb-1">
-          <ShieldAlert size={16} className="text-red-500" />
+          <ShieldAlert size={16} className={destrutivo ? 'text-red-500' : 'text-amber-500'} />
           <h3 className="font-medium text-sm">Ação protegida por senha</h3>
         </div>
         <p className="text-sm text-slate-700 mt-2">{message}</p>
@@ -804,7 +812,7 @@ function SenhaDialogModal({ message, senhaCorreta, onResolve }) {
         {erro && <p className="text-xs text-red-500 mt-1">{erro}</p>}
         <div className="flex justify-end gap-2 mt-4">
           <button onClick={() => onResolve(false)} className="text-sm px-3 py-1.5 rounded-md text-slate-500 hover:bg-slate-100">Cancelar</button>
-          <button onClick={confirmar} className="text-sm px-3 py-1.5 rounded-md bg-red-500 hover:bg-red-600 text-white font-medium">Apagar</button>
+          <button onClick={confirmar} className={`text-sm px-3 py-1.5 rounded-md text-white font-medium ${destrutivo ? 'bg-red-500 hover:bg-red-600' : 'bg-amber-500 hover:bg-amber-600 text-slate-900'}`}>{label}</button>
         </div>
       </div>
     </div>
@@ -826,6 +834,8 @@ function AppInner() {
   const [transferencias, setTransferencias] = useState([]);
   const [formasRecebimento, setFormasRecebimento] = useState([]);
   const [senhaAprovacao, setSenhaAprovacao] = useState(null);
+  const [pagamentos, setPagamentos] = useState([]);
+  const [ajustesReposicao, setAjustesReposicao] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -841,9 +851,9 @@ function AppInner() {
 
   const [senhaDialog, setSenhaDialog] = useState(null); // { message, resolve }
 
-  function askSenha(message) {
+  function askSenha(message, options) {
     return new Promise(resolve => {
-      setSenhaDialog({ message, resolve });
+      setSenhaDialog({ message, resolve, label: options?.label || 'Apagar', destrutivo: options?.destrutivo !== false });
     });
   }
 
@@ -893,7 +903,7 @@ function AppInner() {
 
   useEffect(() => {
     (async () => {
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj] = await Promise.all([
         loadKey('sgm:estoque', []),
         loadKey('sgm:clientes', []),
         loadKey('sgm:fornecedores', []),
@@ -906,6 +916,8 @@ function AppInner() {
         loadKey('sgm:transferencias', []),
         loadKey('sgm:formasRecebimento', []),
         loadKey('sgm:senhaAprovacao', null),
+        loadKey('sgm:pagamentos', []),
+        loadKey('sgm:ajustesReposicao', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -945,6 +957,8 @@ function AppInner() {
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
       setExpedicoes(ex); setPedidosCompra(pc); setRecebimentos(rc); setDepositos(depositosFinal); setTransferencias(tr);
       setSenhaAprovacao(sa);
+      setPagamentos(pg);
+      setAjustesReposicao(aj);
       setFormasRecebimento(formasFinal);
       setLoading(false);
     })();
@@ -969,6 +983,8 @@ function AppInner() {
   async function persistTransferencias(next) { await persist('sgm:transferencias', setTransferencias, next); }
   async function persistFormasRecebimento(next) { await persist('sgm:formasRecebimento', setFormasRecebimento, next); }
   async function persistSenhaAprovacao(next) { await persist('sgm:senhaAprovacao', setSenhaAprovacao, next); }
+  async function persistPagamentos(next) { await persist('sgm:pagamentos', setPagamentos, next); }
+  async function persistAjustesReposicao(next) { await persist('sgm:ajustesReposicao', setAjustesReposicao, next); }
 
   if (loading) {
     return (
@@ -1028,6 +1044,7 @@ function AppInner() {
                 <SubTabButton icon={ArrowLeftRight} label="Transferências" active={tab === 'transferencias'} onClick={() => setTab('transferencias')} />
                 <SubTabButton icon={ClipboardList} label="Pedidos de compra" active={tab === 'pedidos'} onClick={() => setTab('pedidos')} />
                 <SubTabButton icon={TruckIcon} label="Recebimento" active={tab === 'recebimento'} onClick={() => setTab('recebimento')} />
+                <SubTabButton icon={HandCoins} label="Pagamentos" active={tab === 'pagamentos'} onClick={() => setTab('pagamentos')} />
                 <SubTabButton icon={LineChart} label="Financeiro" active={tab === 'financeiro'} onClick={() => setTab('financeiro')} />
               </nav>
             </div>
@@ -1047,7 +1064,7 @@ function AppInner() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5">
-        {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} askConfirm={askConfirm} notify={notify} />}
         {tab === 'transferencias' && (
           <TransferenciasModule
@@ -1096,7 +1113,8 @@ function AppInner() {
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} />}
+        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toast && (
@@ -1129,6 +1147,8 @@ function AppInner() {
         <SenhaDialogModal
           message={senhaDialog.message}
           senhaCorreta={senhaAprovacao?.senha}
+          label={senhaDialog.label}
+          destrutivo={senhaDialog.destrutivo}
           onResolve={(v) => { senhaDialog.resolve(v); setSenhaDialog(null); }}
         />
       )}
@@ -1297,7 +1317,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
 
 /* ---------------- ESTOQUE (catálogo + visão de saldo/custo) ---------------- */
 
-function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
+function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [filtroCategoria, setFiltroCategoria] = useState('Todos');
@@ -1355,7 +1375,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
     const novos = CATALOGO_ATACADO.filter(p => !existentes.has(chave(p)));
     const ignorados = CATALOGO_ATACADO.length - novos.length;
     if (novos.length === 0) { notify('Todos os itens do catálogo já estão cadastrados'); return; }
-    if (!(await askConfirm(`Importar ${novos.length} produto(s) da planilha Atacado?${ignorados > 0 ? ` (${ignorados} já cadastrado(s) serão ignorados)` : ''}`))) return;
+    if (!(await askSenha(`Importar ${novos.length} produto(s) da planilha Atacado?${ignorados > 0 ? ` (${ignorados} já cadastrado(s) serão ignorados)` : ''}`, { label: 'Importar', destrutivo: false }))) return;
     const criados = novos.map(p => ({
       id: uid(), categoria: p.categoria, marca: p.marca, modelo: p.modelo, potencia: p.potencia,
       serializado: p.serializado, precoVenda: p.precoVenda, quantidadeMinima: p.quantidadeMinima,
@@ -1430,7 +1450,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
             <Plus size={16} /> Novo produto
           </button>
           <button onClick={handleImportarCatalogo} className="flex items-center justify-center gap-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap">
-            Importar Atacado
+            <ShieldAlert size={14} /> Importar Atacado
           </button>
         </div>
       </div>
@@ -3371,11 +3391,228 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 
 /* ---------------- FINANCEIRO (custo, margem, reposição) ---------------- */
 
-function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebimentos }) {
+/* ---------------- PAGAMENTOS (despesas fora do estoque, pagas com a margem de contribuição) ---------------- */
+
+function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify }) {
+  const [showForm, setShowForm] = useState(false);
+  const [tipo, setTipo] = useState('Saída');
+  const [data, setData] = useState(new Date().toISOString().slice(0, 10));
+  const [categoria, setCategoria] = useState(PAGAMENTO_CATEGORIAS_SAIDA[0]);
+  const [descricao, setDescricao] = useState('');
+  const [beneficiario, setBeneficiario] = useState('');
+  const [valor, setValor] = useState('');
+  const [comprovante, setComprovante] = useState(null);
+  const [enviando, setEnviando] = useState(false);
+
+  const [busca, setBusca] = useState('');
+  const [filtroTipo, setFiltroTipo] = useState('Todos');
+  const [ordenacao, setOrdenacao] = useState('recente');
+
+  const categoriasDoTipo = tipo === 'Entrada' ? PAGAMENTO_CATEGORIAS_ENTRADA : PAGAMENTO_CATEGORIAS_SAIDA;
+
+  function mudarTipo(novoTipo) {
+    setTipo(novoTipo);
+    setCategoria((novoTipo === 'Entrada' ? PAGAMENTO_CATEGORIAS_ENTRADA : PAGAMENTO_CATEGORIAS_SAIDA)[0]);
+  }
+
+  function resetForm() {
+    setTipo('Saída'); setCategoria(PAGAMENTO_CATEGORIAS_SAIDA[0]); setData(new Date().toISOString().slice(0, 10));
+    setDescricao(''); setBeneficiario(''); setValor(''); setComprovante(null); setShowForm(false);
+  }
+
+  async function handleComprovante(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const isImage = file.type.startsWith('image/');
+    const dataUrl = isImage ? await fileToCompressedDataUrl(file) : await fileToDataUrl(file);
+    setComprovante({ nome: file.name, tipo: file.type, dataUrl });
+  }
+
+  async function salvar() {
+    const v = parseValorBR(valor);
+    if (!descricao.trim()) { notify('Descreva o lançamento'); return; }
+    if (isNaN(v) || v <= 0) { notify('Informe um valor válido'); return; }
+    setEnviando(true);
+    const novo = {
+      id: uid(), tipo, data: new Date(data + 'T12:00:00').toISOString(), categoria, descricao: descricao.trim(),
+      beneficiario: beneficiario.trim(), valor: v, comprovante, criadoEm: new Date().toISOString(),
+    };
+    await setPagamentos([novo, ...pagamentos]);
+    setEnviando(false);
+    notify(tipo === 'Entrada' ? 'Entrada registrada' : 'Pagamento registrado');
+    resetForm();
+  }
+
+  async function apagarPagamento(p) {
+    if (p.anulado) return;
+    const ok = await askSenha(`Apagar o lançamento "${p.descricao}" (${p.tipo === 'Entrada' ? '+' : '-'}${currency(p.valor)})? Ele ficará marcado como anulado no histórico.`);
+    if (!ok) return;
+    await setPagamentos(pagamentos.map(x => x.id === p.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    notify('Lançamento anulado');
+  }
+
+  const pagamentosFiltrados = useMemo(() => {
+    let lista = pagamentos.filter(p => `${p.descricao} ${p.beneficiario}`.toLowerCase().includes(busca.toLowerCase()));
+    if (filtroTipo !== 'Todos') lista = lista.filter(p => p.tipo === filtroTipo);
+    return lista.slice().sort((a, b) => {
+      switch (ordenacao) {
+        case 'recente': return new Date(b.data) - new Date(a.data);
+        case 'antigo': return new Date(a.data) - new Date(b.data);
+        case 'valorDesc': return b.valor - a.valor;
+        case 'valorAsc': return a.valor - b.valor;
+        default: return 0;
+      }
+    });
+  }, [pagamentos, busca, filtroTipo, ordenacao]);
+
+  // Margem de contribuição do mês (das vendas) + entradas extras - saídas, tudo dentro do mês atual
+  const resumoMes = useMemo(() => {
+    const inicioMes = new Date(); inicioMes.setDate(1); inicioMes.setHours(0, 0, 0, 0);
+    const vendasMes = vendas.filter(v => !v.anulado && new Date(v.data) >= inicioMes);
+    const margemContribuicao = vendasMes.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto), 0);
+    const pagamentosMes = pagamentos.filter(p => !p.anulado && new Date(p.data) >= inicioMes);
+    const entradasExtras = pagamentosMes.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
+    const saidas = pagamentosMes.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
+    return { margemContribuicao, entradasExtras, saidas, saldo: margemContribuicao + entradasExtras - saidas };
+  }, [vendas, pagamentos]);
+
+  return (
+    <div>
+      <p className="text-xs text-slate-400 mb-4">Lançamentos de caixa que não são compra de material pro estoque — tanto saídas (despesas) quanto entradas extras. Usam a margem de contribuição, não o saldo de reposição.</p>
+
+      <div className={`rounded-lg p-4 mb-5 border ${resumoMes.saldo < 0 ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
+        <p className={`text-xs ${resumoMes.saldo < 0 ? 'text-red-700' : 'text-emerald-700'}`}>Saldo disponível do mês (margem de contribuição + entradas extras - saídas)</p>
+        <p className={`text-2xl font-semibold ${resumoMes.saldo < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{currency(resumoMes.saldo)}</p>
+        <div className="flex gap-4 mt-2 text-xs text-slate-500 flex-wrap">
+          <span>Margem do mês: {currency(resumoMes.margemContribuicao)}</span>
+          <span>Entradas extras: {currency(resumoMes.entradasExtras)}</span>
+          <span>Saídas: {currency(resumoMes.saidas)}</span>
+        </div>
+        {resumoMes.saldo < 0 && <p className="text-[11px] text-red-600 mt-1">As saídas deste mês já ultrapassaram o que entrou até agora.</p>}
+      </div>
+
+      <div className="flex justify-end mb-3">
+        <button onClick={() => setShowForm(s => !s)} className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
+          <Plus size={16} /> Novo lançamento
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
+          <div className="flex justify-between items-center">
+            <h3 className="font-medium text-sm">Novo lançamento</h3>
+            <button onClick={resetForm}><X size={16} className="text-slate-400" /></button>
+          </div>
+
+          <div className="flex gap-2">
+            <button type="button" onClick={() => mudarTipo('Saída')} className={`flex-1 text-sm px-3 py-2 rounded-md border ${tipo === 'Saída' ? 'bg-red-500 text-white border-red-500' : 'border-slate-200 text-slate-500'}`}>Saída (pagamento)</button>
+            <button type="button" onClick={() => mudarTipo('Entrada')} className={`flex-1 text-sm px-3 py-2 rounded-md border ${tipo === 'Entrada' ? 'bg-emerald-500 text-white border-emerald-500' : 'border-slate-200 text-slate-500'}`}>Entrada</button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <select value={categoria} onChange={e => setCategoria(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+              {categoriasDoTipo.map(c => <option key={c}>{c}</option>)}
+            </select>
+            <input type="date" value={data} onChange={e => setData(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+            <input placeholder={tipo === 'Entrada' ? 'Descrição (ex: Aporte de capital)' : 'Descrição (ex: Aluguel do galpão - Agosto)'} value={descricao} onChange={e => setDescricao(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2" />
+            <input placeholder={tipo === 'Entrada' ? 'De quem veio' : 'Beneficiário / para quem foi pago'} value={beneficiario} onChange={e => setBeneficiario(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+            <input type="text" inputMode="decimal" placeholder="Valor (R$) ex: 1500,00" value={valor} onChange={e => setValor(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="inline-flex items-center gap-1.5 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md cursor-pointer">
+              <Camera size={12} /> {comprovante ? 'Trocar comprovante' : 'Anexar comprovante (opcional)'}
+              <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handleComprovante} />
+            </label>
+            {comprovante && <span className="text-xs text-slate-500 ml-2">{comprovante.nome}</span>}
+          </div>
+          <button onClick={salvar} disabled={enviando} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800 disabled:opacity-50">Salvar lançamento</button>
+        </div>
+      )}
+
+      <FiltroBar
+        busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por descrição ou beneficiário..."
+        filtroValue={filtroTipo} setFiltro={setFiltroTipo}
+        filtroOptions={[{ value: 'Todos', label: 'Entradas e saídas' }, { value: 'Saída', label: 'Só saídas' }, { value: 'Entrada', label: 'Só entradas' }]}
+        ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
+        ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }]}
+      />
+
+      <div className="space-y-2">
+        {pagamentos.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum lançamento registrado.</p>}
+        {pagamentos.length > 0 && pagamentosFiltrados.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum lançamento encontrado com esse filtro.</p>}
+        {pagamentosFiltrados.map(p => (
+          <div key={p.id} className={`bg-white border rounded-lg p-3 flex justify-between items-start gap-2 ${p.anulado ? 'border-red-200 opacity-60' : 'border-slate-200'}`}>
+            <div className="min-w-0">
+              <p className="text-sm font-medium flex items-center gap-1.5">
+                <span className={`text-[11px] px-1.5 py-0.5 rounded ${p.tipo === 'Entrada' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{p.tipo}</span>
+                <span className={p.anulado ? 'line-through' : ''}>{p.descricao}</span>
+                {p.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+              </p>
+              <p className="text-xs text-slate-500">{p.categoria} {p.beneficiario && `· ${p.beneficiario}`} · {formatDate(p.data)}</p>
+              {p.comprovante && (
+                p.comprovante.tipo?.startsWith('image/') ? (
+                  <a href={p.comprovante.dataUrl} target="_blank" rel="noreferrer"><img src={p.comprovante.dataUrl} alt="Comprovante" className="w-12 h-12 object-cover rounded border border-slate-200 mt-1.5" /></a>
+                ) : (
+                  <a href={p.comprovante.dataUrl} download={p.comprovante.nome} className="text-xs text-amber-600 underline mt-1 inline-block">Ver comprovante (PDF)</a>
+                )
+              )}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`font-medium text-sm ${p.tipo === 'Entrada' ? 'text-emerald-600' : 'text-slate-700'}`}>{p.tipo === 'Entrada' ? '+' : '-'} {currency(p.valor)}</span>
+              {!p.anulado && <button onClick={() => apagarPagamento(p)} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
   const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado), [vendasTodas]);
   const [periodo, setPeriodo] = useState('mes');
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
+
+  const [showAjuste, setShowAjuste] = useState(false);
+  const [valorAjuste, setValorAjuste] = useState('');
+  const [motivoAjuste, setMotivoAjuste] = useState('');
+  const [enviandoAjuste, setEnviandoAjuste] = useState(false);
+
+  const ajustesValidos = useMemo(() => (ajustesReposicao || []).filter(a => !a.anulado), [ajustesReposicao]);
+  const totalAjustes = useMemo(() => ajustesValidos.reduce((acc, a) => acc + a.valor, 0), [ajustesValidos]);
+
+  async function salvarAjuste() {
+    const v = parseValorBR(valorAjuste);
+    if (isNaN(v) || v === 0) { notify('Informe um valor de ajuste diferente de zero (pode ser negativo)'); return; }
+    if (!motivoAjuste.trim()) { notify('Descreva o motivo do ajuste'); return; }
+    const ok = await askSenha(`Lançar um ajuste de ${v > 0 ? '+' : ''}${currency(v)} no saldo de reposição? Motivo: "${motivoAjuste.trim()}".`, { label: 'Lançar ajuste', destrutivo: false });
+    if (!ok) return;
+    setEnviandoAjuste(true);
+    const novo = { id: uid(), data: new Date().toISOString(), valor: v, motivo: motivoAjuste.trim() };
+    await setAjustesReposicao([novo, ...(ajustesReposicao || [])]);
+    setEnviandoAjuste(false);
+    notify('Ajuste lançado no saldo de reposição');
+    setValorAjuste(''); setMotivoAjuste(''); setShowAjuste(false);
+  }
+
+  async function apagarAjuste(a) {
+    if (a.anulado) return;
+    const ok = await askSenha(`Apagar o ajuste de ${currency(a.valor)} ("${a.motivo}")? Ficará marcado como anulado no histórico.`);
+    if (!ok) return;
+    await setAjustesReposicao(ajustesReposicao.map(x => x.id === a.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    notify('Ajuste anulado');
+  }
+
+  // Saldo da margem de contribuição: acumulado desde sempre, nunca zera na virada do mês.
+  // Cresce com a margem (venda - custo) de cada venda e é abatido pelas saídas de Pagamentos (somando entradas extras).
+  const saldoMargemContribuicao = useMemo(() => {
+    const margemAcumulada = vendas.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto), 0);
+    const pagamentosValidos = (pagamentos || []).filter(p => !p.anulado);
+    const entradasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
+    const saidasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
+    return margemAcumulada + entradasAcumuladas - saidasAcumuladas;
+  }, [vendas, pagamentos]);
 
   const vendasFiltradas = useMemo(() => {
     if (periodo === 'tudo') return vendas;
@@ -3411,8 +3648,8 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
   const saldoReposicao = useMemo(() => {
     const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto, 0);
     const pedidosAcumulado = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado).reduce((acc, p) => acc + p.valorTotal, 0);
-    return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado };
-  }, [vendas, pedidosCompra]);
+    return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado + totalAjustes };
+  }, [vendas, pedidosCompra, totalAjustes]);
 
   // Balanço da distribuidora: retrato do momento atual (não filtra por período)
   const balanco = useMemo(() => {
@@ -3457,13 +3694,43 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
   return (
     <div>
       <div className={`rounded-lg p-4 mb-5 border ${saldoReposicao.saldo > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
-        <p className={`text-xs ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado: custo de todas as vendas, menos todos os pedidos de compra)</p>
+        <p className={`text-xs ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado: custo de todas as vendas, menos todos os pedidos de compra, mais ajustes)</p>
         <p className={`text-2xl font-semibold ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{currency(saldoReposicao.saldo)}</p>
-        <div className="flex gap-4 mt-2 text-xs text-slate-500">
+        <div className="flex gap-4 mt-2 text-xs text-slate-500 flex-wrap">
           <span>CMV acumulado: {currency(saldoReposicao.cmvAcumulado)}</span>
           <span>Pedidos de compra: {currency(saldoReposicao.pedidosAcumulado)}</span>
+          <span>Ajustes: {currency(totalAjustes)}</span>
         </div>
         <p className="text-[11px] text-slate-400 mt-1">{saldoReposicao.saldo > 0 ? 'Esse valor ainda precisa ser reservado no banco para repor o que já foi vendido.' : 'A reposição está em dia — os pedidos de compra já cobrem o custo do que foi vendido.'}</p>
+
+        <div className="mt-3 pt-3 border-t border-amber-200">
+          <button onClick={() => setShowAjuste(s => !s)} className="text-xs bg-white border border-amber-300 hover:bg-amber-100 text-amber-700 px-2.5 py-1.5 rounded-md">
+            {showAjuste ? 'Cancelar ajuste' : '+ Ajustar saldo de reposição'}
+          </button>
+          {showAjuste && (
+            <div className="mt-2 bg-white border border-amber-200 rounded-md p-3 space-y-2">
+              <input type="text" inputMode="decimal" placeholder="Valor do ajuste (positivo ou negativo) ex: -500,00" value={valorAjuste} onChange={e => setValorAjuste(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
+              <input placeholder="Motivo do ajuste" value={motivoAjuste} onChange={e => setMotivoAjuste(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
+              <button onClick={salvarAjuste} disabled={enviandoAjuste} className="bg-slate-900 text-white text-xs px-3 py-2 rounded-md disabled:opacity-50">Lançar ajuste</button>
+            </div>
+          )}
+          {ajustesValidos.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-xs text-amber-700 font-medium">Histórico de ajustes</p>
+              {ajustesReposicao.map(a => (
+                <div key={a.id} className={`flex justify-between items-center text-xs ${a.anulado ? 'opacity-50' : ''}`}>
+                  <span className={a.anulado ? 'line-through text-slate-400' : 'text-slate-600'}>
+                    {a.motivo} · {formatDate(a.data)} {a.anulado && <span className="text-red-500">(anulado)</span>}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <span className={a.valor >= 0 ? 'text-emerald-600' : 'text-red-500'}>{a.valor >= 0 ? '+' : ''}{currency(a.valor)}</span>
+                    {!a.anulado && <button onClick={() => apagarAjuste(a)} title="Apagar lançamento"><Trash2 size={12} className="text-slate-300 hover:text-red-500" /></button>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
@@ -3519,7 +3786,11 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
         <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
           <p className="text-xs text-emerald-700">Margem de contribuição (zera todo mês)</p>
           <p className="text-xl font-semibold text-emerald-700">{currency(totais.margemContribuicao)}</p>
-          <p className="text-[11px] text-emerald-600 mt-1">É o único valor disponível para pagamentos — o restante da margem fica reservado para reposição.</p>
+          <div className="border-t border-emerald-200 mt-2 pt-2">
+            <p className="text-xs text-emerald-700">Saldo da margem de contribuição</p>
+            <p className={`text-lg font-semibold ${saldoMargemContribuicao < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{currency(saldoMargemContribuicao)}</p>
+            <p className="text-[11px] text-emerald-600">Acumulado desde sempre — cresce com cada venda e reduz com cada pagamento. Não zera na virada do mês.</p>
+          </div>
         </div>
       </div>
 
