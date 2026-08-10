@@ -627,6 +627,12 @@ function uid() {
 function currency(v) {
   return (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
+// Descrição completa do produto (marca + modelo + potência), usada em todo lugar que referencia um produto
+function descricaoProduto(p) {
+  if (!p) return '';
+  const base = [p.marca, p.modelo].filter(Boolean).join(' ');
+  return p.potencia ? `${base} (${p.potencia})` : base;
+}
 // Aceita valor digitado com vírgula (padrão BR) ou ponto como separador decimal
 function parseValorBR(v) {
   if (v === null || v === undefined || v === '') return NaN;
@@ -1250,12 +1256,12 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
       // e confirmada de fato depois, na expedição. Uma linha por unidade.
       const novasLinhas = Array.from({ length: qtd }, () => ({
         id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria,
-        descricao: `${produtoAtual.marca} ${produtoAtual.modelo}`, quantidade: 1,
+        descricao: descricaoProduto(produtoAtual), quantidade: 1,
         precoVendaUnitario: preco, depositoId: depositoSel, depositoNome,
       }));
       setCarrinho(c => [...c, ...novasLinhas]);
     } else {
-      setCarrinho(c => [...c, { id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria, descricao: `${produtoAtual.marca} ${produtoAtual.modelo}`, quantidade: qtd, precoVendaUnitario: preco, depositoId: depositoSel, depositoNome }]);
+      setCarrinho(c => [...c, { id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria, descricao: descricaoProduto(produtoAtual), quantidade: qtd, precoVendaUnitario: preco, depositoId: depositoSel, depositoNome }]);
     }
     setQtdSel(1);
     setProdutoSel(''); setDepositoSel(depositos.length === 1 ? depositos[0].id : '');
@@ -1272,7 +1278,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
           <option value="">Selecione o produto...</option>
           {estoque.map(i => {
             const disp = availableQty(i);
-            return <option key={i.id} value={i.id} disabled={disp === 0}>{i.categoria} · {i.marca} {i.modelo} ({disp} disp.)</option>;
+            return <option key={i.id} value={i.id} disabled={disp === 0}>{i.categoria} · {descricaoProduto(i)} ({disp} disp.)</option>;
           })}
         </select>
         {produtoAtual && (
@@ -1341,18 +1347,55 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
     cancelarEdicaoPreco();
   }
 
+  const [editandoProdutoId, setEditandoProdutoId] = useState(null);
+
   function emptyForm() {
     return { categoria: 'Inversor', marca: '', modelo: '', potencia: '', serializado: true, precoVenda: '', quantidadeMinima: '', observacoes: '' };
   }
-  function resetForm() { setForm(emptyForm()); setShowForm(false); }
+  function resetForm() { setForm(emptyForm()); setEditandoProdutoId(null); setShowForm(false); }
+
+  function abrirEdicaoProduto(item) {
+    setForm({
+      categoria: item.categoria, marca: item.marca, modelo: item.modelo, potencia: item.potencia || '',
+      serializado: item.serializado, precoVenda: String(item.precoVenda), quantidadeMinima: String(item.quantidadeMinima || 0),
+      observacoes: item.observacoes || '',
+    });
+    setEditandoProdutoId(item.id);
+    setShowForm(true);
+  }
 
   async function handleAdd(e) {
     e.preventDefault();
     if (!form.marca || !form.modelo) { notify('Preencha marca e modelo antes de salvar'); return; }
+    const precoVenda = parseValorBR(form.precoVenda) || 0;
+
+    if (editandoProdutoId) {
+      const atual = estoque.find(i => i.id === editandoProdutoId);
+      if (!atual) { notify('Produto não encontrado'); resetForm(); return; }
+      const mudouCategoriaSerializado = form.categoria !== atual.categoria || form.serializado !== atual.serializado;
+      if (mudouCategoriaSerializado && ((atual.unidades && atual.unidades.length > 0) || (atual.lotes && atual.lotes.length > 0))) {
+        notify('Não é possível mudar categoria/tipo de controle de série de um produto que já tem estoque lançado');
+        return;
+      }
+      const historicoPrecos = precoVenda !== atual.precoVenda
+        ? [{ data: new Date().toISOString(), precoAnterior: atual.precoVenda, precoNovo: precoVenda }, ...(atual.historicoPrecos || [])]
+        : (atual.historicoPrecos || []);
+      const atualizado = {
+        ...atual,
+        categoria: form.categoria, marca: form.marca.trim(), modelo: form.modelo.trim(), potencia: form.potencia.trim(),
+        serializado: form.serializado, precoVenda, quantidadeMinima: parseInt(form.quantidadeMinima) || 0,
+        observacoes: form.observacoes.trim(), historicoPrecos,
+      };
+      await setEstoque(estoque.map(i => i.id === editandoProdutoId ? atualizado : i));
+      notify('Produto atualizado');
+      resetForm();
+      return;
+    }
+
     const novo = {
       id: uid(), categoria: form.categoria, marca: form.marca.trim(), modelo: form.modelo.trim(),
       potencia: form.potencia.trim(), serializado: form.serializado,
-      precoVenda: parseValorBR(form.precoVenda) || 0,
+      precoVenda,
       quantidadeMinima: parseInt(form.quantidadeMinima) || 0,
       observacoes: form.observacoes.trim(),
       unidades: form.serializado ? [] : undefined,
@@ -1458,10 +1501,10 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
       {showForm && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
           <div className="flex justify-between items-center">
-            <h3 className="font-medium text-sm">Cadastrar produto (sem estoque ainda)</h3>
+            <h3 className="font-medium text-sm">{editandoProdutoId ? 'Editar produto' : 'Cadastrar produto (sem estoque ainda)'}</h3>
             <button type="button" onClick={resetForm}><X size={16} className="text-slate-400" /></button>
           </div>
-          <p className="text-xs text-slate-400 -mt-2">A entrada de quantidade e custo é feita via Pedidos de compra → Recebimento.</p>
+          {!editandoProdutoId && <p className="text-xs text-slate-400 -mt-2">A entrada de quantidade e custo é feita via Pedidos de compra → Recebimento.</p>}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <select value={form.categoria} onChange={e => setForm(f => ({ ...f, categoria: e.target.value, serializado: SERIALIZAVEL_PADRAO[e.target.value] }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm col-span-2 sm:col-span-1">
               {CATEGORIAS.map(c => <option key={c}>{c}</option>)}
@@ -1479,7 +1522,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
             <input type="number" placeholder="Estoque mínimo (alerta)" value={form.quantidadeMinima} onChange={e => setForm(f => ({ ...f, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
           </div>
           <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
-          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar produto</button>
+          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">{editandoProdutoId ? 'Salvar alterações' : 'Salvar produto'}</button>
         </div>
       )}
 
@@ -1504,7 +1547,8 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
                   <span className={`text-xs ${disp <= (item.quantidadeMinima || 0) ? 'text-red-500 font-medium flex items-center gap-1' : 'text-slate-500'}`}>
                     {disp <= (item.quantidadeMinima || 0) && <AlertTriangle size={12} />}{disp} disp.
                   </span>
-                  <button onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+                  <button onClick={(e) => { e.stopPropagation(); abrirEdicaoProduto(item); }} title="Editar produto"><Pencil size={14} className="text-slate-300 hover:text-slate-600" /></button>
+                  <button onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }} title="Remover produto"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
                 </div>
               </div>
               {expanded[item.id] && (
@@ -1670,7 +1714,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       if (uIdx === -1 || novoEstoque[idx].unidades[uIdx].status !== 'Disponível') { notify('Unidade não está mais disponível'); setEnviando(false); return; }
       const serial = novoEstoque[idx].unidades[uIdx].serial;
       novoEstoque[idx].unidades[uIdx] = { ...novoEstoque[idx].unidades[uIdx], depositoId: destinoId };
-      registro = { id: uid(), data: agora, produtoId, descricao: `${produto.marca} ${produto.modelo}`, serial, unidadeId, quantidade: 1, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
+      registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial, unidadeId, quantidade: 1, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
     } else {
       const qtd = parseInt(quantidade) || 0;
       if (qtd <= 0 || qtd > disponivelOrigem) { notify(`Informe uma quantidade entre 1 e ${disponivelOrigem}`); setEnviando(false); return; }
@@ -1690,7 +1734,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
         ...novoEstoque[idx].lotes.map(l => lotesOrigem.find(lo => lo.id === l.id) || l),
         ...novosLotesDestino,
       ];
-      registro = { id: uid(), data: agora, produtoId, descricao: `${produto.marca} ${produto.modelo}`, serial: null, loteDestinoIds: novosLotesDestino.map(l => l.id), quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
+      registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial: null, loteDestinoIds: novosLotesDestino.map(l => l.id), quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
     }
 
     await setEstoque(novoEstoque);
@@ -1777,7 +1821,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
         {origemId && (
           <select value={produtoId} onChange={e => { setProdutoId(e.target.value); setUnidadeId(''); }} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o produto...</option>
-            {produtosComEstoqueNaOrigem.map(p => <option key={p.id} value={p.id}>{p.categoria} · {p.marca} {p.modelo} ({availableQty(p, origemId)} disp.)</option>)}
+            {produtosComEstoqueNaOrigem.map(p => <option key={p.id} value={p.id}>{p.categoria} · {descricaoProduto(p)} ({availableQty(p, origemId)} disp.)</option>)}
           </select>
         )}
 
@@ -1929,7 +1973,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
       novoProduto: modoNovoProduto ? { ...novoProd } : null,
       categoria: modoNovoProduto ? novoProd.categoria : produtoExistente.categoria,
       serializado: modoNovoProduto ? novoProd.serializado : produtoExistente.serializado,
-      descricao: modoNovoProduto ? `${novoProd.marca} ${novoProd.modelo}` : `${produtoExistente.marca} ${produtoExistente.modelo}`,
+      descricao: modoNovoProduto ? descricaoProduto(novoProd) : descricaoProduto(produtoExistente),
       quantidade: qtd, custoUnitario: custo,
     }]);
     resetLinha();
@@ -2049,7 +2093,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
             {!modoNovoProduto ? (
               <select value={produtoSel} onChange={e => setProdutoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
                 <option value="">Selecione o produto...</option>
-                {estoque.map(i => <option key={i.id} value={i.id}>{i.categoria} · {i.marca} {i.modelo}</option>)}
+                {estoque.map(i => <option key={i.id} value={i.id}>{i.categoria} · {descricaoProduto(i)}</option>)}
               </select>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
