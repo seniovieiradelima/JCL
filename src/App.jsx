@@ -6,7 +6,7 @@ import LoginScreen from './LoginScreen';
 
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
-const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento'];
+const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao'];
 const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'financeiro'];
 const SETOR_VENDAS_TABS = ['orcamentos', 'vendas', 'expedicao'];
 
@@ -682,6 +682,7 @@ function consumirEstoque(estoqueAtual, carrinho) {
       }
       let restante = it.quantidade;
       const lotesOrdenados = lotesDoDeposito.slice().sort((a, b) => new Date(a.dataEntrada) - new Date(b.dataEntrada));
+      const loteConsumos = [];
       for (const lote of lotesOrdenados) {
         if (restante <= 0) break;
         if (lote.quantidadeDisponivel <= 0) continue;
@@ -689,14 +690,45 @@ function consumirEstoque(estoqueAtual, carrinho) {
         custoTotal += consumo * lote.custoUnitario;
         lote.quantidadeDisponivel -= consumo;
         restante -= consumo;
+        loteConsumos.push({ loteId: lote.id, quantidade: consumo });
       }
       novoEstoque[idx].lotes = novoEstoque[idx].lotes.map(l => lotesOrdenados.find(lo => lo.id === l.id) || l);
+      itemFinal = { ...it, loteConsumos };
     }
     itensResultado.push({ ...itemFinal, custoTotal, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
   }
 
   const totalCusto = itensResultado.reduce((acc, i) => acc + i.custoTotal, 0);
   return { novoEstoque, itensResultado, totalCusto, erros };
+}
+
+// Desfaz o consumo de estoque de uma venda apagada: devolve unidades ao status "Disponível"
+// e devolve quantidade aos lotes de onde saíram.
+function reverterConsumoEstoque(estoqueAtual, itens) {
+  let novoEstoque = estoqueAtual.map(i => ({
+    ...i,
+    unidades: i.unidades ? i.unidades.map(u => ({ ...u })) : i.unidades,
+    lotes: i.lotes ? i.lotes.map(l => ({ ...l })) : i.lotes,
+  }));
+
+  for (const it of itens) {
+    const idx = novoEstoque.findIndex(i => i.id === it.itemId);
+    if (idx === -1) continue;
+    if (it.unidadeId) {
+      const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === it.unidadeId);
+      if (uIdx !== -1 && novoEstoque[idx].unidades[uIdx].status === 'Vendido') {
+        novoEstoque[idx].unidades[uIdx] = { ...novoEstoque[idx].unidades[uIdx], status: 'Disponível' };
+      }
+    } else if (it.loteConsumos) {
+      for (const lc of it.loteConsumos) {
+        const lIdx = novoEstoque[idx].lotes.findIndex(l => l.id === lc.loteId);
+        if (lIdx !== -1) {
+          novoEstoque[idx].lotes[lIdx] = { ...novoEstoque[idx].lotes[lIdx], quantidadeDisponivel: novoEstoque[idx].lotes[lIdx].quantidadeDisponivel + lc.quantidade };
+        }
+      }
+    }
+  }
+  return novoEstoque;
 }
 
 function fileToCompressedDataUrl(file, maxDimension = 1280, quality = 0.8) {
@@ -739,7 +771,44 @@ function chaveItemVenda(vendaId, item) {
 
 // Quantidade já recebida de uma linha de pedido de compra
 function qtdRecebida(recebimentos, pedidoId, itemLineId) {
-  return recebimentos.filter(r => r.pedidoId === pedidoId && r.itemLineId === itemLineId).reduce((a, r) => a + r.quantidade, 0);
+  return recebimentos.filter(r => r.pedidoId === pedidoId && r.itemLineId === itemLineId && !r.anulado).reduce((a, r) => a + r.quantidade, 0);
+}
+
+function SenhaDialogModal({ message, senhaCorreta, onResolve }) {
+  const [valor, setValor] = useState('');
+  const [erro, setErro] = useState('');
+
+  function confirmar() {
+    if (!senhaCorreta) { setErro('Nenhuma senha de aprovação foi cadastrada ainda. Configure em Cadastros → Senha de aprovação.'); return; }
+    if (valor !== senhaCorreta) { setErro('Senha incorreta.'); return; }
+    onResolve(true);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <ShieldAlert size={16} className="text-red-500" />
+          <h3 className="font-medium text-sm">Ação protegida por senha</h3>
+        </div>
+        <p className="text-sm text-slate-700 mt-2">{message}</p>
+        <input
+          type="password"
+          autoFocus
+          value={valor}
+          onChange={e => { setValor(e.target.value); setErro(''); }}
+          onKeyDown={e => e.key === 'Enter' && confirmar()}
+          placeholder="Senha de aprovação"
+          className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm mt-3"
+        />
+        {erro && <p className="text-xs text-red-500 mt-1">{erro}</p>}
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={() => onResolve(false)} className="text-sm px-3 py-1.5 rounded-md text-slate-500 hover:bg-slate-100">Cancelar</button>
+          <button onClick={confirmar} className="text-sm px-3 py-1.5 rounded-md bg-red-500 hover:bg-red-600 text-white font-medium">Apagar</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AppInner() {
@@ -756,6 +825,7 @@ function AppInner() {
   const [depositos, setDepositos] = useState([]);
   const [transferencias, setTransferencias] = useState([]);
   const [formasRecebimento, setFormasRecebimento] = useState([]);
+  const [senhaAprovacao, setSenhaAprovacao] = useState(null);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -767,6 +837,14 @@ function AppInner() {
   function responderConfirm(valor) {
     if (confirmDialog) confirmDialog.resolve(valor);
     setConfirmDialog(null);
+  }
+
+  const [senhaDialog, setSenhaDialog] = useState(null); // { message, resolve }
+
+  function askSenha(message) {
+    return new Promise(resolve => {
+      setSenhaDialog({ message, resolve });
+    });
   }
 
   const [showBackup, setShowBackup] = useState(false);
@@ -815,7 +893,7 @@ function AppInner() {
 
   useEffect(() => {
     (async () => {
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa] = await Promise.all([
         loadKey('sgm:estoque', []),
         loadKey('sgm:clientes', []),
         loadKey('sgm:fornecedores', []),
@@ -827,6 +905,7 @@ function AppInner() {
         loadKey('sgm:depositos', []),
         loadKey('sgm:transferencias', []),
         loadKey('sgm:formasRecebimento', []),
+        loadKey('sgm:senhaAprovacao', null),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -865,6 +944,7 @@ function AppInner() {
 
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
       setExpedicoes(ex); setPedidosCompra(pc); setRecebimentos(rc); setDepositos(depositosFinal); setTransferencias(tr);
+      setSenhaAprovacao(sa);
       setFormasRecebimento(formasFinal);
       setLoading(false);
     })();
@@ -888,6 +968,7 @@ function AppInner() {
   async function persistDepositos(next) { await persist('sgm:depositos', setDepositos, next); }
   async function persistTransferencias(next) { await persist('sgm:transferencias', setTransferencias, next); }
   async function persistFormasRecebimento(next) { await persist('sgm:formasRecebimento', setFormasRecebimento, next); }
+  async function persistSenhaAprovacao(next) { await persist('sgm:senhaAprovacao', setSenhaAprovacao, next); }
 
   if (loading) {
     return (
@@ -935,6 +1016,7 @@ function AppInner() {
                 <SubTabButton icon={Building2} label="Fornecedores" active={tab === 'fornecedores'} onClick={() => setTab('fornecedores')} />
                 <SubTabButton icon={Users} label="Clientes" active={tab === 'clientes'} onClick={() => setTab('clientes')} />
                 <SubTabButton icon={HandCoins} label="Formas de recebimento" active={tab === 'formasRecebimento'} onClick={() => setTab('formasRecebimento')} />
+                <SubTabButton icon={ShieldAlert} label="Senha de aprovação" active={tab === 'senhaAprovacao'} onClick={() => setTab('senhaAprovacao')} />
               </nav>
             </div>
           </div>
@@ -972,6 +1054,7 @@ function AppInner() {
             estoque={estoque} setEstoque={persistEstoque}
             depositos={depositos}
             transferencias={transferencias} setTransferencias={persistTransferencias}
+            askSenha={askSenha}
             notify={notify}
           />
         )}
@@ -983,6 +1066,7 @@ function AppInner() {
             pedidos={pedidosCompra} setPedidos={persistPedidosCompra}
             recebimentos={recebimentos}
             askConfirm={askConfirm}
+            askSenha={askSenha}
             notify={notify}
           />
         )}
@@ -992,20 +1076,22 @@ function AppInner() {
             recebimentos={recebimentos} setRecebimentos={persistRecebimentos}
             estoque={estoque} setEstoque={persistEstoque}
             depositos={depositos}
+            askSenha={askSenha}
             notify={notify}
           />
         )}
         {tab === 'clientes' && <ClientesModule clientes={clientes} setClientes={persistClientes} askConfirm={askConfirm} notify={notify} />}
         {tab === 'formasRecebimento' && <FormasRecebimentoModule formasRecebimento={formasRecebimento} setFormasRecebimento={persistFormasRecebimento} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'senhaAprovacao' && <SenhaAprovacaoModule senhaAprovacao={senhaAprovacao} setSenhaAprovacao={persistSenhaAprovacao} notify={notify} />}
         {tab === 'orcamentos' && (
           <OrcamentoModule
             orcamentos={orcamentos} setOrcamentos={persistOrcamentos}
             vendas={vendas} setVendas={persistVendas}
-            clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} notify={notify}
+            clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} askSenha={askSenha} notify={notify}
           />
         )}
         {tab === 'vendas' && (
-          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} askConfirm={askConfirm} notify={notify} />
+          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
         )}
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
@@ -1037,6 +1123,14 @@ function AppInner() {
             <p className="text-[11px] text-red-500 mt-2">Importar substitui todos os dados atuais pelos do arquivo — não tem como desfazer.</p>
           </div>
         </div>
+      )}
+
+      {senhaDialog && (
+        <SenhaDialogModal
+          message={senhaDialog.message}
+          senhaCorreta={senhaAprovacao?.senha}
+          onResolve={(v) => { senhaDialog.resolve(v); setSenhaDialog(null); }}
+        />
       )}
 
       {confirmDialog && (
@@ -1519,7 +1613,7 @@ function DepositosModule({ depositos, setDepositos, askConfirm, notify }) {
 
 /* ---------------- TRANSFERÊNCIAS ENTRE DEPÓSITOS ---------------- */
 
-function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, setTransferencias, notify }) {
+function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, setTransferencias, askSenha, notify }) {
   const [origemId, setOrigemId] = useState('');
   const [destinoId, setDestinoId] = useState('');
   const [produtoId, setProdutoId] = useState('');
@@ -1556,7 +1650,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       if (uIdx === -1 || novoEstoque[idx].unidades[uIdx].status !== 'Disponível') { notify('Unidade não está mais disponível'); setEnviando(false); return; }
       const serial = novoEstoque[idx].unidades[uIdx].serial;
       novoEstoque[idx].unidades[uIdx] = { ...novoEstoque[idx].unidades[uIdx], depositoId: destinoId };
-      registro = { id: uid(), data: agora, produtoId, descricao: `${produto.marca} ${produto.modelo}`, serial, quantidade: 1, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
+      registro = { id: uid(), data: agora, produtoId, descricao: `${produto.marca} ${produto.modelo}`, serial, unidadeId, quantidade: 1, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
     } else {
       const qtd = parseInt(quantidade) || 0;
       if (qtd <= 0 || qtd > disponivelOrigem) { notify(`Informe uma quantidade entre 1 e ${disponivelOrigem}`); setEnviando(false); return; }
@@ -1576,7 +1670,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
         ...novoEstoque[idx].lotes.map(l => lotesOrigem.find(lo => lo.id === l.id) || l),
         ...novosLotesDestino,
       ];
-      registro = { id: uid(), data: agora, produtoId, descricao: `${produto.marca} ${produto.modelo}`, serial: null, quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
+      registro = { id: uid(), data: agora, produtoId, descricao: `${produto.marca} ${produto.modelo}`, serial: null, loteDestinoIds: novosLotesDestino.map(l => l.id), quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
     }
 
     await setEstoque(novoEstoque);
@@ -1598,6 +1692,48 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       }
     });
   }, [transferencias, busca, ordenacao]);
+
+  async function apagarTransferencia(t) {
+    if (t.anulado) return;
+    const ok = await askSenha(`Apagar esta transferência de "${t.descricao}" (${t.origemNome} → ${t.destinoNome})? O item será devolvido ao depósito de origem e o lançamento ficará marcado como anulado no histórico.`);
+    if (!ok) return;
+
+    let novoEstoque = estoque.map(p => ({
+      ...p,
+      unidades: p.unidades ? p.unidades.map(u => ({ ...u })) : p.unidades,
+      lotes: p.lotes ? p.lotes.map(l => ({ ...l })) : p.lotes,
+    }));
+    const idx = novoEstoque.findIndex(p => p.id === t.produtoId);
+    if (idx === -1) {
+      notify('Produto não encontrado — o lançamento foi marcado como anulado, mas nenhum estoque foi alterado');
+      await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+      return;
+    }
+
+    if (t.serial) {
+      const uIdx = t.unidadeId
+        ? novoEstoque[idx].unidades.findIndex(u => u.id === t.unidadeId)
+        : novoEstoque[idx].unidades.findIndex(u => u.serial === t.serial);
+      if (uIdx === -1) { notify('Não foi possível localizar essa unidade no estoque — nada foi alterado'); return; }
+      if (novoEstoque[idx].unidades[uIdx].depositoId !== t.destinoId) { notify('Essa unidade já não está mais no depósito de destino (pode ter sido movida ou vendida depois) — verifique manualmente antes de anular'); return; }
+      novoEstoque[idx].unidades[uIdx] = { ...novoEstoque[idx].unidades[uIdx], depositoId: t.origemId };
+    } else if (t.loteDestinoIds && t.loteDestinoIds.length > 0) {
+      for (const loteId of t.loteDestinoIds) {
+        const lIdx = novoEstoque[idx].lotes.findIndex(l => l.id === loteId);
+        if (lIdx === -1) continue;
+        const lote = novoEstoque[idx].lotes[lIdx];
+        if (lote.quantidadeDisponivel !== lote.quantidade) { notify('Parte desse item já foi vendida ou movida depois da transferência — não é possível anular automaticamente'); return; }
+        novoEstoque[idx].lotes[lIdx] = { ...lote, depositoId: t.origemId };
+      }
+    } else {
+      notify('Essa transferência é antiga demais para ser revertida automaticamente. Ajuste o estoque manualmente se necessário.');
+      return;
+    }
+
+    await setEstoque(novoEstoque);
+    await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    notify('Transferência anulada e item devolvido ao depósito de origem');
+  }
 
   if (depositos.length < 2) {
     return <p className="text-sm text-slate-400 text-center py-8">Cadastre pelo menos 2 depósitos para poder transferir itens entre eles.</p>;
@@ -1650,11 +1786,18 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
         {transferencias.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma transferência registrada.</p>}
         {transferencias.length > 0 && transferenciasFiltradas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma transferência encontrada com esse filtro.</p>}
         {transferenciasFiltradas.map(t => (
-          <div key={t.id} className="bg-white border border-slate-200 rounded-lg p-3 text-sm">
-            <p className="font-medium">{t.descricao} {t.serial && <span className="text-xs font-mono text-slate-400">· SN {t.serial}</span>}</p>
-            <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
-              {t.origemNome} <ArrowLeftRight size={11} /> {t.destinoNome} · {t.quantidade}x · {formatDate(t.data)}
-            </p>
+          <div key={t.id} className={`bg-white border rounded-lg p-3 text-sm flex justify-between items-start gap-2 ${t.anulado ? 'border-red-200 opacity-60' : 'border-slate-200'}`}>
+            <div>
+              <p className="font-medium flex items-center gap-1.5">
+                <span className={t.anulado ? 'line-through' : ''}>{t.descricao}</span> {t.serial && <span className="text-xs font-mono text-slate-400">· SN {t.serial}</span>}
+                {t.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+              </p>
+              <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                {t.origemNome} <ArrowLeftRight size={11} /> {t.destinoNome} · {t.quantidade}x · {formatDate(t.data)}
+              </p>
+              {t.anulado && <p className="text-[11px] text-red-500 mt-0.5">Anulado em {formatDate(t.anuladoEm)}</p>}
+            </div>
+            {!t.anulado && <button onClick={() => apagarTransferencia(t)} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500 shrink-0" /></button>}
           </div>
         ))}
       </div>
@@ -1730,7 +1873,7 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
 
 /* ---------------- PEDIDOS DE COMPRA (como um "orçamento" de compra, ainda sem estoque) ---------------- */
 
-function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, askConfirm, notify }) {
+function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [numeroPedidoFornecedor, setNumeroPedidoFornecedor] = useState('');
   const [numeroNotaFiscal, setNumeroNotaFiscal] = useState('');
@@ -1813,7 +1956,20 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
     notify('Pedido cancelado');
   }
 
+  async function apagarPedido(p) {
+    if (p.anulado) return;
+    const temRecebimento = p.itens.some(it => qtdRecebida(recebimentos, p.id, it.id) > 0);
+    const aviso = temRecebimento
+      ? ` Atenção: parte deste pedido já foi recebida e o estoque correspondente NÃO será removido automaticamente — ajuste o estoque manualmente se necessário.`
+      : '';
+    const ok = await askSenha(`Apagar o pedido ${p.numeroPedidoFornecedor} de ${p.fornecedorNome} (${currency(p.valorTotal)})? Ele ficará marcado como anulado no histórico.${aviso}`);
+    if (!ok) return;
+    await setPedidos(pedidos.map(x => x.id === p.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    notify('Pedido de compra anulado');
+  }
+
   function statusPedido(p) {
+    if (p.anulado) return { label: 'Anulado', style: 'bg-red-100 text-red-600' };
     if (p.cancelado) return { label: 'Cancelado', style: 'bg-red-100 text-red-600' };
     const pendente = p.itens.some(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) > 0);
     return pendente ? { label: 'Aguardando recebimento', style: 'bg-amber-100 text-amber-700' } : { label: 'Recebido', style: 'bg-emerald-100 text-emerald-700' };
@@ -1931,7 +2087,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
       <FiltroBar
         busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por fornecedor, pedido ou NF..."
         filtroValue={filtroStatus} setFiltro={setFiltroStatus}
-        filtroOptions={[{ value: 'Todos', label: 'Todos os status' }, { value: 'Aguardando recebimento', label: 'Aguardando recebimento' }, { value: 'Recebido', label: 'Recebido' }, { value: 'Cancelado', label: 'Cancelado' }]}
+        filtroOptions={[{ value: 'Todos', label: 'Todos os status' }, { value: 'Aguardando recebimento', label: 'Aguardando recebimento' }, { value: 'Recebido', label: 'Recebido' }, { value: 'Cancelado', label: 'Cancelado' }, { value: 'Anulado', label: 'Anulado' }]}
         ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
         ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'fornecedor', label: 'Fornecedor (A-Z)' }]}
       />
@@ -1941,19 +2097,22 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
         {pedidosFiltrados.map(p => {
           const status = statusPedido(p);
           return (
-            <div key={p.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div key={p.id} className={`bg-white border rounded-lg overflow-hidden ${p.anulado ? 'border-red-200 opacity-60' : 'border-slate-200'}`}>
               <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [p.id]: !x[p.id] }))}>
                 <div className="flex items-center gap-2 min-w-0">
                   <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[p.id] ? 'rotate-90' : ''}`} />
                   <div className="min-w-0">
-                    <p className="font-medium text-sm truncate flex items-center gap-1.5">{p.fornecedorNome} <span className={`text-[11px] px-1.5 py-0.5 rounded ${status.style}`}>{status.label}</span></p>
-                    <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} · {formatDate(p.data)}</p>
+                    <p className="font-medium text-sm truncate flex items-center gap-1.5"><span className={p.anulado ? 'line-through' : ''}>{p.fornecedorNome}</span> <span className={`text-[11px] px-1.5 py-0.5 rounded ${status.style}`}>{status.label}</span></p>
+                    <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} · {formatDate(p.data)} {p.anulado && `· anulado em ${formatDate(p.anuladoEm)}`}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="font-medium text-sm">{currency(p.valorTotal)}</span>
-                  {!p.cancelado && status.label !== 'Recebido' && (
-                    <button onClick={(e) => { e.stopPropagation(); cancelarPedido(p.id); }}><Ban size={14} className="text-slate-300 hover:text-red-500" /></button>
+                  {!p.anulado && !p.cancelado && status.label !== 'Recebido' && (
+                    <button onClick={(e) => { e.stopPropagation(); cancelarPedido(p.id); }} title="Cancelar (antes de receber)"><Ban size={14} className="text-slate-300 hover:text-red-500" /></button>
+                  )}
+                  {!p.anulado && (
+                    <button onClick={(e) => { e.stopPropagation(); apagarPedido(p); }} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
                   )}
                 </div>
               </div>
@@ -1975,7 +2134,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
 
 /* ---------------- RECEBIMENTO (entrada item a item, com foto e nº de série) ---------------- */
 
-function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, notify }) {
+function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, askSenha, notify }) {
   const [busca, setBusca] = useState('');
   const [ordenacao, setOrdenacao] = useState('recente');
 
@@ -1994,18 +2153,52 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
 
   const pedidosComPendencia = useMemo(() => {
     return ordenar(pedidos
-      .filter(p => !p.cancelado && combina(p))
+      .filter(p => !p.cancelado && !p.anulado && combina(p))
       .map(p => ({ ...p, itensPendentes: p.itens.map(it => ({ ...it, pendente: it.quantidade - qtdRecebida(recebimentos, p.id, it.id) })).filter(it => it.pendente > 0) }))
       .filter(p => p.itensPendentes.length > 0));
   }, [pedidos, recebimentos, busca, ordenacao]);
 
   const pedidosConcluidos = useMemo(() => {
-    return ordenar(pedidos.filter(p => !p.cancelado && combina(p) && p.itens.every(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) <= 0)));
+    return ordenar(pedidos.filter(p => !p.cancelado && !p.anulado && combina(p) && p.itens.every(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) <= 0)));
   }, [pedidos, recebimentos, busca, ordenacao]);
 
   const [expandedPedido, setExpandedPedido] = useState({});
   const [formItem, setFormItem] = useState(null);
   const [expandedHistorico, setExpandedHistorico] = useState({});
+
+  async function apagarRecebimento(registro) {
+    if (registro.anulado) return;
+    const ok = await askSenha(`Apagar este recebimento (${registro.descricao}${registro.serial ? ` · SN ${registro.serial}` : ` · ${registro.quantidade} un.`})? O item correspondente será removido do estoque e o pedido voltará a ficar pendente.`);
+    if (!ok) return;
+
+    let novoEstoque = estoque.map(p => ({
+      ...p,
+      unidades: p.unidades ? p.unidades.map(u => ({ ...u })) : p.unidades,
+      lotes: p.lotes ? p.lotes.map(l => ({ ...l })) : p.lotes,
+    }));
+    const idx = novoEstoque.findIndex(p => p.id === registro.produtoId);
+    if (idx === -1) { notify('Produto não encontrado no estoque — nada foi alterado'); return; }
+
+    if (registro.unidadeId) {
+      const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === registro.unidadeId);
+      if (uIdx === -1) { notify('Essa unidade já não existe mais no estoque'); return; }
+      if (novoEstoque[idx].unidades[uIdx].status !== 'Disponível') { notify('Essa unidade já foi vendida ou movimentada — não é possível apagar este recebimento'); return; }
+      novoEstoque[idx].unidades = novoEstoque[idx].unidades.filter(u => u.id !== registro.unidadeId);
+    } else if (registro.loteId) {
+      const lIdx = novoEstoque[idx].lotes.findIndex(l => l.id === registro.loteId);
+      if (lIdx === -1) { notify('Esse lote já não existe mais no estoque'); return; }
+      const lote = novoEstoque[idx].lotes[lIdx];
+      if (lote.quantidadeDisponivel !== lote.quantidade) { notify('Parte deste lote já foi vendida ou transferida — não é possível apagar este recebimento'); return; }
+      novoEstoque[idx].lotes = novoEstoque[idx].lotes.filter(l => l.id !== registro.loteId);
+    } else {
+      notify('Esse recebimento é antigo demais para ser revertido automaticamente.');
+      return;
+    }
+
+    await setEstoque(novoEstoque);
+    await setRecebimentos(recebimentos.map(r => r.id === registro.id ? { ...r, anulado: true, anuladoEm: new Date().toISOString() } : r));
+    notify('Recebimento anulado e item removido do estoque');
+  }
 
   return (
     <div>
@@ -2034,7 +2227,9 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
             </div>
             {expandedPedido[p.id] && (
               <div className="border-t border-slate-100 divide-y divide-slate-100">
-                {p.itensPendentes.map(it => (
+                {p.itensPendentes.map(it => {
+                  const historicoItem = recebimentos.filter(r => r.pedidoId === p.id && r.itemLineId === it.id);
+                  return (
                   <div key={it.id} className="p-3">
                     <div className="flex justify-between items-center">
                       <div>
@@ -2045,6 +2240,19 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                         <Camera size={12} /> Registrar entrada
                       </button>
                     </div>
+                    {historicoItem.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {historicoItem.map(r => (
+                          <div key={r.id} className={`flex items-center gap-2 text-xs pl-2 border-l-2 ${r.anulado ? 'border-red-200' : 'border-emerald-200'}`}>
+                            <span className={r.anulado ? 'line-through text-slate-400' : 'text-slate-500'}>
+                              {r.serial ? `SN ${r.serial}` : `${r.quantidade} un.`} · {formatDate(r.data)}
+                            </span>
+                            {r.anulado && <span className="text-[10px] px-1 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+                            {!r.anulado && <button onClick={() => apagarRecebimento(r)} title="Apagar lançamento"><Trash2 size={12} className="text-slate-300 hover:text-red-500" /></button>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {formItem && formItem.pedidoId === p.id && formItem.item.id === it.id && (
                       <RecebimentoForm
                         pedido={p}
@@ -2061,7 +2269,8 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                       />
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2088,12 +2297,19 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                     <div key={it.id} className="text-xs">
                       <p className="text-slate-600 font-medium">{it.descricao}</p>
                       {regs.map(r => (
-                        <div key={r.id} className="flex items-center gap-2 mt-1 pl-2 border-l-2 border-emerald-200">
-                          {r.serial && <span className="font-mono text-slate-500">SN {r.serial}</span>}
-                          {!r.serial && <span className="text-slate-500">{r.quantidade} un.</span>}
+                        <div key={r.id} className={`flex items-center gap-2 mt-1 pl-2 border-l-2 ${r.anulado ? 'border-red-200' : 'border-emerald-200'}`}>
+                          <span className={r.anulado ? 'line-through text-slate-400' : ''}>
+                            {r.serial && <span className="font-mono text-slate-500">SN {r.serial}</span>}
+                            {!r.serial && <span className="text-slate-500">{r.quantidade} un.</span>}
+                          </span>
                           {r.depositoNome && <span className="text-slate-400 flex items-center gap-0.5"><Warehouse size={10} /> {r.depositoNome}</span>}
                           <span className="text-slate-400">{formatDate(r.data)}</span>
                           {r.foto && <a href={r.foto} target="_blank" rel="noreferrer"><img src={r.foto} alt="Foto da entrada" className="w-10 h-10 object-cover rounded border border-slate-200" /></a>}
+                          {r.anulado ? (
+                            <span className="text-[10px] px-1 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>
+                          ) : (
+                            <button onClick={() => apagarRecebimento(r)} title="Apagar lançamento"><Trash2 size={12} className="text-slate-300 hover:text-red-500" /></button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2132,7 +2348,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     const novaUnidade = { id: uid(), serial: serial.trim(), status: 'Disponível', custoCompra: item.custoUnitario, notaFiscal: pedido.numeroNotaFiscal, fornecedor: pedido.fornecedorNome, dataEntrada: agora, depositoId };
     const novoEstoque = estoque.map(p => p.id === item.produtoId ? { ...p, unidades: [...(p.unidades || []), novaUnidade] } : p);
     await setEstoque(novoEstoque);
-    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, descricao: item.descricao, serial: serial.trim(), quantidade: 1, foto, data: agora, depositoId, depositoNome };
+    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, unidadeId: novaUnidade.id, descricao: item.descricao, serial: serial.trim(), quantidade: 1, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
     await setRecebimentos([registro, ...recebimentos]);
     setEnviando(false);
     notify(`Unidade SN ${serial.trim()} recebida em ${depositoNome}`);
@@ -2149,7 +2365,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     const novoLote = { id: uid(), quantidade: qtd, quantidadeDisponivel: qtd, custoUnitario: item.custoUnitario, notaFiscal: pedido.numeroNotaFiscal, fornecedor: pedido.fornecedorNome, dataEntrada: agora, depositoId };
     const novoEstoque = estoque.map(p => p.id === item.produtoId ? { ...p, lotes: [...(p.lotes || []), novoLote] } : p);
     await setEstoque(novoEstoque);
-    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, descricao: item.descricao, serial: null, quantidade: qtd, foto, data: agora, depositoId, depositoNome };
+    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, loteId: novoLote.id, descricao: item.descricao, serial: null, quantidade: qtd, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
     await setRecebimentos([registro, ...recebimentos]);
     setEnviando(false);
     notify('Entrada registrada no estoque');
@@ -2204,6 +2420,43 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
           <CheckCircle2 size={13} /> Confirmar recebimento
         </button>
         <button onClick={onCancel} className="text-xs text-slate-500 px-3 py-2">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- SENHA DE APROVAÇÃO (protege apagar lançamentos) ---------------- */
+
+function SenhaAprovacaoModule({ senhaAprovacao, setSenhaAprovacao, notify }) {
+  const [atual, setAtual] = useState('');
+  const [nova, setNova] = useState('');
+  const [confirmaNova, setConfirmaNova] = useState('');
+
+  const jaTemSenha = !!senhaAprovacao?.senha;
+
+  async function salvar() {
+    if (jaTemSenha && atual !== senhaAprovacao.senha) { notify('Senha atual incorreta'); return; }
+    if (!nova.trim()) { notify('Digite a nova senha'); return; }
+    if (nova !== confirmaNova) { notify('A confirmação não confere com a nova senha'); return; }
+    await setSenhaAprovacao({ senha: nova, atualizadoEm: new Date().toISOString() });
+    notify(jaTemSenha ? 'Senha de aprovação atualizada' : 'Senha de aprovação cadastrada');
+    setAtual(''); setNova(''); setConfirmaNova('');
+  }
+
+  return (
+    <div>
+      <p className="text-xs text-slate-400 mb-4">Essa senha é exigida para apagar lançamentos (transferência, venda, orçamento, pedido de compra e recebimento) — uma trava extra contra exclusões acidentais.</p>
+      <div className="bg-white border border-slate-200 rounded-lg p-4 max-w-sm space-y-3">
+        <h3 className="font-medium text-sm">{jaTemSenha ? 'Alterar senha de aprovação' : 'Cadastrar senha de aprovação'}</h3>
+        {jaTemSenha && (
+          <input type="password" placeholder="Senha atual" value={atual} onChange={e => setAtual(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
+        )}
+        <input type="password" placeholder="Nova senha" value={nova} onChange={e => setNova(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
+        <input type="password" placeholder="Confirmar nova senha" value={confirmaNova} onChange={e => setConfirmaNova(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
+        <button onClick={salvar} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar</button>
+        {jaTemSenha && senhaAprovacao.atualizadoEm && (
+          <p className="text-[11px] text-slate-400">Última atualização: {formatDate(senhaAprovacao.atualizadoEm)}</p>
+        )}
       </div>
     </div>
   );
@@ -2337,7 +2590,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
 
 /* ---------------- ORÇAMENTOS (carrinho que não baixa estoque até ser convertido) ---------------- */
 
-function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, estoque, setEstoque, depositos, askConfirm, notify }) {
+function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, estoque, setEstoque, depositos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [clienteId, setClienteId] = useState('');
@@ -2369,6 +2622,14 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (!(await askConfirm('Cancelar este orçamento?'))) return;
     await setOrcamentos(orcamentos.map(o => o.id === id ? { ...o, status: 'Cancelado' } : o));
     notify('Orçamento cancelado');
+  }
+
+  async function apagarOrcamento(orc) {
+    if (orc.anulado) return;
+    const ok = await askSenha(`Apagar o orçamento de ${orc.clienteNome} (${currency(orc.total)})? Ele ficará marcado como anulado no histórico.`);
+    if (!ok) return;
+    await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, anulado: true, anuladoEm: new Date().toISOString() } : o));
+    notify('Orçamento anulado');
   }
 
   async function converterEmVenda(orc) {
@@ -2446,16 +2707,22 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
         {orcamentos.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum orçamento criado.</p>}
         {orcamentos.length > 0 && orcamentosFiltrados.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum orçamento encontrado com esse filtro.</p>}
         {orcamentosFiltrados.map(o => (
-          <div key={o.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <div key={o.id} className={`bg-white border rounded-lg overflow-hidden ${o.anulado ? 'border-red-200 opacity-60' : 'border-slate-200'}`}>
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [o.id]: !x[o.id] }))}>
               <div className="flex items-center gap-2 min-w-0">
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[o.id] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
-                  <p className="font-medium text-sm truncate flex items-center gap-1.5">{o.clienteNome} {statusBadge(o.status)}</p>
-                  <p className="text-xs text-slate-400">{formatDate(o.data)} · {o.itens.length} item(ns)</p>
+                  <p className="font-medium text-sm truncate flex items-center gap-1.5">
+                    <span className={o.anulado ? 'line-through' : ''}>{o.clienteNome}</span> {statusBadge(o.status)}
+                    {o.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+                  </p>
+                  <p className="text-xs text-slate-400">{formatDate(o.data)} · {o.itens.length} item(ns) {o.anulado && `· anulado em ${formatDate(o.anuladoEm)}`}</p>
                 </div>
               </div>
-              <span className="font-medium text-sm shrink-0">{currency(o.total)}</span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="font-medium text-sm">{currency(o.total)}</span>
+                {!o.anulado && <button onClick={(e) => { e.stopPropagation(); apagarOrcamento(o); }} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>}
+              </div>
             </div>
             {expanded[o.id] && (
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-2">
@@ -2464,7 +2731,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
                     <p key={i} className="text-xs text-slate-600">{it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}</p>
                   ))}
                 </div>
-                {o.status === 'Aberto' && (
+                {o.status === 'Aberto' && !o.anulado && (
                   <div className="flex gap-2 pt-1">
                     <button onClick={() => editarOrcamento(o)} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><Pencil size={12} /> Editar</button>
                     <button onClick={() => converterEmVenda(o)} className="flex items-center gap-1 text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1.5 rounded-md"><ArrowRightCircle size={12} /> Converter em venda</button>
@@ -2482,7 +2749,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
 /* ---------------- VENDAS (com baixa FIFO de custo) ---------------- */
 
-function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, askConfirm, notify }) {
+function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
@@ -2508,10 +2775,13 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
   const [filtroComprovante, setFiltroComprovante] = useState('Todos');
   const [ordenacao, setOrdenacao] = useState('recente');
 
+  const [filtroAnulado, setFiltroAnulado] = useState('Todas');
   const vendasFiltradas = useMemo(() => {
     let lista = vendas.filter(v => v.clienteNome.toLowerCase().includes(busca.toLowerCase()));
     if (filtroComprovante === 'Com') lista = lista.filter(v => (v.comprovantes || []).length > 0);
     if (filtroComprovante === 'Sem') lista = lista.filter(v => !(v.comprovantes || []).length);
+    if (filtroAnulado === 'Ativas') lista = lista.filter(v => !v.anulado);
+    if (filtroAnulado === 'Anuladas') lista = lista.filter(v => v.anulado);
     return lista.slice().sort((a, b) => {
       switch (ordenacao) {
         case 'recente': return new Date(b.data) - new Date(a.data);
@@ -2522,7 +2792,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
         default: return 0;
       }
     });
-  }, [vendas, busca, filtroComprovante, ordenacao]);
+  }, [vendas, busca, filtroComprovante, filtroAnulado, ordenacao]);
 
   async function finalizarVenda() {
     if (!clienteId || carrinho.length === 0) return;
@@ -2537,6 +2807,27 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     }
     notify('Venda registrada e estoque atualizado');
     resetForm();
+  }
+
+  async function apagarVenda(venda) {
+    if (venda.anulado) return;
+    const ok = await askSenha(`Apagar a venda de ${venda.clienteNome} (${currency(venda.totalVenda)})? Os itens voltam ao estoque disponível, as expedições vinculadas serão removidas, e o lançamento ficará marcado como anulado no histórico. Comprovantes anexados também serão perdidos.`);
+    if (!ok) return;
+
+    const novoEstoque = reverterConsumoEstoque(estoque, venda.itens);
+    await setEstoque(novoEstoque);
+
+    if (setExpedicoes) {
+      const chavesDaVenda = new Set(venda.itens.map(it => chaveItemVenda(venda.id, it)));
+      await setExpedicoes(expedicoes.filter(ex => !chavesDaVenda.has(ex.chave)));
+    }
+
+    if (venda.origemOrcamentoId && setOrcamentos) {
+      await setOrcamentos(orcamentos.map(o => o.id === venda.origemOrcamentoId ? { ...o, status: 'Aberto', vendaId: null } : o));
+    }
+
+    await setVendas(vendas.map(v => v.id === venda.id ? { ...v, anulado: true, anuladoEm: new Date().toISOString(), comprovantes: [] } : v));
+    notify('Venda anulada e estoque devolvido');
   }
 
   async function anexarComprovante(vendaId, file, formaId, formaNome) {
@@ -2603,17 +2894,25 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
         ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
         ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
       />
+      <div className="flex gap-2 mb-3 -mt-1">
+        {[['Todas', 'Todas'], ['Ativas', 'Só ativas'], ['Anuladas', 'Só anuladas']].map(([v, l]) => (
+          <button key={v} onClick={() => setFiltroAnulado(v)} className={`text-xs px-3 py-1 rounded-full border ${filtroAnulado === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+        ))}
+      </div>
       <div className="space-y-2">
         {vendas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma venda registrada.</p>}
         {vendas.length > 0 && vendasFiltradas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma venda encontrada com esse filtro.</p>}
         {vendasFiltradas.map(v => (
-          <div key={v.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          <div key={v.id} className={`bg-white border rounded-lg overflow-hidden ${v.anulado ? 'border-red-200 opacity-60' : 'border-slate-200'}`}>
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [v.id]: !x[v.id] }))}>
               <div className="flex items-center gap-2 min-w-0">
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[v.id] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
-                  <p className="font-medium text-sm truncate">{v.clienteNome} {v.origemOrcamentoId && <span className="text-[11px] text-slate-400 font-normal">(via orçamento)</span>}</p>
-                  <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns)</p>
+                  <p className="font-medium text-sm truncate flex items-center gap-1.5">
+                    <span className={v.anulado ? 'line-through' : ''}>{v.clienteNome}</span> {v.origemOrcamentoId && <span className="text-[11px] text-slate-400 font-normal">(via orçamento)</span>}
+                    {v.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+                  </p>
+                  <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns) {v.anulado && `· anulado em ${formatDate(v.anuladoEm)}`}</p>
                 </div>
               </div>
               <span className="font-medium text-sm shrink-0 flex items-center gap-1.5">
@@ -2624,6 +2923,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                 )}
                 {currency(v.totalVenda)}
               </span>
+              {!v.anulado && <button onClick={(e) => { e.stopPropagation(); apagarVenda(v); }} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500 ml-2" /></button>}
             </div>
             {expanded[v.id] && (
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1">
@@ -2750,7 +3050,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
   const [busca, setBusca] = useState('');
   const [ordenacao, setOrdenacao] = useState('recente');
 
-  const vendasFiltradas = useMemo(() => vendas.filter(v => v.clienteNome.toLowerCase().includes(busca.toLowerCase())), [vendas, busca]);
+  const vendasFiltradas = useMemo(() => vendas.filter(v => !v.anulado && v.clienteNome.toLowerCase().includes(busca.toLowerCase())), [vendas, busca]);
 
   const itensClassificados = useMemo(() => {
     const aguardandoSaida = [];
@@ -3071,7 +3371,8 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 
 /* ---------------- FINANCEIRO (custo, margem, reposição) ---------------- */
 
-function FinanceiroModule({ vendas, estoque, pedidosCompra, recebimentos }) {
+function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebimentos }) {
+  const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado), [vendasTodas]);
   const [periodo, setPeriodo] = useState('mes');
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
@@ -3109,7 +3410,7 @@ function FinanceiroModule({ vendas, estoque, pedidosCompra, recebimentos }) {
   // Cresce com o custo (CMV) de cada venda e é abatido pelo valor de cada pedido de compra realizado.
   const saldoReposicao = useMemo(() => {
     const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto, 0);
-    const pedidosAcumulado = (pedidosCompra || []).filter(p => !p.cancelado).reduce((acc, p) => acc + p.valorTotal, 0);
+    const pedidosAcumulado = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado).reduce((acc, p) => acc + p.valorTotal, 0);
     return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado };
   }, [vendas, pedidosCompra]);
 
@@ -3126,7 +3427,7 @@ function FinanceiroModule({ vendas, estoque, pedidosCompra, recebimentos }) {
 
     let valorEstoqueAguardando = 0;
     for (const p of (pedidosCompra || [])) {
-      if (p.cancelado) continue;
+      if (p.cancelado || p.anulado) continue;
       for (const it of p.itens) {
         const recebido = qtdRecebida(recebimentos || [], p.id, it.id);
         const pendente = it.quantidade - recebido;
@@ -3257,7 +3558,7 @@ function FinanceiroModule({ vendas, estoque, pedidosCompra, recebimentos }) {
         <>
           <h3 className="text-sm font-medium text-slate-500 mb-2 mt-5">Pedidos de compra (abatem o saldo de reposição)</h3>
           <div className="space-y-2">
-            {pedidosCompra.filter(p => !p.cancelado).map(p => (
+            {pedidosCompra.filter(p => !p.cancelado && !p.anulado).map(p => (
               <div key={p.id} className="bg-white border border-slate-200 rounded-lg p-3 flex justify-between items-center text-sm">
                 <div>
                   <p className="font-medium">{p.fornecedorNome}</p>
