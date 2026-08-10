@@ -619,6 +619,11 @@ function uid() {
 function currency(v) {
   return (Number(v) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
+// Aceita valor digitado com vírgula (padrão BR) ou ponto como separador decimal
+function parseValorBR(v) {
+  if (v === null || v === undefined || v === '') return NaN;
+  return parseFloat(String(v).trim().replace(',', '.'));
+}
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('pt-BR');
 }
@@ -1113,9 +1118,16 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
 
   const depositosComEstoque = produtoAtual ? depositos.filter(d => availableQty(produtoAtual, d.id) > 0) : [];
 
+  useEffect(() => {
+    if (produtoAtual && depositosComEstoque.length === 1) {
+      setDepositoSel(depositosComEstoque[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [produtoSel]);
+
   function addItem() {
     if (!produtoAtual || !depositoSel) return;
-    const preco = parseFloat(precoSel) || 0;
+    const preco = parseValorBR(precoSel) || 0;
     const depositoNome = depositos.find(d => d.id === depositoSel)?.nome || '';
     const qtd = parseInt(qtdSel) || 1;
     if (qtd < 1 || qtd > availableQty(produtoAtual, depositoSel)) { notify('Quantidade indisponível nesse depósito'); return; }
@@ -1149,7 +1161,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
             return <option key={i.id} value={i.id} disabled={disp === 0}>{i.categoria} · {i.marca} {i.modelo} ({disp} disp.)</option>;
           })}
         </select>
-        {produtoAtual && depositos.length > 1 && (
+        {produtoAtual && (
           <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o depósito...</option>
             {depositosComEstoque.map(d => <option key={d.id} value={d.id}>{d.nome} ({availableQty(produtoAtual, d.id)} disp.)</option>)}
@@ -1158,7 +1170,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
         {produtoAtual && depositoSel && (
           <div className="flex flex-col sm:flex-row gap-2">
             <input type="number" min={1} max={availableQty(produtoAtual, depositoSel)} value={qtdSel} onChange={e => setQtdSel(e.target.value)} placeholder="Qtd" className="sm:w-24 border border-slate-200 rounded-md px-2 py-2 text-sm" />
-            <input type="number" step="0.01" value={precoSel} onChange={e => setPrecoSel(e.target.value)} placeholder="Preço de venda unit." className="sm:w-40 border border-slate-200 rounded-md px-2 py-2 text-sm" />
+            <input type="text" inputMode="decimal" value={precoSel} onChange={e => setPrecoSel(e.target.value)} placeholder="Preço de venda unit. (ex: 518,42)" className="sm:w-40 border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <button type="button" onClick={addItem} className="bg-slate-900 text-white text-sm px-3 py-2 rounded-md">Adicionar</button>
           </div>
         )}
@@ -1205,7 +1217,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
   function cancelarEdicaoPreco() { setEditandoPrecoId(null); setNovoPreco(''); }
 
   async function confirmarAtualizacaoPreco(item) {
-    const valor = parseFloat(novoPreco);
+    const valor = parseValorBR(novoPreco);
     if (isNaN(valor) || valor < 0) { notify('Informe um preço válido'); return; }
     if (valor === item.precoVenda) { cancelarEdicaoPreco(); return; }
     const registro = { data: new Date().toISOString(), precoAnterior: item.precoVenda, precoNovo: valor };
@@ -1226,7 +1238,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
     const novo = {
       id: uid(), categoria: form.categoria, marca: form.marca.trim(), modelo: form.modelo.trim(),
       potencia: form.potencia.trim(), serializado: form.serializado,
-      precoVenda: parseFloat(form.precoVenda) || 0,
+      precoVenda: parseValorBR(form.precoVenda) || 0,
       quantidadeMinima: parseInt(form.quantidadeMinima) || 0,
       observacoes: form.observacoes.trim(),
       unidades: form.serializado ? [] : undefined,
@@ -1349,7 +1361,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
             Controlar por número de série (recomendado para inversores)
           </label>
           <div className="grid grid-cols-2 gap-2">
-            <input type="number" step="0.01" placeholder="Preço de venda (R$)" value={form.precoVenda} onChange={e => setForm(f => ({ ...f, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+            <input type="text" inputMode="decimal" placeholder="Preço de venda (R$) ex: 518,42" value={form.precoVenda} onChange={e => setForm(f => ({ ...f, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input type="number" placeholder="Estoque mínimo (alerta)" value={form.quantidadeMinima} onChange={e => setForm(f => ({ ...f, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
           </div>
           <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
@@ -1387,7 +1399,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, notify }) {
                     {editandoPrecoId === item.id ? (
                       <div className="flex items-center gap-2 w-full">
                         <span className="text-xs text-slate-500 shrink-0">Novo preço de venda:</span>
-                        <input type="number" step="0.01" autoFocus value={novoPreco} onChange={e => setNovoPreco(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                        <input type="text" inputMode="decimal" autoFocus value={novoPreco} onChange={e => setNovoPreco(e.target.value)} placeholder="Ex: 518,42" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
                         <button onClick={() => confirmarAtualizacaoPreco(item)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1 rounded-md">Salvar</button>
                         <button onClick={cancelarEdicaoPreco} className="text-xs text-slate-500 px-2 py-1">Cancelar</button>
                       </div>
@@ -1742,7 +1754,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
   const produtoExistente = estoque.find(i => i.id === produtoSel);
 
   function addLinha() {
-    const custo = parseFloat(custoUnitario) || 0;
+    const custo = parseValorBR(custoUnitario) || 0;
     const qtd = parseInt(quantidade) || 0;
     if (!custo || !qtd) { notify('Informe quantidade e custo unitário'); return; }
     if (modoNovoProduto) {
@@ -1775,7 +1787,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
         const criado = {
           id: uid(), categoria: linha.novoProduto.categoria, marca: linha.novoProduto.marca.trim(), modelo: linha.novoProduto.modelo.trim(),
           potencia: (linha.novoProduto.potencia || '').trim(), serializado: linha.novoProduto.serializado,
-          precoVenda: parseFloat(linha.novoProduto.precoVenda) || 0, quantidadeMinima: parseInt(linha.novoProduto.quantidadeMinima) || 0,
+          precoVenda: parseValorBR(linha.novoProduto.precoVenda) || 0, quantidadeMinima: parseInt(linha.novoProduto.quantidadeMinima) || 0,
           observacoes: '', unidades: linha.novoProduto.serializado ? [] : undefined, lotes: linha.novoProduto.serializado ? undefined : [],
         };
         novoEstoque = [criado, ...novoEstoque];
@@ -1871,7 +1883,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                 <input placeholder="Marca" value={novoProd.marca} onChange={e => setNovoProd(p => ({ ...p, marca: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input placeholder="Modelo" value={novoProd.modelo} onChange={e => setNovoProd(p => ({ ...p, modelo: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input placeholder="Potência" value={novoProd.potencia} onChange={e => setNovoProd(p => ({ ...p, potencia: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
-                <input type="number" step="0.01" placeholder="Preço de venda (R$)" value={novoProd.precoVenda} onChange={e => setNovoProd(p => ({ ...p, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+                <input type="text" inputMode="decimal" placeholder="Preço de venda (R$) ex: 518,42" value={novoProd.precoVenda} onChange={e => setNovoProd(p => ({ ...p, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input type="number" placeholder="Estoque mínimo" value={novoProd.quantidadeMinima} onChange={e => setNovoProd(p => ({ ...p, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <label className="flex items-center gap-1.5 text-xs text-slate-600 col-span-2">
                   <input type="checkbox" checked={novoProd.serializado} onChange={e => setNovoProd(p => ({ ...p, serializado: e.target.checked }))} /> Controlar por número de série
@@ -1882,7 +1894,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
             <p className="text-[11px] text-slate-400">O número de série de cada inversor será digitado depois, item por item, na etapa de Recebimento.</p>
             <div className="grid grid-cols-2 gap-2">
               <input type="number" placeholder="Quantidade" value={quantidade} onChange={e => setQuantidade(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
-              <input type="number" step="0.01" placeholder="Custo unitário (R$)" value={custoUnitario} onChange={e => setCustoUnitario(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+              <input type="text" inputMode="decimal" placeholder="Custo unitário (R$) ex: 468,00" value={custoUnitario} onChange={e => setCustoUnitario(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
             </div>
             <button type="button" onClick={addLinha} className="bg-slate-900 text-white text-sm px-3 py-2 rounded-md">Adicionar item ao pedido</button>
           </div>
