@@ -648,6 +648,17 @@ function availableQty(item, depositoId) {
   return (item.lotes || []).filter(l => !depositoId || l.depositoId === depositoId).reduce((acc, l) => acc + l.quantidadeDisponivel, 0);
 }
 
+// Produto com quantidade em estoque, mas sem nenhum custo (nem de entrada real, nem de referência) —
+// contaria como R$0 no valor do estoque, então precisa de atenção.
+function temCustoPendente(item) {
+  if (availableQty(item) === 0) return false;
+  if ((item.custoReferencia || 0) > 0) return false;
+  if (item.serializado) {
+    return (item.unidades || []).some(u => u.status === 'Disponível' && !((u.custoCompra || 0) > 0));
+  }
+  return (item.lotes || []).some(l => l.quantidadeDisponivel > 0 && !((l.custoUnitario || 0) > 0));
+}
+
 // Consome estoque (FIFO para não-serializados) para um carrinho de itens de venda/orçamento.
 function consumirEstoque(estoqueAtual, carrinho) {
   let novoEstoque = estoqueAtual.map(i => ({
@@ -1758,6 +1769,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
         case 'qtdDesc': return availableQty(b) - availableQty(a);
         case 'qtdAsc': return availableQty(a) - availableQty(b);
         case 'estoqueBaixo': return (availableQty(a) - (a.quantidadeMinima || 0)) - (availableQty(b) - (b.quantidadeMinima || 0));
+        case 'custoPendente': return (temCustoPendente(b) ? 1 : 0) - (temCustoPendente(a) ? 1 : 0);
         case 'recente': return dataUltimaEntrada(b) - dataUltimaEntrada(a);
         default: return 0;
       }
@@ -1769,15 +1781,17 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
     const totalItens = estoque.length;
     const inversoresDisponiveis = estoque.filter(i => i.categoria === 'Inversor').reduce((acc, i) => acc + availableQty(i), 0);
     const estoqueBaixo = estoque.filter(i => availableQty(i) <= (i.quantidadeMinima || 0)).length;
-    return { totalItens, inversoresDisponiveis, estoqueBaixo };
+    const semCusto = estoque.filter(temCustoPendente).length;
+    return { totalItens, inversoresDisponiveis, estoqueBaixo, semCusto };
   }, [estoque]);
 
   return (
     <div>
-      <div className="grid grid-cols-3 gap-2 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
         <StatCard label="Produtos cadastrados" value={resumo.totalItens} />
         <StatCard label="Inversores disponíveis" value={resumo.inversoresDisponiveis} highlight />
         <StatCard label="Estoque baixo" value={resumo.estoqueBaixo} warn={resumo.estoqueBaixo > 0} />
+        <StatCard label="Sem custo definido" value={resumo.semCusto} warn={resumo.semCusto > 0} />
       </div>
 
       <div className="flex flex-col gap-2 mb-3">
@@ -1798,6 +1812,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
             <option value="qtdDesc">Quantidade disponível (maior primeiro)</option>
             <option value="qtdAsc">Quantidade disponível (menor primeiro)</option>
             <option value="estoqueBaixo">Mais próximos do estoque mínimo primeiro</option>
+            <option value="custoPendente">Sem custo definido primeiro (afeta o Financeiro)</option>
             <option value="recente">Entrada mais recente primeiro</option>
           </select>
           <button onClick={() => setShowForm(s => !s)} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
@@ -1850,6 +1865,11 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-medium bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{item.categoria}</span>
                       <span className="font-medium text-sm truncate">{item.marca} {item.modelo}</span>
+                      {temCustoPendente(item) && (
+                        <span className="flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600 shrink-0" title="Tem quantidade em estoque, mas nenhum custo (real ou de referência) — está contando R$0 no Financeiro">
+                          <AlertTriangle size={10} /> sem custo
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-400">{item.potencia} · venda {currency(item.precoVenda)}</p>
                   </div>
@@ -4591,10 +4611,11 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
   const balanco = useMemo(() => {
     let valorEstoqueDisponivel = 0;
     for (const item of estoque) {
+      const custoRef = item.custoReferencia || 0;
       if (item.serializado) {
-        valorEstoqueDisponivel += (item.unidades || []).filter(u => u.status === 'Disponível').reduce((acc, u) => acc + (u.custoCompra || 0), 0);
+        valorEstoqueDisponivel += (item.unidades || []).filter(u => u.status === 'Disponível').reduce((acc, u) => acc + (u.custoCompra > 0 ? u.custoCompra : custoRef), 0);
       } else {
-        valorEstoqueDisponivel += (item.lotes || []).reduce((acc, l) => acc + l.quantidadeDisponivel * l.custoUnitario, 0);
+        valorEstoqueDisponivel += (item.lotes || []).reduce((acc, l) => acc + l.quantidadeDisponivel * (l.custoUnitario > 0 ? l.custoUnitario : custoRef), 0);
       }
     }
 
