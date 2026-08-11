@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
-import { loadKey, saveKey } from './lib/storage';
+import { loadCollection, saveCollectionDelta, saveCollectionFull, loadConfig, saveConfig, migrarDadosAntigosSeNecessario } from './lib/storage';
 import { supabase } from './lib/supabaseClient';
 import LoginScreen from './LoginScreen';
 
@@ -1140,22 +1140,23 @@ function AppInner() {
 
   useEffect(() => {
     (async () => {
+      await migrarDadosAntigosSeNecessario();
       const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl] = await Promise.all([
-        loadKey('sgm:estoque', []),
-        loadKey('sgm:clientes', []),
-        loadKey('sgm:fornecedores', []),
-        loadKey('sgm:vendas', []),
-        loadKey('sgm:orcamentos', []),
-        loadKey('sgm:expedicoes', []),
-        loadKey('sgm:pedidosCompra', []),
-        loadKey('sgm:recebimentos', []),
-        loadKey('sgm:depositos', []),
-        loadKey('sgm:transferencias', []),
-        loadKey('sgm:formasRecebimento', []),
-        loadKey('sgm:senhaAprovacao', null),
-        loadKey('sgm:pagamentos', []),
-        loadKey('sgm:ajustesReposicao', []),
-        loadKey('sgm:balancos', []),
+        loadCollection('estoque', []),
+        loadCollection('clientes', []),
+        loadCollection('fornecedores', []),
+        loadCollection('vendas', []),
+        loadCollection('orcamentos', []),
+        loadCollection('expedicoes', []),
+        loadCollection('pedidosCompra', []),
+        loadCollection('recebimentos', []),
+        loadCollection('depositos', []),
+        loadCollection('transferencias', []),
+        loadCollection('formasRecebimento', []),
+        loadConfig('senhaAprovacao', null),
+        loadCollection('pagamentos', []),
+        loadCollection('ajustesReposicao', []),
+        loadCollection('balancos', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1164,7 +1165,7 @@ function AppInner() {
       let estoqueFinal = e;
       if (depositosFinal.length === 0) {
         depositosFinal = [{ id: uid(), nome: 'Depósito Principal', endereco: '', observacoes: '' }];
-        await saveKey('sgm:depositos', depositosFinal);
+        await saveCollectionFull('depositos', depositosFinal);
       }
       const padraoId = depositosFinal[0].id;
       let mudou = false;
@@ -1181,7 +1182,7 @@ function AppInner() {
         if (alterado) { mudou = true; return { ...item, unidades, lotes }; }
         return item;
       });
-      if (mudou) await saveKey('sgm:estoque', estoqueFinal);
+      if (mudou) await saveCollectionFull('estoque', estoqueFinal);
 
       // Migração: corrige a descrição (marca + modelo + potência) de itens já lançados em
       // pedidos, recebimentos e transferências antes dessa informação completa existir.
@@ -1202,7 +1203,7 @@ function AppInner() {
         if (alterado) { pedidosMudou = true; return { ...pedido, itens }; }
         return pedido;
       });
-      if (pedidosMudou) await saveKey('sgm:pedidosCompra', pedidosFinal);
+      if (pedidosMudou) await saveCollectionFull('pedidosCompra', pedidosFinal);
 
       let recebimentosFinal = rc;
       let recebimentosMudou = false;
@@ -1214,7 +1215,7 @@ function AppInner() {
         }
         return r;
       });
-      if (recebimentosMudou) await saveKey('sgm:recebimentos', recebimentosFinal);
+      if (recebimentosMudou) await saveCollectionFull('recebimentos', recebimentosFinal);
 
       let transferenciasFinal = tr;
       let transferenciasMudou = false;
@@ -1226,7 +1227,7 @@ function AppInner() {
         }
         return t;
       });
-      if (transferenciasMudou) await saveKey('sgm:transferencias', transferenciasFinal);
+      if (transferenciasMudou) await saveCollectionFull('transferencias', transferenciasFinal);
 
       let formasFinal = fr;
       if (formasFinal.length === 0) {
@@ -1234,7 +1235,7 @@ function AppInner() {
           'Pix JCL Stone', 'PIx JCL BB', 'Dinheiro', 'PIx Terceiros', 'Pix Senio Com', 'Pix KMX', 'Cartão de Crédito',
         ].map(nome => ({ id: uid(), nome, multipla: false }));
         formasFinal.push({ id: uid(), nome: 'Múltiplas formas de pagamento', multipla: true });
-        await saveKey('sgm:formasRecebimento', formasFinal);
+        await saveCollectionFull('formasRecebimento', formasFinal);
       }
 
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
@@ -1250,26 +1251,30 @@ function AppInner() {
 
   function notify(msg) { setToast(msg); setTimeout(() => setToast(null), 3000); }
 
-  async function persist(key, setter, next) {
+  async function persist(collection, setter, next, anterior) {
     setter(next);
-    const ok = await saveKey(key, next);
-    if (!ok) notify('⚠️ Não foi possível salvar. Verifique se este artifact foi publicado e se ainda há espaço de armazenamento.');
+    const ok = await saveCollectionDelta(collection, anterior, next);
+    if (!ok) notify('⚠️ Não foi possível salvar. Verifique sua conexão e tente novamente.');
   }
-  async function persistEstoque(next) { await persist('sgm:estoque', setEstoque, next); }
-  async function persistClientes(next) { await persist('sgm:clientes', setClientes, next); }
-  async function persistFornecedores(next) { await persist('sgm:fornecedores', setFornecedores, next); }
-  async function persistVendas(next) { await persist('sgm:vendas', setVendas, next); }
-  async function persistOrcamentos(next) { await persist('sgm:orcamentos', setOrcamentos, next); }
-  async function persistExpedicoes(next) { await persist('sgm:expedicoes', setExpedicoes, next); }
-  async function persistPedidosCompra(next) { await persist('sgm:pedidosCompra', setPedidosCompra, next); }
-  async function persistRecebimentos(next) { await persist('sgm:recebimentos', setRecebimentos, next); }
-  async function persistDepositos(next) { await persist('sgm:depositos', setDepositos, next); }
-  async function persistTransferencias(next) { await persist('sgm:transferencias', setTransferencias, next); }
-  async function persistFormasRecebimento(next) { await persist('sgm:formasRecebimento', setFormasRecebimento, next); }
-  async function persistSenhaAprovacao(next) { await persist('sgm:senhaAprovacao', setSenhaAprovacao, next); }
-  async function persistPagamentos(next) { await persist('sgm:pagamentos', setPagamentos, next); }
-  async function persistAjustesReposicao(next) { await persist('sgm:ajustesReposicao', setAjustesReposicao, next); }
-  async function persistBalancos(next) { await persist('sgm:balancos', setBalancos, next); }
+  async function persistEstoque(next) { await persist('estoque', setEstoque, next, estoque); }
+  async function persistClientes(next) { await persist('clientes', setClientes, next, clientes); }
+  async function persistFornecedores(next) { await persist('fornecedores', setFornecedores, next, fornecedores); }
+  async function persistVendas(next) { await persist('vendas', setVendas, next, vendas); }
+  async function persistOrcamentos(next) { await persist('orcamentos', setOrcamentos, next, orcamentos); }
+  async function persistExpedicoes(next) { await persist('expedicoes', setExpedicoes, next, expedicoes); }
+  async function persistPedidosCompra(next) { await persist('pedidosCompra', setPedidosCompra, next, pedidosCompra); }
+  async function persistRecebimentos(next) { await persist('recebimentos', setRecebimentos, next, recebimentos); }
+  async function persistDepositos(next) { await persist('depositos', setDepositos, next, depositos); }
+  async function persistTransferencias(next) { await persist('transferencias', setTransferencias, next, transferencias); }
+  async function persistFormasRecebimento(next) { await persist('formasRecebimento', setFormasRecebimento, next, formasRecebimento); }
+  async function persistSenhaAprovacao(next) {
+    setSenhaAprovacao(next);
+    const ok = await saveConfig('senhaAprovacao', next);
+    if (!ok) notify('⚠️ Não foi possível salvar. Verifique sua conexão e tente novamente.');
+  }
+  async function persistPagamentos(next) { await persist('pagamentos', setPagamentos, next, pagamentos); }
+  async function persistAjustesReposicao(next) { await persist('ajustesReposicao', setAjustesReposicao, next, ajustesReposicao); }
+  async function persistBalancos(next) { await persist('balancos', setBalancos, next, balancos); }
 
   if (loading) {
     return (
@@ -4562,7 +4567,7 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
     return { valorEstoqueDisponivel, valorEstoqueAguardando, valoresAReceber };
   }, [estoque, pedidosCompra, recebimentos, vendas]);
 
-  const totalImobilizado = balanco.valorEstoqueDisponivel + balanco.valorEstoqueAguardando + saldoReposicao.saldo + balanco.valoresAReceber;
+  const totalImobilizado = balanco.valorEstoqueDisponivel + balanco.valorEstoqueAguardando - saldoReposicao.saldo + balanco.valoresAReceber;
 
   const custoPorCategoria = useMemo(() => {
     const map = {};
@@ -4629,8 +4634,8 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
             <span className="font-medium">{currency(balanco.valorEstoqueAguardando)}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-slate-600">Saldo de reposição</span>
-            <span className="font-medium">{currency(saldoReposicao.saldo)}</span>
+            <span className="text-slate-600">Saldo de reposição (em caixa)</span>
+            <span className="font-medium">{currency(-saldoReposicao.saldo)}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem comprovante de pagamento)</span></span>
