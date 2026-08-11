@@ -3335,14 +3335,27 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const isImage = file.type.startsWith('image/');
     const dataUrl = isImage ? await fileToCompressedDataUrl(file) : await fileToDataUrl(file);
     const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0 };
-    const next = vendas.map(v => v.id === vendaId ? { ...v, comprovantes: [...(v.comprovantes || []), comprovante] } : v);
+    const next = vendas.map(v => {
+      if (v.id !== vendaId) return v;
+      const comprovantes = [...(v.comprovantes || []), comprovante];
+      const totalComprovado = comprovantes.reduce((acc, c) => acc + (c.valor || 0), 0);
+      const quitado = totalComprovado >= v.totalVenda - 0.01;
+      return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
+    });
     await setVendas(next);
-    notify('Comprovante de pagamento anexado');
+    const vendaAtualizada = next.find(v => v.id === vendaId);
+    notify(vendaAtualizada?.quitado ? 'Comprovante anexado — venda quitada!' : 'Comprovante de pagamento anexado');
   }
 
   async function removerComprovante(vendaId, comprovanteId) {
     if (!(await askConfirm('Remover este comprovante?'))) return;
-    const next = vendas.map(v => v.id === vendaId ? { ...v, comprovantes: (v.comprovantes || []).filter(c => c.id !== comprovanteId) } : v);
+    const next = vendas.map(v => {
+      if (v.id !== vendaId) return v;
+      const comprovantes = (v.comprovantes || []).filter(c => c.id !== comprovanteId);
+      const totalComprovado = comprovantes.reduce((acc, c) => acc + (c.valor || 0), 0);
+      const quitado = totalComprovado >= v.totalVenda - 0.01;
+      return { ...v, comprovantes, quitado, quitadoEm: quitado ? v.quitadoEm : null };
+    });
     await setVendas(next);
     notify('Comprovante removido');
   }
@@ -3411,16 +3424,18 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                   <p className="font-medium text-sm truncate flex items-center gap-1.5">
                     <span className={v.anulado ? 'line-through' : ''}>{v.clienteNome}</span> {v.origemOrcamentoId && <span className="text-[11px] text-slate-400 font-normal">(via orçamento)</span>}
                     {v.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+                    {!v.anulado && v.quitado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Quitado</span>}
                   </p>
-                  <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns) {v.anulado && `· anulado em ${formatDate(v.anuladoEm)}`}</p>
+                  <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns) {v.anulado && `· anulado em ${formatDate(v.anuladoEm)}`} {!v.anulado && v.quitado && v.quitadoEm && `· quitado em ${formatDate(v.quitadoEm)}`}</p>
                 </div>
               </div>
               <span className="font-medium text-sm shrink-0 flex items-center gap-1.5">
-                {(v.comprovantes || []).length > 0 ? (
-                  <FileText size={13} className="text-emerald-500" />
-                ) : (
-                  <FileText size={13} className="text-slate-300" />
-                )}
+                {(() => {
+                  const totalComprovado = (v.comprovantes || []).reduce((acc, c) => acc + (c.valor || 0), 0);
+                  if (v.quitado || totalComprovado >= v.totalVenda - 0.01) return <CheckCircle2 size={13} className="text-emerald-500" title="Quitado" />;
+                  if (totalComprovado > 0) return <FileText size={13} className="text-amber-500" title="Pagamento parcial" />;
+                  return <FileText size={13} className="text-slate-300" title="Sem comprovante" />;
+                })()}
                 {currency(v.totalVenda)}
               </span>
               {!v.anulado && <button onClick={(e) => { e.stopPropagation(); apagarVenda(v); }} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500 ml-2" /></button>}
@@ -3500,6 +3515,7 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
     if (!forma) { notify('Selecione a forma de pagamento desta parcela antes de anexar o arquivo'); return; }
     const valor = parseValorBR(slot.valor);
     if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago nessa parcela antes de anexar'); return; }
+    if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
     await onAnexar(vendaId, file, forma.id, forma.nome, valor);
   }
 
@@ -3539,36 +3555,43 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
 
   return (
     <div>
-      {valorTotalVenda > 0 && restante > 0 && (
-        <p className="text-[11px] text-slate-400 mb-1.5">Falta comprovar {currency(restante)} de {currency(valorTotalVenda)}</p>
-      )}
-      <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
-        <select value={formaId} onChange={e => { setFormaId(e.target.value); setValorUnico(String(restante || '')); }} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
-          <option value="">Forma de recebimento...</option>
-          {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
-        </select>
+      {valorTotalVenda > 0 && restante <= 0.01 ? (
+        <p className="text-xs text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 size={14} /> Quitado — valor total já comprovado</p>
+      ) : (
+        <>
+          {valorTotalVenda > 0 && (
+            <p className="text-[11px] text-slate-400 mb-1.5">Falta comprovar {currency(restante)} de {currency(valorTotalVenda)}</p>
+          )}
+          <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+            <select value={formaId} onChange={e => { setFormaId(e.target.value); setValorUnico(String(restante || '')); }} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
+              <option value="">Forma de recebimento...</option>
+              {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
 
-        {formaSelecionada && formaSelecionada.multipla ? (
-          <>
-            <input type="number" min={2} placeholder="Qtd. de formas" value={qtdMultipla} onChange={e => setQtdMultipla(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
-            <button onClick={confirmarQuantidade} className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">Continuar</button>
-          </>
-        ) : formaSelecionada ? (
-          <>
-            <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={valorUnico} onChange={e => setValorUnico(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
-            <label className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer">
-              <Camera size={12} /> Anexar comprovante
-              <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => {
-                if (!e.target.files[0]) return;
-                const valor = parseValorBR(valorUnico);
-                if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago antes de anexar'); return; }
-                onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor);
-                resetar();
-              }} />
-            </label>
-          </>
-        ) : null}
-      </div>
+            {formaSelecionada && formaSelecionada.multipla ? (
+              <>
+                <input type="number" min={2} placeholder="Qtd. de formas" value={qtdMultipla} onChange={e => setQtdMultipla(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
+                <button onClick={confirmarQuantidade} className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">Continuar</button>
+              </>
+            ) : formaSelecionada ? (
+              <>
+                <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={valorUnico} onChange={e => setValorUnico(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
+                <label className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer">
+                  <Camera size={12} /> Anexar comprovante
+                  <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => {
+                    if (!e.target.files[0]) return;
+                    const valor = parseValorBR(valorUnico);
+                    if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago antes de anexar'); return; }
+                    if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
+                    onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor);
+                    resetar();
+                  }} />
+                </label>
+              </>
+            ) : null}
+          </div>
+        </>
+      )}
     </div>
   );
 }
