@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud , LogOut } from 'lucide-react';
+import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
 import { loadKey, saveKey } from './lib/storage';
 import { supabase } from './lib/supabaseClient';
 import LoginScreen from './LoginScreen';
@@ -7,7 +7,7 @@ import LoginScreen from './LoginScreen';
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
 const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao'];
-const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'pagamentos', 'financeiro'];
+const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'balanco', 'pagamentos', 'financeiro'];
 const PAGAMENTO_CATEGORIAS_SAIDA = [
   'Salários e encargos', 'Pró-labore / retirada de sócio', 'Aluguel', 'Energia elétrica', 'Água',
   'Internet / Telefone', 'Combustível', 'Manutenção de veículo', 'Contador / Consultoria',
@@ -779,7 +779,7 @@ function fileToDataUrl(file) {
 }
 
 // Desenha um documento (orçamento/recibo) num canvas — layout genérico reutilizável
-function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, itens, totalLabel, totalValor, extraLinhas, observacoes }) {
+function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, clienteLabel = 'Cliente', itens, totalLabel, totalValor, extraLinhas, observacoes }) {
   const largura = 900;
   const margem = 50;
   const larguraUtil = largura - margem * 2;
@@ -836,7 +836,7 @@ function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, itens, 
 
   ctx.font = 'bold 12px Arial';
   ctx.fillStyle = '#334155';
-  ctx.fillText('Cliente', margem, y);
+  ctx.fillText(clienteLabel, margem, y);
   y += 20;
   ctx.font = '13px Arial';
   ctx.fillStyle = '#0f172a';
@@ -985,6 +985,38 @@ function qtdRecebida(recebimentos, pedidoId, itemLineId) {
   return recebimentos.filter(r => r.pedidoId === pedidoId && r.itemLineId === itemLineId && !r.anulado).reduce((a, r) => a + r.quantidade, 0);
 }
 
+function BalancoLockScreen({ senhaCorreta, onDesbloquear }) {
+  const [valor, setValor] = useState('');
+  const [erro, setErro] = useState('');
+
+  function confirmar() {
+    if (!senhaCorreta) { setErro('Nenhuma senha de aprovação foi cadastrada ainda. Configure em Cadastros → Senha de aprovação.'); return; }
+    if (valor !== senhaCorreta) { setErro('Senha incorreta.'); return; }
+    onDesbloquear();
+  }
+
+  return (
+    <div className="flex items-center justify-center py-16">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6 w-full max-w-xs text-center">
+        <ShieldAlert size={24} className="text-amber-500 mx-auto mb-2" />
+        <h3 className="font-medium text-sm mb-1">Área protegida</h3>
+        <p className="text-xs text-slate-500 mb-4">Digite a senha de aprovação para acessar o Balanço de Estoque. Depois de desbloquear, não será pedida de novo nesta sessão.</p>
+        <input
+          type="password"
+          autoFocus
+          value={valor}
+          onChange={e => { setValor(e.target.value); setErro(''); }}
+          onKeyDown={e => e.key === 'Enter' && confirmar()}
+          placeholder="Senha de aprovação"
+          className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm mb-2"
+        />
+        {erro && <p className="text-xs text-red-500 mb-2">{erro}</p>}
+        <button onClick={confirmar} className="w-full bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">Desbloquear</button>
+      </div>
+    </div>
+  );
+}
+
 function SenhaDialogModal({ message, senhaCorreta, label = 'Apagar', destrutivo = true, onResolve }) {
   const [valor, setValor] = useState('');
   const [erro, setErro] = useState('');
@@ -1039,6 +1071,7 @@ function AppInner() {
   const [senhaAprovacao, setSenhaAprovacao] = useState(null);
   const [pagamentos, setPagamentos] = useState([]);
   const [ajustesReposicao, setAjustesReposicao] = useState([]);
+  const [balancos, setBalancos] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -1053,6 +1086,7 @@ function AppInner() {
   }
 
   const [senhaDialog, setSenhaDialog] = useState(null); // { message, resolve }
+  const [balancoDesbloqueado, setBalancoDesbloqueado] = useState(false);
 
   function askSenha(message, options) {
     return new Promise(resolve => {
@@ -1106,7 +1140,7 @@ function AppInner() {
 
   useEffect(() => {
     (async () => {
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl] = await Promise.all([
         loadKey('sgm:estoque', []),
         loadKey('sgm:clientes', []),
         loadKey('sgm:fornecedores', []),
@@ -1121,6 +1155,7 @@ function AppInner() {
         loadKey('sgm:senhaAprovacao', null),
         loadKey('sgm:pagamentos', []),
         loadKey('sgm:ajustesReposicao', []),
+        loadKey('sgm:balancos', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1207,6 +1242,7 @@ function AppInner() {
       setSenhaAprovacao(sa);
       setPagamentos(pg);
       setAjustesReposicao(aj);
+      setBalancos(bl);
       setFormasRecebimento(formasFinal);
       setLoading(false);
     })();
@@ -1233,6 +1269,7 @@ function AppInner() {
   async function persistSenhaAprovacao(next) { await persist('sgm:senhaAprovacao', setSenhaAprovacao, next); }
   async function persistPagamentos(next) { await persist('sgm:pagamentos', setPagamentos, next); }
   async function persistAjustesReposicao(next) { await persist('sgm:ajustesReposicao', setAjustesReposicao, next); }
+  async function persistBalancos(next) { await persist('sgm:balancos', setBalancos, next); }
 
   if (loading) {
     return (
@@ -1292,6 +1329,7 @@ function AppInner() {
                 <SubTabButton icon={ArrowLeftRight} label="Transferências" active={tab === 'transferencias'} onClick={() => setTab('transferencias')} />
                 <SubTabButton icon={ClipboardList} label="Pedidos de compra" active={tab === 'pedidos'} onClick={() => setTab('pedidos')} />
                 <SubTabButton icon={TruckIcon} label="Recebimento" active={tab === 'recebimento'} onClick={() => setTab('recebimento')} />
+                <SubTabButton icon={Scale} label="Balanço de estoque" active={tab === 'balanco'} onClick={() => setTab('balanco')} />
                 <SubTabButton icon={HandCoins} label="Pagamentos" active={tab === 'pagamentos'} onClick={() => setTab('pagamentos')} />
                 <SubTabButton icon={LineChart} label="Financeiro" active={tab === 'financeiro'} onClick={() => setTab('financeiro')} />
               </nav>
@@ -1344,6 +1382,19 @@ function AppInner() {
             askSenha={askSenha}
             notify={notify}
           />
+        )}
+        {tab === 'balanco' && (
+          balancoDesbloqueado ? (
+            <BalancoModule
+              balancos={balancos} setBalancos={persistBalancos}
+              estoque={estoque} setEstoque={persistEstoque}
+              depositos={depositos}
+              askSenha={askSenha}
+              notify={notify}
+            />
+          ) : (
+            <BalancoLockScreen senhaCorreta={senhaAprovacao?.senha} onDesbloquear={() => setBalancoDesbloqueado(true)} />
+          )
         )}
         {tab === 'clientes' && <ClientesModule clientes={clientes} setClientes={persistClientes} askConfirm={askConfirm} notify={notify} />}
         {tab === 'formasRecebimento' && <FormasRecebimentoModule formasRecebimento={formasRecebimento} setFormasRecebimento={persistFormasRecebimento} askConfirm={askConfirm} notify={notify} />}
@@ -1828,7 +1879,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
                         {(item.unidades || []).map(u => (
                           <tr key={u.id} className="border-t border-slate-100">
                             <td className="py-1.5 font-mono">{u.serial}</td>
-                            <td className="py-1.5"><span className={`px-1.5 py-0.5 rounded text-[11px] ${u.status === 'Disponível' ? 'bg-emerald-100 text-emerald-700' : u.status === 'Vendido' ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700'}`}>{u.status}</span></td>
+                            <td className="py-1.5"><span className={`px-1.5 py-0.5 rounded text-[11px] ${u.status === 'Disponível' ? 'bg-emerald-100 text-emerald-700' : u.status === 'Vendido' ? 'bg-slate-200 text-slate-600' : u.status === 'Extraviado' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-700'}`}>{u.status}</span></td>
                             <td className="py-1.5">{depositos.find(d => d.id === u.depositoId)?.nome || '—'}</td>
                             <td className="py-1.5">{currency(u.custoCompra)}</td>
                             <td className="py-1.5">{formatDate(u.dataEntrada)}</td>
@@ -3925,6 +3976,305 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 /* ---------------- FINANCEIRO (custo, margem, reposição) ---------------- */
 
 /* ---------------- PAGAMENTOS (despesas fora do estoque, pagas com a margem de contribuição) ---------------- */
+
+/* ---------------- BALANÇO DE ESTOQUE (contagem física, correção e relatório de divergências) ---------------- */
+
+function custoMedioProduto(produto, depositoId) {
+  if (produto.serializado) {
+    const unidades = (produto.unidades || []).filter(u => u.status === 'Disponível' && u.depositoId === depositoId);
+    if (!unidades.length) return 0;
+    return unidades.reduce((a, u) => a + (u.custoCompra || 0), 0) / unidades.length;
+  }
+  const lotes = (produto.lotes || []).filter(l => l.depositoId === depositoId && l.quantidadeDisponivel > 0);
+  const qtd = lotes.reduce((a, l) => a + l.quantidadeDisponivel, 0);
+  if (!qtd) return 0;
+  return lotes.reduce((a, l) => a + l.quantidadeDisponivel * l.custoUnitario, 0) / qtd;
+}
+
+function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, askSenha, notify }) {
+  const [depositoNovoId, setDepositoNovoId] = useState(depositos.length === 1 ? depositos[0].id : '');
+  const [produtoSelId, setProdutoSelId] = useState('');
+  const [qtdContadaInput, setQtdContadaInput] = useState('');
+  const [seriaisEncontrados, setSeriaisEncontrados] = useState({}); // { unidadeId: boolean }
+  const [expandedHistorico, setExpandedHistorico] = useState({});
+
+  const balancoAtivo = balancos.find(b => b.status === 'Em andamento');
+  const produtoSel = estoque.find(p => p.id === produtoSelId);
+  const unidadesDoProduto = produtoSel && produtoSel.serializado && balancoAtivo
+    ? (produtoSel.unidades || []).filter(u => u.status === 'Disponível' && u.depositoId === balancoAtivo.depositoId)
+    : [];
+
+  function selecionarProduto(id) {
+    setProdutoSelId(id);
+    const produto = estoque.find(p => p.id === id);
+    if (produto && produto.serializado && balancoAtivo) {
+      const unidades = (produto.unidades || []).filter(u => u.status === 'Disponível' && u.depositoId === balancoAtivo.depositoId);
+      setSeriaisEncontrados(Object.fromEntries(unidades.map(u => [u.id, true])));
+    } else {
+      setSeriaisEncontrados({});
+    }
+    setQtdContadaInput('');
+  }
+
+  async function iniciarBalanco() {
+    if (!depositoNovoId) { notify('Selecione o depósito a contar'); return; }
+    const deposito = depositos.find(d => d.id === depositoNovoId);
+    const novo = { id: uid(), depositoId: depositoNovoId, depositoNome: deposito?.nome || '', data: new Date().toISOString(), status: 'Em andamento', itens: [] };
+    await setBalancos([novo, ...balancos]);
+    notify('Balanço iniciado');
+  }
+
+  async function cancelarBalanco(balanco) {
+    if (!(await askSenha(`Cancelar este balanço em andamento (${balanco.depositoNome})? Nenhuma correção será aplicada.`, { label: 'Cancelar balanço' }))) return;
+    await setBalancos(balancos.filter(b => b.id !== balanco.id));
+    notify('Balanço cancelado');
+  }
+
+  async function adicionarItemContagem() {
+    const produto = estoque.find(p => p.id === produtoSelId);
+    if (!produto) { notify('Selecione um produto'); return; }
+    const qtdSistema = availableQty(produto, balancoAtivo.depositoId);
+    const custoUnitarioMedio = custoMedioProduto(produto, balancoAtivo.depositoId);
+    let novoItem;
+
+    if (produto.serializado) {
+      const naoLocalizados = unidadesDoProduto.filter(u => !seriaisEncontrados[u.id]).map(u => ({ id: u.id, serial: u.serial }));
+      const qtdContada = unidadesDoProduto.length - naoLocalizados.length;
+      novoItem = { id: uid(), produtoId: produto.id, descricao: descricaoProduto(produto), categoria: produto.categoria, serializado: true, quantidadeSistema: qtdSistema, quantidadeContada: qtdContada, custoUnitarioMedio, seriaisNaoLocalizados: naoLocalizados };
+    } else {
+      const qtdContada = parseInt(qtdContadaInput);
+      if (isNaN(qtdContada) || qtdContada < 0) { notify('Informe a quantidade contada (0 ou mais)'); return; }
+      novoItem = { id: uid(), produtoId: produto.id, descricao: descricaoProduto(produto), categoria: produto.categoria, serializado: false, quantidadeSistema: qtdSistema, quantidadeContada: qtdContada, custoUnitarioMedio };
+    }
+
+    await setBalancos(balancos.map(b => {
+      if (b.id !== balancoAtivo.id) return b;
+      const jaExiste = b.itens.some(it => it.produtoId === produto.id);
+      const itens = jaExiste ? b.itens.map(it => it.produtoId === produto.id ? novoItem : it) : [...b.itens, novoItem];
+      return { ...b, itens };
+    }));
+    notify(novoItem.quantidadeContada === novoItem.quantidadeSistema ? 'Item conferido — sem divergência' : 'Item registrado com divergência');
+    setProdutoSelId(''); setQtdContadaInput(''); setSeriaisEncontrados({});
+  }
+
+  async function removerItemContagem(balanco, itemId) {
+    await setBalancos(balancos.map(b => b.id === balanco.id ? { ...b, itens: b.itens.filter(it => it.id !== itemId) } : b));
+  }
+
+  async function finalizarBalanco(balanco) {
+    if (balanco.itens.length === 0) { notify('Adicione ao menos um item contado antes de finalizar'); return; }
+    const divergentes = balanco.itens.filter(it => it.quantidadeContada !== it.quantidadeSistema);
+    const saldoFinanceiro = divergentes.reduce((acc, it) => acc + (it.quantidadeContada - it.quantidadeSistema) * it.custoUnitarioMedio, 0);
+    const ok = await askSenha(
+      `Finalizar balanço de ${balanco.depositoNome}? ${divergentes.length} item(ns) com divergência serão corrigidos no estoque. Saldo financeiro: ${currency(saldoFinanceiro)}.`,
+      { label: 'Finalizar balanço', destrutivo: false }
+    );
+    if (!ok) return;
+
+    let novoEstoque = estoque.map(p => ({
+      ...p,
+      unidades: p.unidades ? p.unidades.map(u => ({ ...u })) : p.unidades,
+      lotes: p.lotes ? p.lotes.map(l => ({ ...l })) : p.lotes,
+    }));
+    const avisos = [];
+
+    for (const it of divergentes) {
+      const idx = novoEstoque.findIndex(p => p.id === it.produtoId);
+      if (idx === -1) continue;
+      const diff = it.quantidadeContada - it.quantidadeSistema;
+
+      if (it.serializado) {
+        if (diff < 0) {
+          const idsNaoLocalizados = new Set((it.seriaisNaoLocalizados || []).map(s => s.id));
+          novoEstoque[idx].unidades = novoEstoque[idx].unidades.map(u => idsNaoLocalizados.has(u.id) ? { ...u, status: 'Extraviado' } : u);
+        } else if (diff > 0) {
+          avisos.push(`${it.descricao}: sobra de ${diff} unidade(s) não foi corrigida automaticamente (item com série exige lançamento via Recebimento, com o número de série de cada unidade).`);
+        }
+      } else {
+        if (diff > 0) {
+          novoEstoque[idx].lotes = [...(novoEstoque[idx].lotes || []), {
+            id: uid(), quantidade: diff, quantidadeDisponivel: diff, custoUnitario: it.custoUnitarioMedio || 0,
+            notaFiscal: 'AJUSTE DE BALANÇO', fornecedor: '', dataEntrada: new Date().toISOString(), depositoId: balanco.depositoId,
+          }];
+        } else if (diff < 0) {
+          let restante = -diff;
+          const lotesOrdenados = novoEstoque[idx].lotes.filter(l => l.depositoId === balanco.depositoId).sort((a, b) => new Date(a.dataEntrada) - new Date(b.dataEntrada));
+          for (const lote of lotesOrdenados) {
+            if (restante <= 0) break;
+            const consumo = Math.min(lote.quantidadeDisponivel, restante);
+            lote.quantidadeDisponivel -= consumo;
+            restante -= consumo;
+          }
+          novoEstoque[idx].lotes = novoEstoque[idx].lotes.map(l => lotesOrdenados.find(lo => lo.id === l.id) || l);
+        }
+      }
+    }
+
+    await setEstoque(novoEstoque);
+    await setBalancos(balancos.map(b => b.id === balanco.id ? { ...b, status: 'Concluído', concluidoEm: new Date().toISOString(), saldoFinanceiro } : b));
+    notify('Balanço finalizado e estoque corrigido');
+    avisos.forEach(a => notify(a));
+  }
+
+  function gerarRelatorioBalanco(balanco, formato) {
+    const divergentes = balanco.itens.filter(it => it.quantidadeContada !== it.quantidadeSistema);
+    const saldoFinanceiro = balanco.saldoFinanceiro !== undefined ? balanco.saldoFinanceiro : divergentes.reduce((acc, it) => acc + (it.quantidadeContada - it.quantidadeSistema) * it.custoUnitarioMedio, 0);
+    baixarDocumento({
+      titulo: 'RELATÓRIO DE BALANÇO DE ESTOQUE',
+      numeroLabel: 'Balanço Nº',
+      numero: balanco.id.slice(-6).toUpperCase(),
+      data: formatDate(balanco.concluidoEm || balanco.data),
+      cliente: { nome: balanco.depositoNome },
+      clienteLabel: 'Depósito',
+      itens: divergentes.map(it => ({
+        descricao: it.seriaisNaoLocalizados && it.seriaisNaoLocalizados.length > 0
+          ? `${it.descricao} — sistema ${it.quantidadeSistema} → contado ${it.quantidadeContada} (SN não localizadas: ${it.seriaisNaoLocalizados.map(s => s.serial).join(', ')})`
+          : `${it.descricao} — sistema ${it.quantidadeSistema} → contado ${it.quantidadeContada}`,
+        quantidade: it.quantidadeContada - it.quantidadeSistema,
+        precoUnitario: it.custoUnitarioMedio,
+        subtotal: (it.quantidadeContada - it.quantidadeSistema) * it.custoUnitarioMedio,
+      })),
+      totalLabel: 'Saldo financeiro do balanço',
+      totalValor: saldoFinanceiro,
+      observacoes: `${balanco.itens.length} item(ns) conferido(s) · ${divergentes.length} com divergência.`,
+    }, `balanco-${(balanco.depositoNome || 'deposito').replace(/\s+/g, '-').toLowerCase()}`, formato);
+  }
+
+  const balancosConcluidos = balancos.filter(b => b.status === 'Concluído');
+
+  return (
+    <div>
+      <p className="text-xs text-slate-400 mb-4">Digite a quantidade contada fisicamente de cada item que quiser conferir — o sistema mostra o que está registrado e, ao finalizar, corrige as divergências automaticamente.</p>
+
+      {!balancoAtivo ? (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5 space-y-2">
+          <h3 className="text-sm font-medium">Iniciar novo balanço</h3>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <select value={depositoNovoId} onChange={e => setDepositoNovoId(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm flex-1">
+              <option value="">Selecione o depósito a contar...</option>
+              {depositos.map(d => <option key={d.id} value={d.id}>{d.nome}</option>)}
+            </select>
+            <button onClick={iniciarBalanco} className="bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">Iniciar balanço</button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white border border-amber-200 rounded-lg p-4 mb-5 space-y-3">
+          <div className="flex justify-between items-center">
+            <h3 className="text-sm font-medium flex items-center gap-1.5"><Scale size={14} className="text-amber-600" /> Balanço em andamento — {balancoAtivo.depositoNome}</h3>
+            <button onClick={() => cancelarBalanco(balancoAtivo)} className="text-xs text-slate-400 hover:text-red-500">Cancelar balanço</button>
+          </div>
+
+          <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
+            <select value={produtoSelId} onChange={e => selecionarProduto(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
+              <option value="">Selecione o produto a conferir...</option>
+              {estoque.map(p => <option key={p.id} value={p.id}>{p.categoria} · {descricaoProduto(p)} (sistema: {availableQty(p, balancoAtivo.depositoId)})</option>)}
+            </select>
+
+            {produtoSel && produtoSel.serializado ? (
+              <div>
+                <p className="text-xs text-slate-500 mb-1.5">Desmarque os números de série que <strong>não</strong> foram localizados fisicamente:</p>
+                {unidadesDoProduto.length === 0 ? (
+                  <p className="text-xs text-slate-400">Nenhuma unidade disponível deste produto nesse depósito.</p>
+                ) : (
+                  <div className="space-y-1 max-h-48 overflow-y-auto border border-slate-100 rounded-md p-2">
+                    {unidadesDoProduto.map(u => (
+                      <label key={u.id} className="flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={!!seriaisEncontrados[u.id]} onChange={e => setSeriaisEncontrados(s => ({ ...s, [u.id]: e.target.checked }))} />
+                        <span className="font-mono">{u.serial}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <button onClick={adicionarItemContagem} disabled={unidadesDoProduto.length === 0} className="mt-2 bg-slate-900 disabled:opacity-30 text-white text-sm px-3 py-2 rounded-md">Registrar contagem</button>
+              </div>
+            ) : produtoSel ? (
+              <div className="flex gap-2">
+                <input type="number" min={0} value={qtdContadaInput} onChange={e => setQtdContadaInput(e.target.value)} placeholder="Quantidade contada" className="border border-slate-200 rounded-md px-2 py-2 text-sm flex-1" />
+                <button onClick={adicionarItemContagem} className="bg-slate-900 text-white text-sm px-3 py-2 rounded-md">Registrar contagem</button>
+              </div>
+            ) : null}
+          </div>
+
+          {balancoAtivo.itens.length > 0 && (
+            <div className="border border-slate-100 rounded-md divide-y">
+              {balancoAtivo.itens.map(it => {
+                const diff = it.quantidadeContada - it.quantidadeSistema;
+                return (
+                  <div key={it.id} className="flex justify-between items-center px-3 py-2 text-sm">
+                    <div>
+                      <p>{it.descricao}</p>
+                      <p className="text-xs text-slate-400">Sistema: {it.quantidadeSistema} · Contado: {it.quantidadeContada}</p>
+                      {it.seriaisNaoLocalizados && it.seriaisNaoLocalizados.length > 0 && (
+                        <p className="text-xs text-red-500 font-mono">Não localizadas: {it.seriaisNaoLocalizados.map(s => s.serial).join(', ')}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-medium ${diff === 0 ? 'text-emerald-600' : diff > 0 ? 'text-blue-600' : 'text-red-500'}`}>
+                        {diff === 0 ? 'OK' : diff > 0 ? `+${diff}` : diff}
+                      </span>
+                      <button onClick={() => removerItemContagem(balancoAtivo, it.id)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <button onClick={() => finalizarBalanco(balancoAtivo)} disabled={balancoAtivo.itens.length === 0} className="w-full bg-emerald-500 disabled:opacity-30 hover:bg-emerald-600 text-white font-medium text-sm px-4 py-2 rounded-md">
+            Finalizar balanço e corrigir estoque
+          </button>
+        </div>
+      )}
+
+      <h3 className="text-sm font-medium text-slate-500 mb-2">Balanços concluídos</h3>
+      <div className="space-y-2">
+        {balancosConcluidos.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum balanço concluído ainda.</p>}
+        {balancosConcluidos.map(b => {
+          const divergentes = b.itens.filter(it => it.quantidadeContada !== it.quantidadeSistema);
+          const saldo = b.saldoFinanceiro !== undefined ? b.saldoFinanceiro : divergentes.reduce((acc, it) => acc + (it.quantidadeContada - it.quantidadeSistema) * it.custoUnitarioMedio, 0);
+          return (
+            <div key={b.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+              <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpandedHistorico(x => ({ ...x, [b.id]: !x[b.id] }))}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedHistorico[b.id] ? 'rotate-90' : ''}`} />
+                  <div className="min-w-0">
+                    <p className="font-medium text-sm truncate">{b.depositoNome}</p>
+                    <p className="text-xs text-slate-400">{formatDate(b.concluidoEm || b.data)} · {b.itens.length} item(ns) · {divergentes.length} divergência(s)</p>
+                  </div>
+                </div>
+                <span className={`font-medium text-sm shrink-0 ${saldo < 0 ? 'text-red-500' : saldo > 0 ? 'text-blue-600' : 'text-emerald-600'}`}>{currency(saldo)}</span>
+              </div>
+              {expandedHistorico[b.id] && (
+                <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-2">
+                  <div className="space-y-1">
+                    {b.itens.map(it => {
+                      const diff = it.quantidadeContada - it.quantidadeSistema;
+                      return (
+                        <div key={it.id} className="text-xs text-slate-600">
+                          <p>
+                            {it.descricao} — sistema {it.quantidadeSistema} → contado {it.quantidadeContada}
+                            {diff !== 0 && <span className={diff > 0 ? 'text-blue-600' : 'text-red-500'}> ({diff > 0 ? '+' : ''}{diff})</span>}
+                          </p>
+                          {it.seriaisNaoLocalizados && it.seriaisNaoLocalizados.length > 0 && (
+                            <p className="text-red-500 font-mono">Não localizadas: {it.seriaisNaoLocalizados.map(s => s.serial).join(', ')}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={() => gerarRelatorioBalanco(b, 'jpg')} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><FileText size={12} /> Relatório JPG</button>
+                    <button onClick={() => gerarRelatorioBalanco(b, 'pdf')} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><FileText size={12} /> Relatório PDF</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
