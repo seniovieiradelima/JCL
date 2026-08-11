@@ -1099,8 +1099,9 @@ function AppInner() {
 
   function exportarBackup() {
     const dados = {
-      versao: 1, exportadoEm: new Date().toISOString(),
+      versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
+      formasRecebimento, senhaAprovacao, pagamentos, ajustesReposicao, balancos,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1130,6 +1131,11 @@ function AppInner() {
       await persistRecebimentos(dados.recebimentos || []);
       await persistDepositos(dados.depositos || []);
       await persistTransferencias(dados.transferencias || []);
+      await persistFormasRecebimento(dados.formasRecebimento || []);
+      await persistPagamentos(dados.pagamentos || []);
+      await persistAjustesReposicao(dados.ajustesReposicao || []);
+      await persistBalancos(dados.balancos || []);
+      if (dados.senhaAprovacao) await persistSenhaAprovacao(dados.senhaAprovacao);
       notify('Backup importado com sucesso');
       setShowBackup(false);
     } catch (e) {
@@ -1630,18 +1636,25 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
   const [form, setForm] = useState(emptyForm());
   const [editandoPrecoId, setEditandoPrecoId] = useState(null);
   const [novoPreco, setNovoPreco] = useState('');
+  const [novoCusto, setNovoCusto] = useState('');
 
-  function abrirEdicaoPreco(item) { setEditandoPrecoId(item.id); setNovoPreco(item.precoVenda); }
-  function cancelarEdicaoPreco() { setEditandoPrecoId(null); setNovoPreco(''); }
+  function abrirEdicaoPreco(item) { setEditandoPrecoId(item.id); setNovoPreco(item.precoVenda); setNovoCusto(item.custoReferencia || ''); }
+  function cancelarEdicaoPreco() { setEditandoPrecoId(null); setNovoPreco(''); setNovoCusto(''); }
 
   async function confirmarAtualizacaoPreco(item) {
-    const valor = parseValorBR(novoPreco);
-    if (isNaN(valor) || valor < 0) { notify('Informe um preço válido'); return; }
-    if (valor === item.precoVenda) { cancelarEdicaoPreco(); return; }
-    const registro = { data: new Date().toISOString(), precoAnterior: item.precoVenda, precoNovo: valor };
-    const next = estoque.map(i => i.id === item.id ? { ...i, precoVenda: valor, historicoPrecos: [registro, ...(i.historicoPrecos || [])] } : i);
+    const valorVenda = parseValorBR(novoPreco);
+    if (isNaN(valorVenda) || valorVenda < 0) { notify('Informe um preço de venda válido'); return; }
+    const valorCusto = novoCusto === '' ? (item.custoReferencia || 0) : parseValorBR(novoCusto);
+    if (isNaN(valorCusto) || valorCusto < 0) { notify('Informe um custo de referência válido'); return; }
+    if (valorVenda === item.precoVenda && valorCusto === (item.custoReferencia || 0)) { cancelarEdicaoPreco(); return; }
+    const registro = {
+      data: new Date().toISOString(),
+      precoAnterior: item.precoVenda, precoNovo: valorVenda,
+      custoAnterior: item.custoReferencia || 0, custoNovo: valorCusto,
+    };
+    const next = estoque.map(i => i.id === item.id ? { ...i, precoVenda: valorVenda, custoReferencia: valorCusto, historicoPrecos: [registro, ...(i.historicoPrecos || [])] } : i);
     await setEstoque(next);
-    notify(`Preço de venda atualizado: ${currency(item.precoVenda)} → ${currency(valor)}`);
+    notify(`Preço atualizado: venda ${currency(item.precoVenda)} → ${currency(valorVenda)}, custo ref. ${currency(item.custoReferencia || 0)} → ${currency(valorCusto)}`);
     cancelarEdicaoPreco();
   }
 
@@ -1851,19 +1864,31 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
               </div>
               {expanded[item.id] && (
                 <div className="border-t border-slate-100 px-3 py-2 bg-slate-50">
-                  <div className="flex items-center justify-between bg-white border border-slate-200 rounded-md px-3 py-2 mb-2">
+                  <div className="bg-white border border-slate-200 rounded-md px-3 py-2 mb-2">
                     {editandoPrecoId === item.id ? (
-                      <div className="flex items-center gap-2 w-full">
-                        <span className="text-xs text-slate-500 shrink-0">Novo preço de venda:</span>
-                        <input type="text" inputMode="decimal" autoFocus value={novoPreco} onChange={e => setNovoPreco(e.target.value)} placeholder="Ex: 518,42" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
-                        <button onClick={() => confirmarAtualizacaoPreco(item)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1 rounded-md">Salvar</button>
-                        <button onClick={cancelarEdicaoPreco} className="text-xs text-slate-500 px-2 py-1">Cancelar</button>
+                      <div className="flex flex-col gap-2 w-full">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500 shrink-0 w-32">Preço de venda:</span>
+                          <input type="text" inputMode="decimal" autoFocus value={novoPreco} onChange={e => setNovoPreco(e.target.value)} placeholder="Ex: 518,42" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500 shrink-0 w-32">Custo de referência:</span>
+                          <input type="text" inputMode="decimal" value={novoCusto} onChange={e => setNovoCusto(e.target.value)} placeholder="Ex: 468,00" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                        </div>
+                        <p className="text-[10px] text-slate-400">Se o produto já tem lote/unidade recebido normalmente, o custo real desses continua valendo nas vendas. Esse campo só entra em ação como custo de itens de estoque antigo lançados via Balanço de Estoque (sem nota fiscal atual).</p>
+                        <div className="flex gap-2">
+                          <button onClick={() => confirmarAtualizacaoPreco(item)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1 rounded-md">Salvar</button>
+                          <button onClick={cancelarEdicaoPreco} className="text-xs text-slate-500 px-2 py-1">Cancelar</button>
+                        </div>
                       </div>
                     ) : (
-                      <>
-                        <span className="text-xs text-slate-500">Preço de venda atual: <span className="font-medium text-slate-700">{currency(item.precoVenda)}</span></span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-500">
+                          Venda: <span className="font-medium text-slate-700">{currency(item.precoVenda)}</span>
+                          {' · '}Custo ref.: <span className="font-medium text-slate-700">{currency(item.custoReferencia || 0)}</span>
+                        </span>
                         <button onClick={() => abrirEdicaoPreco(item)} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1 rounded-md"><Pencil size={11} /> Atualizar preço</button>
-                      </>
+                      </div>
                     )}
                   </div>
                   {(item.historicoPrecos || []).length > 0 && (
@@ -1871,7 +1896,10 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
                       <p className="text-slate-400 mb-1">Histórico de atualização de preço</p>
                       <div className="space-y-0.5">
                         {item.historicoPrecos.map((h, i) => (
-                          <p key={i} className="text-slate-500">{formatDate(h.data)} — {currency(h.precoAnterior)} → <span className="font-medium">{currency(h.precoNovo)}</span></p>
+                          <p key={i} className="text-slate-500">
+                            {formatDate(h.data)} — venda {currency(h.precoAnterior)} → <span className="font-medium">{currency(h.precoNovo)}</span>
+                            {h.custoNovo !== undefined && h.custoAnterior !== h.custoNovo && <> · custo ref. {currency(h.custoAnterior)} → <span className="font-medium">{currency(h.custoNovo)}</span></>}
+                          </p>
                         ))}
                       </div>
                     </div>
@@ -2173,13 +2201,30 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
   const [showForm, setShowForm] = useState(false);
   const [busca, setBusca] = useState('');
   const [form, setForm] = useState(emptyForm());
+  const [editandoFornecedorId, setEditandoFornecedorId] = useState(null);
   function emptyForm() { return { nome: '', cnpj: '', telefone: '', email: '', contato: '', endereco: '', observacoes: '' }; }
+  function resetForm() { setForm(emptyForm()); setEditandoFornecedorId(null); setShowForm(false); }
+
+  function abrirEdicaoFornecedor(f) {
+    setForm({
+      nome: f.nome || '', cnpj: f.cnpj || '', telefone: f.telefone || '', email: f.email || '',
+      contato: f.contato || '', endereco: f.endereco || '', observacoes: f.observacoes || '',
+    });
+    setEditandoFornecedorId(f.id);
+    setShowForm(true);
+  }
 
   async function handleAdd(e) {
     e.preventDefault();
     if (!form.nome) { notify('Preencha a razão social antes de salvar'); return; }
-    await setFornecedores([{ id: uid(), ...form }, ...fornecedores]);
-    notify('Fornecedor cadastrado'); setForm(emptyForm()); setShowForm(false);
+    if (editandoFornecedorId) {
+      await setFornecedores(fornecedores.map(f => f.id === editandoFornecedorId ? { ...f, ...form } : f));
+      notify('Fornecedor atualizado');
+    } else {
+      await setFornecedores([{ id: uid(), ...form }, ...fornecedores]);
+      notify('Fornecedor cadastrado');
+    }
+    resetForm();
   }
   async function handleDelete(id) {
     if (!(await askConfirm('Remover este fornecedor?'))) return;
@@ -2195,15 +2240,15 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
           <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
           <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar fornecedor..." className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400" />
         </div>
-        <button onClick={() => setShowForm(s => !s)} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
+        <button onClick={() => { resetForm(); setShowForm(s => !s); }} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
           <Plus size={16} /> Novo fornecedor
         </button>
       </div>
       {showForm && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
           <div className="flex justify-between items-center">
-            <h3 className="font-medium text-sm">Novo fornecedor</h3>
-            <button type="button" onClick={() => setShowForm(false)}><X size={16} className="text-slate-400" /></button>
+            <h3 className="font-medium text-sm">{editandoFornecedorId ? 'Editar fornecedor' : 'Novo fornecedor'}</h3>
+            <button type="button" onClick={resetForm}><X size={16} className="text-slate-400" /></button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <input placeholder="Razão social" value={form.nome} onChange={e => setForm(f => ({ ...f, nome: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2" />
@@ -2214,7 +2259,7 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
             <input placeholder="Endereço" value={form.endereco} onChange={e => setForm(f => ({ ...f, endereco: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2" />
             <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2" />
           </div>
-          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar fornecedor</button>
+          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">{editandoFornecedorId ? 'Salvar alterações' : 'Salvar fornecedor'}</button>
         </div>
       )}
       <div className="space-y-2">
@@ -2225,7 +2270,10 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
               <p className="font-medium text-sm truncate">{f.nome}</p>
               <p className="text-xs text-slate-500">{[f.cnpj, f.telefone, f.contato].filter(Boolean).join(' · ')}</p>
             </div>
-            <button onClick={() => handleDelete(f.id)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={() => abrirEdicaoFornecedor(f)} title="Editar fornecedor"><Pencil size={14} className="text-slate-300 hover:text-slate-600" /></button>
+              <button onClick={() => handleDelete(f.id)} title="Remover fornecedor"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+            </div>
           </div>
         ))}
       </div>
@@ -3987,12 +4035,12 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 function custoMedioProduto(produto, depositoId) {
   if (produto.serializado) {
     const unidades = (produto.unidades || []).filter(u => u.status === 'Disponível' && u.depositoId === depositoId);
-    if (!unidades.length) return 0;
+    if (!unidades.length) return produto.custoReferencia || 0;
     return unidades.reduce((a, u) => a + (u.custoCompra || 0), 0) / unidades.length;
   }
   const lotes = (produto.lotes || []).filter(l => l.depositoId === depositoId && l.quantidadeDisponivel > 0);
   const qtd = lotes.reduce((a, l) => a + l.quantidadeDisponivel, 0);
-  if (!qtd) return 0;
+  if (!qtd) return produto.custoReferencia || 0;
   return lotes.reduce((a, l) => a + l.quantidadeDisponivel * l.custoUnitario, 0) / qtd;
 }
 
