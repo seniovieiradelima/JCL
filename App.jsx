@@ -2280,10 +2280,10 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                       );
                     }
                     return (
-                      <div key={idx} className="flex justify-between items-center text-xs text-slate-600">
-                        <span>{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</span>
+                      <div key={idx} className="flex justify-between items-center gap-2 text-xs text-slate-600">
+                        <span className="min-w-0">{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</span>
                         {!p.anulado && (
-                          <button onClick={() => abrirEdicaoItem(p, i)} title="Editar item"><Pencil size={12} className="text-slate-300 hover:text-slate-600" /></button>
+                          <button onClick={() => abrirEdicaoItem(p, i)} title="Editar item" className="shrink-0 flex items-center gap-1 text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-400 rounded px-1.5 py-1"><Pencil size={12} /> Editar</button>
                         )}
                       </div>
                     );
