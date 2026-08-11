@@ -778,6 +778,203 @@ function fileToDataUrl(file) {
   });
 }
 
+// Desenha um documento (orçamento/recibo) num canvas — layout genérico reutilizável
+function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, itens, totalLabel, totalValor, extraLinhas, observacoes }) {
+  const largura = 900;
+  const margem = 50;
+  const larguraUtil = largura - margem * 2;
+  const linhaAltura = 26;
+  const alturaCabecalho = 100;
+  const alturaCliente = 90;
+  const alturaTabelaCabecalho = 30;
+  const alturaItens = Math.max(1, itens.length) * linhaAltura;
+  const alturaTotal = 50;
+  const alturaExtras = extraLinhas && extraLinhas.length ? (extraLinhas.length * 18 + 40) : 0;
+  const alturaObs = observacoes ? 40 : 0;
+  const alturaRodape = 50;
+  const altura = alturaCabecalho + alturaCliente + alturaTabelaCabecalho + alturaItens + alturaTotal + alturaExtras + alturaObs + alturaRodape + margem;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = largura;
+  canvas.height = altura;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, largura, altura);
+
+  let y = margem;
+
+  ctx.fillStyle = '#f59e0b';
+  ctx.fillRect(margem, y, 40, 40);
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 15px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('EM', margem + 20, y + 26);
+  ctx.textAlign = 'left';
+
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText('Estação Mossoró', margem + 55, y + 18);
+  ctx.font = '11px Arial';
+  ctx.fillStyle = '#64748b';
+  ctx.fillText('Sistema de Gestão · Solar & Elétrica', margem + 55, y + 34);
+
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillStyle = '#0f172a';
+  ctx.fillText(titulo, largura - margem, y + 16);
+  ctx.font = '12px Arial';
+  ctx.fillStyle = '#64748b';
+  ctx.fillText(`${numeroLabel}: ${numero}`, largura - margem, y + 34);
+  ctx.fillText(`Data: ${data}`, largura - margem, y + 50);
+  ctx.textAlign = 'left';
+
+  y += alturaCabecalho;
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.beginPath(); ctx.moveTo(margem, y); ctx.lineTo(largura - margem, y); ctx.stroke();
+  y += 25;
+
+  ctx.font = 'bold 12px Arial';
+  ctx.fillStyle = '#334155';
+  ctx.fillText('Cliente', margem, y);
+  y += 20;
+  ctx.font = '13px Arial';
+  ctx.fillStyle = '#0f172a';
+  ctx.fillText(cliente.nome || '', margem, y);
+  y += 18;
+  ctx.font = '11px Arial';
+  ctx.fillStyle = '#64748b';
+  const linhaContato = [cliente.documento, cliente.telefone, cliente.cidade].filter(Boolean).join('  ·  ');
+  if (linhaContato) { ctx.fillText(linhaContato, margem, y); y += 16; }
+  if (cliente.endereco) { ctx.fillText(cliente.endereco, margem, y); y += 16; }
+  y += 12;
+
+  const colDescX = margem + 10;
+  const colQtdX = margem + larguraUtil - 260;
+  const colPrecoX = margem + larguraUtil - 165;
+  const colSubtotalX = margem + larguraUtil - 10;
+
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(margem, y, larguraUtil, alturaTabelaCabecalho);
+  ctx.fillStyle = '#334155';
+  ctx.font = 'bold 11px Arial';
+  ctx.fillText('Descrição', colDescX, y + 19);
+  ctx.fillText('Qtd', colQtdX, y + 19);
+  ctx.fillText('Preço unit.', colPrecoX, y + 19);
+  ctx.textAlign = 'right';
+  ctx.fillText('Subtotal', colSubtotalX, y + 19);
+  ctx.textAlign = 'left';
+  y += alturaTabelaCabecalho;
+
+  ctx.font = '11px Arial';
+  itens.forEach((it, idx) => {
+    if (idx % 2 === 1) { ctx.fillStyle = '#f8fafc'; ctx.fillRect(margem, y, larguraUtil, linhaAltura); }
+    ctx.fillStyle = '#0f172a';
+    let desc = it.descricao || '';
+    if (desc.length > 58) desc = desc.slice(0, 55) + '...';
+    ctx.fillText(desc, colDescX, y + 17);
+    ctx.fillText(String(it.quantidade), colQtdX, y + 17);
+    ctx.fillText(currency(it.precoUnitario), colPrecoX, y + 17);
+    ctx.textAlign = 'right';
+    ctx.fillText(currency(it.subtotal), colSubtotalX, y + 17);
+    ctx.textAlign = 'left';
+    y += linhaAltura;
+  });
+
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.beginPath(); ctx.moveTo(margem, y); ctx.lineTo(largura - margem, y); ctx.stroke();
+  y += 32;
+
+  ctx.font = 'bold 15px Arial';
+  ctx.fillStyle = '#0f172a';
+  ctx.textAlign = 'right';
+  ctx.fillText(`${totalLabel}: ${currency(totalValor)}`, largura - margem, y);
+  ctx.textAlign = 'left';
+  y += 26;
+
+  if (extraLinhas && extraLinhas.length) {
+    ctx.font = 'bold 11px Arial';
+    ctx.fillStyle = '#334155';
+    ctx.fillText('Formas de pagamento', margem, y);
+    y += 18;
+    ctx.font = '11px Arial';
+    ctx.fillStyle = '#64748b';
+    extraLinhas.forEach(l => { ctx.fillText(l, margem, y); y += 18; });
+    y += 12;
+  }
+
+  if (observacoes) {
+    ctx.font = 'italic 10px Arial';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(observacoes, margem, y);
+    y += 20;
+  }
+
+  ctx.font = '9px Arial';
+  ctx.fillStyle = '#cbd5e1';
+  ctx.fillText('Documento gerado pelo Sistema de Gestão — Estação Mossoró', margem, altura - 20);
+
+  return canvas;
+}
+
+// Empacota a imagem JPEG do canvas dentro de um PDF de uma página, sem depender de bibliotecas externas
+function canvasParaPdfBlob(canvas, quality = 0.92) {
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  const base64 = dataUrl.split(',')[1];
+  const binario = atob(base64);
+  const jpegBytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) jpegBytes[i] = binario.charCodeAt(i);
+
+  const largura = canvas.width;
+  const altura = canvas.height;
+  const enc = new TextEncoder();
+  const partes = [];
+  const offsets = {};
+  let pos = 0;
+
+  function texto(str) { const b = enc.encode(str); partes.push(b); pos += b.length; }
+  function bytes(b) { partes.push(b); pos += b.length; }
+  function marcar(n) { offsets[n] = pos; }
+
+  texto('%PDF-1.4\n');
+
+  marcar(1); texto('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  marcar(2); texto('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+  marcar(3); texto(`3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im0 4 0 R >> >> /MediaBox [0 0 ${largura} ${altura}] /Contents 5 0 R >>\nendobj\n`);
+  marcar(4);
+  texto(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${largura} /Height ${altura} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
+  bytes(jpegBytes);
+  texto('\nendstream\nendobj\n');
+
+  const conteudo = `q ${largura} 0 0 ${altura} 0 0 cm /Im0 Do Q`;
+  marcar(5); texto(`5 0 obj\n<< /Length ${conteudo.length} >>\nstream\n${conteudo}\nendstream\nendobj\n`);
+
+  const xrefInicio = pos;
+  let xref = 'xref\n0 6\n0000000000 65535 f \n';
+  for (let i = 1; i <= 5; i++) xref += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  texto(xref);
+  texto(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefInicio}\n%%EOF`);
+
+  return new Blob(partes, { type: 'application/pdf' });
+}
+
+function baixarBlob(blob, nomeArquivo) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nomeArquivo;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function baixarDocumento(dadosDocumento, nomeBase, formato) {
+  const canvas = desenharDocumento(dadosDocumento);
+  if (formato === 'jpg') {
+    canvas.toBlob(blob => baixarBlob(blob, `${nomeBase}.jpg`), 'image/jpeg', 0.92);
+  } else {
+    baixarBlob(canvasParaPdfBlob(canvas), `${nomeBase}.pdf`);
+  }
+}
+
 // Chave de um item dentro de uma venda (para saber o que já foi expedido)
 function chaveItemVenda(vendaId, item) {
   return `${vendaId}:${item.id || item.unidadeId || `${item.itemId}-${item.descricao}`}`;
@@ -951,6 +1148,51 @@ function AppInner() {
       });
       if (mudou) await saveKey('sgm:estoque', estoqueFinal);
 
+      // Migração: corrige a descrição (marca + modelo + potência) de itens já lançados em
+      // pedidos, recebimentos e transferências antes dessa informação completa existir.
+      const produtoPorId = Object.fromEntries(estoqueFinal.map(p => [p.id, p]));
+
+      let pedidosFinal = pc;
+      let pedidosMudou = false;
+      pedidosFinal = pc.map(pedido => {
+        let alterado = false;
+        const itens = pedido.itens.map(it => {
+          const produto = produtoPorId[it.produtoId];
+          if (produto) {
+            const novaDescricao = descricaoProduto(produto);
+            if (novaDescricao && novaDescricao !== it.descricao) { alterado = true; return { ...it, descricao: novaDescricao }; }
+          }
+          return it;
+        });
+        if (alterado) { pedidosMudou = true; return { ...pedido, itens }; }
+        return pedido;
+      });
+      if (pedidosMudou) await saveKey('sgm:pedidosCompra', pedidosFinal);
+
+      let recebimentosFinal = rc;
+      let recebimentosMudou = false;
+      recebimentosFinal = rc.map(r => {
+        const produto = produtoPorId[r.produtoId];
+        if (produto) {
+          const novaDescricao = descricaoProduto(produto);
+          if (novaDescricao && novaDescricao !== r.descricao) { recebimentosMudou = true; return { ...r, descricao: novaDescricao }; }
+        }
+        return r;
+      });
+      if (recebimentosMudou) await saveKey('sgm:recebimentos', recebimentosFinal);
+
+      let transferenciasFinal = tr;
+      let transferenciasMudou = false;
+      transferenciasFinal = tr.map(t => {
+        const produto = produtoPorId[t.produtoId];
+        if (produto) {
+          const novaDescricao = descricaoProduto(produto);
+          if (novaDescricao && novaDescricao !== t.descricao) { transferenciasMudou = true; return { ...t, descricao: novaDescricao }; }
+        }
+        return t;
+      });
+      if (transferenciasMudou) await saveKey('sgm:transferencias', transferenciasFinal);
+
       let formasFinal = fr;
       if (formasFinal.length === 0) {
         formasFinal = [
@@ -961,7 +1203,7 @@ function AppInner() {
       }
 
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
-      setExpedicoes(ex); setPedidosCompra(pc); setRecebimentos(rc); setDepositos(depositosFinal); setTransferencias(tr);
+      setExpedicoes(ex); setPedidosCompra(pedidosFinal); setRecebimentos(recebimentosFinal); setDepositos(depositosFinal); setTransferencias(transferenciasFinal);
       setSenhaAprovacao(sa);
       setPagamentos(pg);
       setAjustesReposicao(aj);
@@ -2032,6 +2274,89 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
     notify('Pedido de compra anulado');
   }
 
+  const [editandoItem, setEditandoItem] = useState(null); // { pedidoId, itemId }
+  const [qtdEditada, setQtdEditada] = useState('');
+  const [custoEditado, setCustoEditado] = useState('');
+
+  function abrirEdicaoItem(pedido, item) {
+    setEditandoItem({ pedidoId: pedido.id, itemId: item.id });
+    setQtdEditada(String(item.quantidade));
+    setCustoEditado(String(item.custoUnitario));
+  }
+  function cancelarEdicaoItem() { setEditandoItem(null); setQtdEditada(''); setCustoEditado(''); }
+
+  async function salvarEdicaoItem(pedido, item) {
+    const novaQtd = parseInt(qtdEditada);
+    const novoCusto = parseValorBR(custoEditado);
+    if (isNaN(novaQtd) || novaQtd <= 0) { notify('Informe uma quantidade válida'); return; }
+    if (isNaN(novoCusto) || novoCusto < 0) { notify('Informe um custo unitário válido'); return; }
+    const recebido = qtdRecebida(recebimentos, pedido.id, item.id);
+    if (novaQtd < recebido) { notify(`Não é possível informar quantidade menor que o já recebido (${recebido})`); return; }
+    if (novaQtd === item.quantidade && novoCusto === item.custoUnitario) { cancelarEdicaoItem(); return; }
+
+    const ok = await askSenha(
+      `Alterar "${item.descricao}" no pedido ${pedido.numeroPedidoFornecedor}? Quantidade: ${item.quantidade} → ${novaQtd}. Custo unitário: ${currency(item.custoUnitario)} → ${currency(novoCusto)}.`,
+      { label: 'Salvar alteração', destrutivo: false }
+    );
+    if (!ok) return;
+
+    await setPedidos(pedidos.map(p => {
+      if (p.id !== pedido.id) return p;
+      const itens = p.itens.map(i => i.id === item.id ? { ...i, quantidade: novaQtd, custoUnitario: novoCusto } : i);
+      const valorTotal = itens.reduce((acc, i) => acc + i.quantidade * i.custoUnitario, 0);
+      return { ...p, itens, valorTotal };
+    }));
+    notify('Item do pedido atualizado');
+    cancelarEdicaoItem();
+  }
+
+  async function removerItemPedido(pedido, item) {
+    const recebido = qtdRecebida(recebimentos, pedido.id, item.id);
+    if (recebido > 0) { notify('Não é possível remover um item que já teve recebimento — anule o recebimento primeiro, se necessário'); return; }
+    if (pedido.itens.length <= 1) { notify('O pedido precisa ter ao menos um item. Para removê-lo por completo, anule o pedido.'); return; }
+    const ok = await askSenha(`Remover "${item.descricao}" (${item.quantidade}x ${currency(item.custoUnitario)}) do pedido ${pedido.numeroPedidoFornecedor}?`);
+    if (!ok) return;
+    await setPedidos(pedidos.map(p => {
+      if (p.id !== pedido.id) return p;
+      const itens = p.itens.filter(i => i.id !== item.id);
+      const valorTotal = itens.reduce((acc, i) => acc + i.quantidade * i.custoUnitario, 0);
+      return { ...p, itens, valorTotal };
+    }));
+    notify('Item removido do pedido');
+  }
+
+  const [adicionandoItemEm, setAdicionandoItemEm] = useState(null); // pedidoId
+  const [novoItemProdutoId, setNovoItemProdutoId] = useState('');
+  const [novoItemQtd, setNovoItemQtd] = useState('');
+  const [novoItemCusto, setNovoItemCusto] = useState('');
+
+  function abrirAdicionarItem(pedidoId) {
+    setAdicionandoItemEm(pedidoId); setNovoItemProdutoId(''); setNovoItemQtd(''); setNovoItemCusto('');
+  }
+  function cancelarAdicionarItem() { setAdicionandoItemEm(null); setNovoItemProdutoId(''); setNovoItemQtd(''); setNovoItemCusto(''); }
+
+  async function confirmarAdicionarItem(pedido) {
+    const produto = estoque.find(p => p.id === novoItemProdutoId);
+    const qtd = parseInt(novoItemQtd);
+    const custo = parseValorBR(novoItemCusto);
+    if (!produto) { notify('Selecione um produto já cadastrado'); return; }
+    if (isNaN(qtd) || qtd <= 0) { notify('Informe uma quantidade válida'); return; }
+    if (isNaN(custo) || custo < 0) { notify('Informe um custo unitário válido'); return; }
+
+    const ok = await askSenha(`Adicionar "${descricaoProduto(produto)}" (${qtd}x ${currency(custo)}) ao pedido ${pedido.numeroPedidoFornecedor}?`, { label: 'Adicionar item', destrutivo: false });
+    if (!ok) return;
+
+    const novoItem = { id: uid(), produtoId: produto.id, descricao: descricaoProduto(produto), categoria: produto.categoria, serializado: produto.serializado, quantidade: qtd, custoUnitario: custo };
+    await setPedidos(pedidos.map(p => {
+      if (p.id !== pedido.id) return p;
+      const itens = [...p.itens, novoItem];
+      const valorTotal = itens.reduce((acc, i) => acc + i.quantidade * i.custoUnitario, 0);
+      return { ...p, itens, valorTotal };
+    }));
+    notify('Item adicionado ao pedido');
+    cancelarAdicionarItem();
+  }
+
   function statusPedido(p) {
     if (p.anulado) return { label: 'Anulado', style: 'bg-red-100 text-red-600' };
     if (p.cancelado) return { label: 'Cancelado', style: 'bg-red-100 text-red-600' };
@@ -2181,11 +2506,57 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                 </div>
               </div>
               {expanded[p.id] && (
-                <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1">
+                <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1.5">
                   {p.itens.map((i, idx) => {
                     const recebido = qtdRecebida(recebimentos, p.id, i.id);
-                    return <p key={idx} className="text-xs text-slate-600">{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</p>;
+                    const editando = editandoItem && editandoItem.pedidoId === p.id && editandoItem.itemId === i.id;
+                    if (editando) {
+                      return (
+                        <div key={idx} className="bg-white border border-slate-200 rounded-md p-2 space-y-1.5">
+                          <p className="text-xs text-slate-500">{i.descricao} <span className="text-slate-400">(recebido {recebido})</span></p>
+                          <div className="flex flex-col sm:flex-row gap-1.5">
+                            <input type="number" min={recebido || 1} value={qtdEditada} onChange={e => setQtdEditada(e.target.value)} placeholder="Quantidade" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
+                            <input type="text" inputMode="decimal" value={custoEditado} onChange={e => setCustoEditado(e.target.value)} placeholder="Custo unitário" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-32" />
+                            <button onClick={() => salvarEdicaoItem(p, i)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1.5 rounded-md">Salvar</button>
+                            <button onClick={cancelarEdicaoItem} className="text-xs text-slate-500 px-2.5 py-1.5">Cancelar</button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={idx} className="flex justify-between items-center gap-2 text-xs text-slate-600">
+                        <span className="min-w-0">{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</span>
+                        {!p.anulado && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button onClick={() => abrirEdicaoItem(p, i)} title="Editar item" className="flex items-center gap-1 text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-400 rounded px-1.5 py-1"><Pencil size={12} /> Editar</button>
+                            <button onClick={() => removerItemPedido(p, i)} title="Remover item" className="flex items-center text-slate-500 hover:text-red-600 border border-slate-200 hover:border-red-300 rounded px-1.5 py-1"><Trash2 size={12} /></button>
+                          </div>
+                        )}
+                      </div>
+                    );
                   })}
+
+                  {!p.anulado && (
+                    adicionandoItemEm === p.id ? (
+                      <div className="bg-white border border-slate-200 rounded-md p-2 space-y-1.5 mt-1">
+                        <select value={novoItemProdutoId} onChange={e => setNovoItemProdutoId(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs">
+                          <option value="">Selecione o produto (já cadastrado)...</option>
+                          {estoque.map(prod => <option key={prod.id} value={prod.id}>{prod.categoria} · {descricaoProduto(prod)}</option>)}
+                        </select>
+                        <div className="flex flex-col sm:flex-row gap-1.5">
+                          <input type="number" min={1} value={novoItemQtd} onChange={e => setNovoItemQtd(e.target.value)} placeholder="Quantidade" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
+                          <input type="text" inputMode="decimal" value={novoItemCusto} onChange={e => setNovoItemCusto(e.target.value)} placeholder="Custo unitário" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-32" />
+                          <button onClick={() => confirmarAdicionarItem(p)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1.5 rounded-md">Adicionar</button>
+                          <button onClick={cancelarAdicionarItem} className="text-xs text-slate-500 px-2.5 py-1.5">Cancelar</button>
+                        </div>
+                        <p className="text-[10px] text-slate-400">Pra cadastrar um produto novo (marca/modelo/potência), use a aba Cadastros → Estoque primeiro.</p>
+                      </div>
+                    ) : (
+                      <button onClick={() => abrirAdicionarItem(p.id)} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-900 border border-dashed border-slate-300 hover:border-slate-400 rounded px-2 py-1.5 mt-1">
+                        <Plus size={12} /> Adicionar item ao pedido
+                      </button>
+                    )
+                  )}
                 </div>
               )}
             </div>
@@ -2590,13 +2961,30 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [busca, setBusca] = useState('');
   const [form, setForm] = useState(emptyForm());
+  const [editandoClienteId, setEditandoClienteId] = useState(null);
   function emptyForm() { return { nome: '', documento: '', telefone: '', email: '', endereco: '', cidade: '', uc: '', observacoes: '' }; }
+  function resetForm() { setForm(emptyForm()); setEditandoClienteId(null); setShowForm(false); }
+
+  function abrirEdicaoCliente(c) {
+    setForm({
+      nome: c.nome || '', documento: c.documento || '', telefone: c.telefone || '', email: c.email || '',
+      endereco: c.endereco || '', cidade: c.cidade || '', uc: c.uc || '', observacoes: c.observacoes || '',
+    });
+    setEditandoClienteId(c.id);
+    setShowForm(true);
+  }
 
   async function handleAdd(e) {
     e.preventDefault();
     if (!form.nome) { notify('Preencha o nome do cliente antes de salvar'); return; }
-    await setClientes([{ id: uid(), ...form }, ...clientes]);
-    notify('Cliente cadastrado'); setForm(emptyForm()); setShowForm(false);
+    if (editandoClienteId) {
+      await setClientes(clientes.map(c => c.id === editandoClienteId ? { ...c, ...form } : c));
+      notify('Cliente atualizado');
+    } else {
+      await setClientes([{ id: uid(), ...form }, ...clientes]);
+      notify('Cliente cadastrado');
+    }
+    resetForm();
   }
   async function handleDelete(id) {
     if (!(await askConfirm('Remover este cliente?'))) return;
@@ -2612,15 +3000,15 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
           <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
           <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar cliente..." className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400" />
         </div>
-        <button onClick={() => setShowForm(s => !s)} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
+        <button onClick={() => { resetForm(); setShowForm(s => !s); }} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
           <Plus size={16} /> Novo cliente
         </button>
       </div>
       {showForm && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
           <div className="flex justify-between items-center">
-            <h3 className="font-medium text-sm">Novo cliente</h3>
-            <button type="button" onClick={() => setShowForm(false)}><X size={16} className="text-slate-400" /></button>
+            <h3 className="font-medium text-sm">{editandoClienteId ? 'Editar cliente' : 'Novo cliente'}</h3>
+            <button type="button" onClick={resetForm}><X size={16} className="text-slate-400" /></button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <input placeholder="Nome completo / Razão social" value={form.nome} onChange={e => setForm(f => ({ ...f, nome: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2" />
@@ -2632,7 +3020,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
             <input placeholder="Cidade/UF" value={form.cidade} onChange={e => setForm(f => ({ ...f, cidade: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
           </div>
-          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar cliente</button>
+          <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">{editandoClienteId ? 'Salvar alterações' : 'Salvar cliente'}</button>
         </div>
       )}
       <div className="space-y-2">
@@ -2644,7 +3032,10 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
               <p className="text-xs text-slate-500">{[c.documento, c.telefone, c.cidade].filter(Boolean).join(' · ')}</p>
               {c.uc && <p className="text-xs text-slate-400">UC: {c.uc}</p>}
             </div>
-            <button onClick={() => handleDelete(c.id)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={() => abrirEdicaoCliente(c)} title="Editar cliente"><Pencil size={14} className="text-slate-300 hover:text-slate-600" /></button>
+              <button onClick={() => handleDelete(c.id)} title="Remover cliente"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+            </div>
           </div>
         ))}
       </div>
@@ -2705,6 +3096,24 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     await setVendas([venda, ...vendas]);
     await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
     notify('Orçamento convertido em venda e estoque atualizado');
+  }
+
+  function gerarDocumentoOrcamento(orc, formato) {
+    const cliente = clientes.find(c => c.id === orc.clienteId) || { nome: orc.clienteNome };
+    baixarDocumento({
+      titulo: 'PROPOSTA / ORÇAMENTO',
+      numeroLabel: 'Orçamento Nº',
+      numero: orc.id.slice(-6).toUpperCase(),
+      data: formatDate(orc.data),
+      cliente,
+      itens: orc.itens.map(it => ({
+        descricao: it.serial ? `${it.descricao} (SN ${it.serial})` : it.descricao,
+        quantidade: it.quantidade, precoUnitario: it.precoVendaUnitario, subtotal: it.precoVendaUnitario * it.quantidade,
+      })),
+      totalLabel: 'Valor total da proposta',
+      totalValor: orc.total,
+      observacoes: 'Proposta sujeita à disponibilidade de estoque no momento do fechamento.',
+    }, `orcamento-${(orc.clienteNome || 'cliente').replace(/\s+/g, '-').toLowerCase()}`, formato);
   }
 
   function statusBadge(status) {
@@ -2802,6 +3211,11 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
                     <button onClick={() => cancelarOrcamento(o.id)} className="flex items-center gap-1 text-xs bg-red-50 hover:bg-red-100 text-red-600 px-2.5 py-1.5 rounded-md"><Ban size={12} /> Cancelar</button>
                   </div>
                 )}
+                <div className="flex gap-2 pt-1">
+                  <span className="text-[11px] text-slate-400 self-center">Gerar documento:</span>
+                  <button onClick={() => gerarDocumentoOrcamento(o, 'jpg')} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><FileText size={12} /> JPG</button>
+                  <button onClick={() => gerarDocumentoOrcamento(o, 'pdf')} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><FileText size={12} /> PDF</button>
+                </div>
               </div>
             )}
           </div>
@@ -2894,19 +3308,54 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     notify('Venda anulada e estoque devolvido');
   }
 
-  async function anexarComprovante(vendaId, file, formaId, formaNome) {
+  function gerarReciboVenda(venda, formato) {
+    const cliente = clientes.find(c => c.id === venda.clienteId) || { nome: venda.clienteNome };
+    const extraLinhas = (venda.comprovantes || [])
+      .filter(c => c.valor > 0)
+      .map(c => `${c.formaRecebimentoNome || 'Pagamento'}: ${currency(c.valor)}`);
+    baixarDocumento({
+      titulo: 'RECIBO DE VENDA',
+      numeroLabel: 'Venda Nº',
+      numero: venda.id.slice(-6).toUpperCase(),
+      data: formatDate(venda.data),
+      cliente,
+      itens: venda.itens.map(it => ({
+        descricao: it.serial ? `${it.descricao} (SN ${it.serial})` : it.descricao,
+        quantidade: it.quantidade, precoUnitario: it.precoVendaUnitario, subtotal: it.precoVendaUnitario * it.quantidade,
+      })),
+      totalLabel: 'Valor total recebido',
+      totalValor: venda.totalVenda,
+      extraLinhas: extraLinhas.length ? extraLinhas : undefined,
+      observacoes: 'Recibo referente à negociação descrita acima.',
+    }, `recibo-venda-${(venda.clienteNome || 'cliente').replace(/\s+/g, '-').toLowerCase()}`, formato);
+  }
+
+  async function anexarComprovante(vendaId, file, formaId, formaNome, valor) {
     if (!file) return;
     const isImage = file.type.startsWith('image/');
     const dataUrl = isImage ? await fileToCompressedDataUrl(file) : await fileToDataUrl(file);
-    const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '' };
-    const next = vendas.map(v => v.id === vendaId ? { ...v, comprovantes: [...(v.comprovantes || []), comprovante] } : v);
+    const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0 };
+    const next = vendas.map(v => {
+      if (v.id !== vendaId) return v;
+      const comprovantes = [...(v.comprovantes || []), comprovante];
+      const totalComprovado = comprovantes.reduce((acc, c) => acc + (c.valor || 0), 0);
+      const quitado = totalComprovado >= v.totalVenda - 0.01;
+      return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
+    });
     await setVendas(next);
-    notify('Comprovante de pagamento anexado');
+    const vendaAtualizada = next.find(v => v.id === vendaId);
+    notify(vendaAtualizada?.quitado ? 'Comprovante anexado — venda quitada!' : 'Comprovante de pagamento anexado');
   }
 
   async function removerComprovante(vendaId, comprovanteId) {
     if (!(await askConfirm('Remover este comprovante?'))) return;
-    const next = vendas.map(v => v.id === vendaId ? { ...v, comprovantes: (v.comprovantes || []).filter(c => c.id !== comprovanteId) } : v);
+    const next = vendas.map(v => {
+      if (v.id !== vendaId) return v;
+      const comprovantes = (v.comprovantes || []).filter(c => c.id !== comprovanteId);
+      const totalComprovado = comprovantes.reduce((acc, c) => acc + (c.valor || 0), 0);
+      const quitado = totalComprovado >= v.totalVenda - 0.01;
+      return { ...v, comprovantes, quitado, quitadoEm: quitado ? v.quitadoEm : null };
+    });
     await setVendas(next);
     notify('Comprovante removido');
   }
@@ -2975,16 +3424,18 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                   <p className="font-medium text-sm truncate flex items-center gap-1.5">
                     <span className={v.anulado ? 'line-through' : ''}>{v.clienteNome}</span> {v.origemOrcamentoId && <span className="text-[11px] text-slate-400 font-normal">(via orçamento)</span>}
                     {v.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+                    {!v.anulado && v.quitado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Quitado</span>}
                   </p>
-                  <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns) {v.anulado && `· anulado em ${formatDate(v.anuladoEm)}`}</p>
+                  <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns) {v.anulado && `· anulado em ${formatDate(v.anuladoEm)}`} {!v.anulado && v.quitado && v.quitadoEm && `· quitado em ${formatDate(v.quitadoEm)}`}</p>
                 </div>
               </div>
               <span className="font-medium text-sm shrink-0 flex items-center gap-1.5">
-                {(v.comprovantes || []).length > 0 ? (
-                  <FileText size={13} className="text-emerald-500" />
-                ) : (
-                  <FileText size={13} className="text-slate-300" />
-                )}
+                {(() => {
+                  const totalComprovado = (v.comprovantes || []).reduce((acc, c) => acc + (c.valor || 0), 0);
+                  if (v.quitado || totalComprovado >= v.totalVenda - 0.01) return <CheckCircle2 size={13} className="text-emerald-500" title="Quitado" />;
+                  if (totalComprovado > 0) return <FileText size={13} className="text-amber-500" title="Pagamento parcial" />;
+                  return <FileText size={13} className="text-slate-300" title="Sem comprovante" />;
+                })()}
                 {currency(v.totalVenda)}
               </span>
               {!v.anulado && <button onClick={(e) => { e.stopPropagation(); apagarVenda(v); }} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500 ml-2" /></button>}
@@ -3012,12 +3463,18 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                             </a>
                           )}
                           {c.formaRecebimentoNome && <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={c.formaRecebimentoNome}>{c.formaRecebimentoNome}</p>}
+                          {c.valor > 0 && <p className="text-[9px] text-emerald-600 text-center leading-tight">{currency(c.valor)}</p>}
                           <button onClick={() => removerComprovante(v.id, c.id)} className="absolute -top-1.5 -right-1.5 bg-slate-900 text-white rounded-full w-4 h-4 flex items-center justify-center"><X size={10} /></button>
                         </div>
                       ))}
                     </div>
                   )}
-                  <ComprovanteUploader vendaId={v.id} formasRecebimento={formasRecebimento} onAnexar={anexarComprovante} notify={notify} />
+                  <ComprovanteUploader vendaId={v.id} formasRecebimento={formasRecebimento} valorTotalVenda={v.totalVenda} valorJaAnexado={(v.comprovantes || []).reduce((acc, c) => acc + (c.valor || 0), 0)} onAnexar={anexarComprovante} notify={notify} />
+                </div>
+                <div className="flex gap-2 pt-2 mt-2 border-t border-slate-200">
+                  <span className="text-[11px] text-slate-400 self-center">Gerar recibo:</span>
+                  <button onClick={() => gerarReciboVenda(v, 'jpg')} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><FileText size={12} /> JPG</button>
+                  <button onClick={() => gerarReciboVenda(v, 'pdf')} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><FileText size={12} /> PDF</button>
                 </div>
               </div>
             )}
@@ -3032,34 +3489,41 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 
 /* ---------------- UPLOAD DE COMPROVANTE (com forma de recebimento) ---------------- */
 
-function ComprovanteUploader({ vendaId, formasRecebimento, onAnexar, notify }) {
+function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valorJaAnexado, onAnexar, notify }) {
   const [formaId, setFormaId] = useState('');
+  const [valorUnico, setValorUnico] = useState('');
   const [qtdMultipla, setQtdMultipla] = useState('');
-  const [slots, setSlots] = useState(null); // array de { formaId } quando "múltiplas formas" está ativo
+  const [slots, setSlots] = useState(null); // array de { formaId, valor } quando "múltiplas formas" está ativo
 
   const formaSelecionada = formasRecebimento.find(f => f.id === formaId);
   const opcoesSimples = formasRecebimento.filter(f => !f.multipla);
+  const restante = Math.max(0, (valorTotalVenda || 0) - (valorJaAnexado || 0));
 
   function confirmarQuantidade() {
     const n = parseInt(qtdMultipla) || 0;
     if (n < 2) { notify('Informe pelo menos 2 formas de pagamento'); return; }
-    setSlots(Array.from({ length: n }, () => ({ formaId: '' })));
+    setSlots(Array.from({ length: n }, () => ({ formaId: '', valor: '' })));
   }
 
-  function atualizarSlot(idx, novaFormaId) {
-    setSlots(s => s.map((slot, i) => i === idx ? { formaId: novaFormaId } : slot));
+  function atualizarSlot(idx, campo, valor) {
+    setSlots(s => s.map((slot, i) => i === idx ? { ...slot, [campo]: valor } : slot));
   }
 
   async function anexarSlot(idx, file) {
     const slot = slots[idx];
     const forma = formasRecebimento.find(f => f.id === slot.formaId);
     if (!forma) { notify('Selecione a forma de pagamento desta parcela antes de anexar o arquivo'); return; }
-    await onAnexar(vendaId, file, forma.id, forma.nome);
+    const valor = parseValorBR(slot.valor);
+    if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago nessa parcela antes de anexar'); return; }
+    if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
+    await onAnexar(vendaId, file, forma.id, forma.nome, valor);
   }
 
   function resetar() {
-    setFormaId(''); setQtdMultipla(''); setSlots(null);
+    setFormaId(''); setValorUnico(''); setQtdMultipla(''); setSlots(null);
   }
+
+  const somaSlots = (slots || []).reduce((acc, s) => acc + (parseValorBR(s.valor) || 0), 0);
 
   if (slots) {
     return (
@@ -3071,37 +3535,62 @@ function ComprovanteUploader({ vendaId, formasRecebimento, onAnexar, notify }) {
         {slots.map((slot, idx) => (
           <div key={idx} className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
             <span className="text-xs text-slate-400 w-16 shrink-0">Parte {idx + 1}</span>
-            <select value={slot.formaId} onChange={e => atualizarSlot(idx, e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs flex-1">
+            <select value={slot.formaId} onChange={e => atualizarSlot(idx, 'formaId', e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs flex-1">
               <option value="">Forma de pagamento...</option>
               {opcoesSimples.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
             </select>
+            <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={slot.valor} onChange={e => atualizarSlot(idx, 'valor', e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
             <label className="inline-flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1.5 rounded-md cursor-pointer whitespace-nowrap">
               <Camera size={11} /> Anexar
               <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => e.target.files[0] && anexarSlot(idx, e.target.files[0])} />
             </label>
           </div>
         ))}
+        <p className={`text-[11px] ${Math.abs(somaSlots - restante) < 0.01 ? 'text-emerald-600' : 'text-amber-600'}`}>
+          Soma das parcelas: {currency(somaSlots)} de {currency(restante)} restante(s)
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
-      <select value={formaId} onChange={e => setFormaId(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
-        <option value="">Forma de recebimento...</option>
-        {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
-      </select>
-
-      {formaSelecionada && formaSelecionada.multipla ? (
-        <>
-          <input type="number" min={2} placeholder="Qtd. de formas" value={qtdMultipla} onChange={e => setQtdMultipla(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
-          <button onClick={confirmarQuantidade} className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">Continuar</button>
-        </>
+    <div>
+      {valorTotalVenda > 0 && restante <= 0.01 ? (
+        <p className="text-xs text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 size={14} /> Quitado — valor total já comprovado</p>
       ) : (
-        <label className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md ${formaId ? 'bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer' : 'bg-slate-100 text-slate-400'}`}>
-          <Camera size={12} /> Anexar comprovante
-          <input type="file" accept="image/*,application/pdf" className="hidden" disabled={!formaId} onChange={e => { if (e.target.files[0]) { onAnexar(vendaId, e.target.files[0], formaSelecionada?.id, formaSelecionada?.nome); resetar(); } }} />
-        </label>
+        <>
+          {valorTotalVenda > 0 && (
+            <p className="text-[11px] text-slate-400 mb-1.5">Falta comprovar {currency(restante)} de {currency(valorTotalVenda)}</p>
+          )}
+          <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+            <select value={formaId} onChange={e => { setFormaId(e.target.value); setValorUnico(String(restante || '')); }} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
+              <option value="">Forma de recebimento...</option>
+              {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+            </select>
+
+            {formaSelecionada && formaSelecionada.multipla ? (
+              <>
+                <input type="number" min={2} placeholder="Qtd. de formas" value={qtdMultipla} onChange={e => setQtdMultipla(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
+                <button onClick={confirmarQuantidade} className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">Continuar</button>
+              </>
+            ) : formaSelecionada ? (
+              <>
+                <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={valorUnico} onChange={e => setValorUnico(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
+                <label className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer">
+                  <Camera size={12} /> Anexar comprovante
+                  <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => {
+                    if (!e.target.files[0]) return;
+                    const valor = parseValorBR(valorUnico);
+                    if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago antes de anexar'); return; }
+                    if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
+                    onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor);
+                    resetar();
+                  }} />
+                </label>
+              </>
+            ) : null}
+          </div>
+        </>
       )}
     </div>
   );
