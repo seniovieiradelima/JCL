@@ -4636,7 +4636,7 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
     return { valorEstoqueDisponivel, valorEstoqueAguardando, valoresAReceber };
   }, [estoque, pedidosCompra, recebimentos, vendas]);
 
-  const totalImobilizado = balanco.valorEstoqueDisponivel + balanco.valorEstoqueAguardando - saldoReposicao.saldo + balanco.valoresAReceber;
+  const totalImobilizado = balanco.valorEstoqueDisponivel + balanco.valorEstoqueAguardando + saldoReposicao.saldo + balanco.valoresAReceber;
 
   const custoPorCategoria = useMemo(() => {
     const map = {};
@@ -4650,15 +4650,15 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
 
   return (
     <div>
-      <div className={`rounded-lg p-4 mb-5 border ${saldoReposicao.saldo > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
-        <p className={`text-xs ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado: custo de todas as vendas, menos todos os pedidos de compra, mais ajustes)</p>
-        <p className={`text-2xl font-semibold ${saldoReposicao.saldo > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{currency(saldoReposicao.saldo)}</p>
+      <div className={`rounded-lg p-4 mb-5 border ${saldoReposicao.saldo < 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
+        <p className={`text-xs ${saldoReposicao.saldo < 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado: custo de todas as vendas, menos todos os pedidos de compra, mais ajustes)</p>
+        <p className={`text-2xl font-semibold ${saldoReposicao.saldo < 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{currency(saldoReposicao.saldo)}</p>
         <div className="flex gap-4 mt-2 text-xs text-slate-500 flex-wrap">
           <span>CMV acumulado: {currency(saldoReposicao.cmvAcumulado)}</span>
           <span>Pedidos de compra: {currency(saldoReposicao.pedidosAcumulado)}</span>
           <span>Ajustes: {currency(totalAjustes)}</span>
         </div>
-        <p className="text-[11px] text-slate-400 mt-1">{saldoReposicao.saldo > 0 ? 'Esse valor ainda precisa ser reservado no banco para repor o que já foi vendido.' : 'A reposição está em dia — os pedidos de compra já cobrem o custo do que foi vendido.'}</p>
+        <p className="text-[11px] text-slate-400 mt-1">{saldoReposicao.saldo < 0 ? 'Os pedidos de compra já ultrapassaram o custo do que foi vendido — esse valor negativo indica que foi gasto mais do que a reposição gerada até agora.' : 'Esse valor deve ficar reservado no banco para repor o que já foi vendido.'}</p>
 
         <div className="mt-3 pt-3 border-t border-amber-200">
           <button onClick={() => setShowAjuste(s => !s)} className="text-xs bg-white border border-amber-300 hover:bg-amber-100 text-amber-700 px-2.5 py-1.5 rounded-md">
@@ -4703,8 +4703,8 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
             <span className="font-medium">{currency(balanco.valorEstoqueAguardando)}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-slate-600">Saldo de reposição (em caixa)</span>
-            <span className="font-medium">{currency(-saldoReposicao.saldo)}</span>
+            <span className="text-slate-600">Saldo de reposição</span>
+            <span className="font-medium">{currency(saldoReposicao.saldo)}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem comprovante de pagamento)</span></span>
