@@ -681,7 +681,7 @@ function consumirEstoque(estoqueAtual, carrinho) {
         erros.push(`${it.descricao} (SN ${it.serial}): unidade não está mais disponível`);
         continue;
       }
-      custoTotal = novoEstoque[idx].unidades[uIdx].custoCompra;
+      custoTotal = novoEstoque[idx].unidades[uIdx].custoCompra > 0 ? novoEstoque[idx].unidades[uIdx].custoCompra : (novoEstoque[idx].custoReferencia || 0);
       novoEstoque[idx].unidades[uIdx].status = 'Vendido';
     } else if (novoEstoque[idx].serializado) {
       // Nenhuma série foi escolhida na venda: atribui automaticamente a unidade mais antiga
@@ -695,7 +695,7 @@ function consumirEstoque(estoqueAtual, carrinho) {
       }
       const escolhida = disponiveis[0];
       const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === escolhida.id);
-      custoTotal = novoEstoque[idx].unidades[uIdx].custoCompra;
+      custoTotal = novoEstoque[idx].unidades[uIdx].custoCompra > 0 ? novoEstoque[idx].unidades[uIdx].custoCompra : (novoEstoque[idx].custoReferencia || 0);
       novoEstoque[idx].unidades[uIdx].status = 'Vendido';
       itemFinal = { ...it, unidadeId: escolhida.id, serial: escolhida.serial };
     } else {
@@ -712,7 +712,8 @@ function consumirEstoque(estoqueAtual, carrinho) {
         if (restante <= 0) break;
         if (lote.quantidadeDisponivel <= 0) continue;
         const consumo = Math.min(lote.quantidadeDisponivel, restante);
-        custoTotal += consumo * lote.custoUnitario;
+        const custoUnitarioEfetivo = lote.custoUnitario > 0 ? lote.custoUnitario : (novoEstoque[idx].custoReferencia || 0);
+        custoTotal += consumo * custoUnitarioEfetivo;
         lote.quantidadeDisponivel -= consumo;
         restante -= consumo;
         loteConsumos.push({ loteId: lote.id, quantidade: consumo });
@@ -3174,11 +3175,12 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
   const [editingId, setEditingId] = useState(null);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
+  const [observacoes, setObservacoes] = useState('');
   const [expanded, setExpanded] = useState({});
 
-  function novoOrcamento() { setEditingId(null); setClienteId(''); setCarrinho([]); setShowForm(true); }
-  function editarOrcamento(orc) { setEditingId(orc.id); setClienteId(orc.clienteId); setCarrinho(orc.itens.map(i => ({ ...i }))); setShowForm(true); }
-  function cancelarForm() { setShowForm(false); setEditingId(null); setClienteId(''); setCarrinho([]); }
+  function novoOrcamento() { setEditingId(null); setClienteId(''); setCarrinho([]); setObservacoes(''); setShowForm(true); }
+  function editarOrcamento(orc) { setEditingId(orc.id); setClienteId(orc.clienteId); setCarrinho(orc.itens.map(i => ({ ...i }))); setObservacoes(orc.observacoes || ''); setShowForm(true); }
+  function cancelarForm() { setShowForm(false); setEditingId(null); setClienteId(''); setCarrinho([]); setObservacoes(''); }
 
   const total = carrinho.reduce((acc, it) => acc + it.precoVendaUnitario * it.quantidade, 0);
 
@@ -3186,11 +3188,11 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (!clienteId || carrinho.length === 0) { notify('Selecione o cliente e adicione ao menos um item'); return; }
     const cliente = clientes.find(c => c.id === clienteId);
     if (editingId) {
-      const next = orcamentos.map(o => o.id === editingId ? { ...o, clienteId, clienteNome: cliente?.nome || o.clienteNome, itens: carrinho, total } : o);
+      const next = orcamentos.map(o => o.id === editingId ? { ...o, clienteId, clienteNome: cliente?.nome || o.clienteNome, itens: carrinho, total, observacoes } : o);
       await setOrcamentos(next);
       notify('Orçamento atualizado');
     } else {
-      const novo = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: carrinho, total, status: 'Aberto', vendaId: null };
+      const novo = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: carrinho, total, observacoes, status: 'Aberto', vendaId: null };
       await setOrcamentos([novo, ...orcamentos]);
       notify('Orçamento salvo');
     }
@@ -3216,7 +3218,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     const { novoEstoque, itensResultado, totalCusto, erros } = consumirEstoque(estoque, orc.itens);
     if (erros.length > 0) { notify(`Não foi possível converter: ${erros[0]}`); return; }
     await setEstoque(novoEstoque);
-    const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id };
+    const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '' };
     await setVendas([venda, ...vendas]);
     await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
     notify('Orçamento convertido em venda e estoque atualizado');
@@ -3286,6 +3288,8 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
           <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} />
 
+          <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} placeholder="Observações da negociação (condições combinadas, prazo, forma de pagamento acertada, detalhes de instalação etc.) — ficam visíveis pra quem for tocar as próximas etapas, inclusive a expedição." rows={3} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm resize-none" />
+
           <button onClick={salvarOrcamento} disabled={!clienteId || carrinho.length === 0} className="w-full bg-amber-500 disabled:opacity-30 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">
             {editingId ? 'Salvar alterações' : 'Salvar orçamento'}
           </button>
@@ -3328,6 +3332,12 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
                     <p key={i} className="text-xs text-slate-600">{it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}</p>
                   ))}
                 </div>
+                {o.observacoes && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-md p-2">
+                    <p className="text-[11px] text-amber-700 font-medium mb-0.5">Observações da negociação</p>
+                    <p className="text-xs text-amber-800 whitespace-pre-wrap">{o.observacoes}</p>
+                  </div>
+                )}
                 {o.status === 'Aberto' && !o.anulado && (
                   <div className="flex gap-2 pt-1">
                     <button onClick={() => editarOrcamento(o)} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md"><Pencil size={12} /> Editar</button>
@@ -3355,6 +3365,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
   const [showForm, setShowForm] = useState(false);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
+  const [observacoes, setObservacoes] = useState('');
   const [expanded, setExpanded] = useState({});
   const [orcamentoOrigemId, setOrcamentoOrigemId] = useState('');
 
@@ -3368,10 +3379,11 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     if (!orc) return;
     setClienteId(orc.clienteId);
     setCarrinho(orc.itens.map(i => ({ ...i })));
+    setObservacoes(orc.observacoes || '');
     notify(`Itens do orçamento de ${orc.clienteNome} importados — confira antes de finalizar`);
   }
 
-  function resetForm() { setCarrinho([]); setClienteId(''); setOrcamentoOrigemId(''); setShowForm(false); }
+  function resetForm() { setCarrinho([]); setClienteId(''); setObservacoes(''); setOrcamentoOrigemId(''); setShowForm(false); }
 
   const [busca, setBusca] = useState('');
   const [filtroComprovante, setFiltroComprovante] = useState('Todos');
@@ -3402,7 +3414,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const { novoEstoque, itensResultado, totalCusto, erros } = consumirEstoque(estoque, carrinho);
     if (erros.length > 0) { notify(erros[0]); return; }
     await setEstoque(novoEstoque);
-    const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined };
+    const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined, observacoes };
     await setVendas([venda, ...vendas]);
     if (orcamentoOrigemId && setOrcamentos) {
       await setOrcamentos(orcamentos.map(o => o.id === orcamentoOrigemId ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
@@ -3517,6 +3529,8 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 
           <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} />
 
+          <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} placeholder="Observações da negociação (condições combinadas, prazo, forma de pagamento acertada, detalhes de instalação etc.) — ficam visíveis pra quem for tocar as próximas etapas, inclusive a expedição." rows={3} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm resize-none" />
+
           <button onClick={finalizarVenda} disabled={!clienteId || carrinho.length === 0} className="w-full bg-amber-500 disabled:opacity-30 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">
             Finalizar venda
           </button>
@@ -3569,6 +3583,13 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                 {v.itens.map((it, i) => (
                   <p key={i} className="text-xs text-slate-600">{it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}</p>
                 ))}
+
+                {v.observacoes && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-md p-2 mt-1">
+                    <p className="text-[11px] text-amber-700 font-medium mb-0.5">Observações da negociação</p>
+                    <p className="text-xs text-amber-800 whitespace-pre-wrap">{v.observacoes}</p>
+                  </div>
+                )}
 
                 <div className="pt-2 mt-2 border-t border-slate-200">
                   <p className="text-xs text-slate-500 font-medium mb-1.5">Comprovante de pagamento</p>
@@ -3790,12 +3811,18 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
               <div className="flex items-center gap-2 min-w-0">
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedGrupo[`s-${g.venda.id}`] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
-                  <p className="font-medium text-sm truncate">{g.venda.clienteNome}</p>
+                  <p className="font-medium text-sm truncate flex items-center gap-1.5">{g.venda.clienteNome} {g.venda.observacoes && <ClipboardList size={12} className="text-amber-500 shrink-0" />}</p>
                   <p className="text-xs text-slate-400">{formatDate(g.venda.data)} · {g.itens.length} item(ns) pendente(s)</p>
                 </div>
               </div>
               <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">Aguardando saída</span>
             </div>
+            {g.venda.observacoes && (
+              <div className="mx-3 mb-2 bg-amber-50 border border-amber-200 rounded-md p-2">
+                <p className="text-[11px] text-amber-700 font-medium mb-0.5">Observações da negociação</p>
+                <p className="text-xs text-amber-800 whitespace-pre-wrap">{g.venda.observacoes}</p>
+              </div>
+            )}
             {expandedGrupo[`s-${g.venda.id}`] && (
               <div className="border-t border-slate-100 divide-y divide-slate-100">
                 {g.itens.map(({ item, chave }) => (
@@ -3839,12 +3866,18 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
               <div className="flex items-center gap-2 min-w-0">
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedGrupo[`r-${g.venda.id}`] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
-                  <p className="font-medium text-sm truncate">{g.venda.clienteNome}</p>
+                  <p className="font-medium text-sm truncate flex items-center gap-1.5">{g.venda.clienteNome} {g.venda.observacoes && <ClipboardList size={12} className="text-amber-500 shrink-0" />}</p>
                   <p className="text-xs text-slate-400">{formatDate(g.venda.data)} · {g.itens.length} item(ns) em rota</p>
                 </div>
               </div>
               <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 shrink-0">Em rota</span>
             </div>
+            {g.venda.observacoes && (
+              <div className="mx-3 mb-2 bg-amber-50 border border-amber-200 rounded-md p-2">
+                <p className="text-[11px] text-amber-700 font-medium mb-0.5">Observações da negociação</p>
+                <p className="text-xs text-amber-800 whitespace-pre-wrap">{g.venda.observacoes}</p>
+              </div>
+            )}
             {expandedGrupo[`r-${g.venda.id}`] && (
               <div className="border-t border-slate-100 divide-y divide-slate-100">
                 {g.itens.map(({ item, chave, saida }) => (
@@ -3897,12 +3930,18 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpandedGrupo(x => ({ ...x, [`c-${g.venda.id}`]: !x[`c-${g.venda.id}`] }))}>
               <div className="flex items-center gap-2 min-w-0">
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedGrupo[`c-${g.venda.id}`] ? 'rotate-90' : ''}`} />
-                <p className="font-medium text-sm truncate">{g.venda.clienteNome}</p>
+                <p className="font-medium text-sm truncate flex items-center gap-1.5">{g.venda.clienteNome} {g.venda.observacoes && <ClipboardList size={12} className="text-amber-500 shrink-0" />}</p>
               </div>
               <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">Entregue</span>
             </div>
             {expandedGrupo[`c-${g.venda.id}`] && (
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-4">
+                {g.venda.observacoes && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-md p-2">
+                    <p className="text-[11px] text-amber-700 font-medium mb-0.5">Observações da negociação</p>
+                    <p className="text-xs text-amber-800 whitespace-pre-wrap">{g.venda.observacoes}</p>
+                  </div>
+                )}
                 {g.itens.map(({ item, chave, saida, entrega }) => (
                   <div key={chave} className="text-xs">
                     <p className="text-slate-600 font-medium">{item.descricao} {item.serial && <span className="font-mono text-slate-400 font-normal">· SN {item.serial}</span>}</p>
