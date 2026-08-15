@@ -660,7 +660,12 @@ function temCustoPendente(item) {
 }
 
 // Consome estoque (FIFO para não-serializados) para um carrinho de itens de venda/orçamento.
-function consumirEstoque(estoqueAtual, carrinho) {
+// Com { permitirPendencia: true }, falta de estoque NÃO é erro: consome o que existe e marca
+// o restante como quantidadePendente no item (pré-venda — a baixa é feita quando a mercadoria
+// chega, pela aba Vendas). Sem a opção, falta de estoque continua bloqueando (comportamento usado
+// na baixa posterior, que só pode acontecer com mercadoria em mãos).
+function consumirEstoque(estoqueAtual, carrinho, opcoes = {}) {
+  const { permitirPendencia = false } = opcoes;
   let novoEstoque = estoqueAtual.map(i => ({
     ...i,
     unidades: i.unidades ? i.unidades.map(u => ({ ...u })) : i.unidades,
@@ -678,6 +683,11 @@ function consumirEstoque(estoqueAtual, carrinho) {
     if (it.unidadeId) {
       const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === it.unidadeId);
       if (uIdx === -1 || novoEstoque[idx].unidades[uIdx].status !== 'Disponível') {
+        if (permitirPendencia) {
+          // A unidade escolhida lá atrás não está mais disponível: vira pendência de entrega.
+          itensResultado.push({ ...it, unidadeId: undefined, serial: undefined, quantidadePendente: it.quantidade, custoTotal: 0, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
+          continue;
+        }
         erros.push(`${it.descricao} (SN ${it.serial}): unidade não está mais disponível`);
         continue;
       }
@@ -690,6 +700,10 @@ function consumirEstoque(estoqueAtual, carrinho) {
         .filter(u => u.status === 'Disponível' && u.depositoId === it.depositoId)
         .sort((a, b) => new Date(a.dataEntrada) - new Date(b.dataEntrada));
       if (disponiveis.length === 0) {
+        if (permitirPendencia) {
+          itensResultado.push({ ...it, quantidadePendente: it.quantidade, custoTotal: 0, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
+          continue;
+        }
         erros.push(`${it.descricao}: nenhuma unidade disponível em ${it.depositoNome || 'depósito selecionado'}`);
         continue;
       }
@@ -701,11 +715,16 @@ function consumirEstoque(estoqueAtual, carrinho) {
     } else {
       const lotesDoDeposito = novoEstoque[idx].lotes.filter(l => l.depositoId === it.depositoId);
       const disponivel = lotesDoDeposito.reduce((acc, l) => acc + l.quantidadeDisponivel, 0);
+      let pendente = 0;
       if (disponivel < it.quantidade) {
-        erros.push(`${it.descricao}: apenas ${disponivel} disponível(is) em ${it.depositoNome || 'depósito selecionado'}, pedido ${it.quantidade}`);
-        continue;
+        if (!permitirPendencia) {
+          erros.push(`${it.descricao}: apenas ${disponivel} disponível(is) em ${it.depositoNome || 'depósito selecionado'}, pedido ${it.quantidade}`);
+          continue;
+        }
+        // Consome o que existe; o restante fica pendente de entrega.
+        pendente = it.quantidade - disponivel;
       }
-      let restante = it.quantidade;
+      let restante = it.quantidade - pendente;
       const lotesOrdenados = lotesDoDeposito.slice().sort((a, b) => new Date(a.dataEntrada) - new Date(b.dataEntrada));
       const loteConsumos = [];
       for (const lote of lotesOrdenados) {
@@ -719,13 +738,14 @@ function consumirEstoque(estoqueAtual, carrinho) {
         loteConsumos.push({ loteId: lote.id, quantidade: consumo });
       }
       novoEstoque[idx].lotes = novoEstoque[idx].lotes.map(l => lotesOrdenados.find(lo => lo.id === l.id) || l);
-      itemFinal = { ...it, loteConsumos };
+      itemFinal = pendente > 0 ? { ...it, loteConsumos, quantidadePendente: pendente } : { ...it, loteConsumos };
     }
     itensResultado.push({ ...itemFinal, custoTotal, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
   }
 
   const totalCusto = itensResultado.reduce((acc, i) => acc + i.custoTotal, 0);
-  return { novoEstoque, itensResultado, totalCusto, erros };
+  const totalPendente = itensResultado.reduce((acc, i) => acc + (i.quantidadePendente || 0), 0);
+  return { novoEstoque, itensResultado, totalCusto, totalPendente, erros };
 }
 
 // Desfaz o consumo de estoque de uma venda apagada: devolve unidades ao status "Disponível"
@@ -1645,7 +1665,10 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
     const preco = parseValorBR(precoSel) || 0;
     const depositoNome = depositos.find(d => d.id === depositoSel)?.nome || '';
     const qtd = parseInt(qtdSel) || 1;
-    if (qtd < 1 || qtd > availableQty(produtoAtual, depositoSel)) { notify('Quantidade indisponível nesse depósito'); return; }
+    if (qtd < 1) { notify('Informe uma quantidade válida'); return; }
+    // Pré-venda: pode adicionar além do estoque. O que faltar vira pendência de entrega na venda.
+    const disp = availableQty(produtoAtual, depositoSel);
+    if (qtd > disp) notify(`${qtd - disp} de ${qtd} sem estoque agora — se virar venda, ficam pendentes de entrega`);
     if (produtoAtual.serializado) {
       // A série exata não é escolhida aqui — é atribuída automaticamente (FIFO) ao finalizar,
       // e confirmada de fato depois, na expedição. Uma linha por unidade.
@@ -1673,18 +1696,18 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
           <option value="">Selecione o produto...</option>
           {estoque.map(i => {
             const disp = availableQty(i);
-            return <option key={i.id} value={i.id} disabled={disp === 0}>{i.categoria} · {descricaoProduto(i)} ({disp} disp.)</option>;
+            return <option key={i.id} value={i.id}>{i.categoria} · {descricaoProduto(i)} ({disp === 0 ? 'sem estoque — pré-venda' : `${disp} disp.`})</option>;
           })}
         </select>
         {produtoAtual && (
           <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o depósito...</option>
-            {depositosComEstoque.map(d => <option key={d.id} value={d.id}>{d.nome} ({availableQty(produtoAtual, d.id)} disp.)</option>)}
+            {depositos.map(d => <option key={d.id} value={d.id}>{d.nome} ({availableQty(produtoAtual, d.id)} disp.)</option>)}
           </select>
         )}
         {produtoAtual && depositoSel && (
           <div className="flex flex-col sm:flex-row gap-2">
-            <input type="number" min={1} max={availableQty(produtoAtual, depositoSel)} value={qtdSel} onChange={e => setQtdSel(e.target.value)} placeholder="Qtd" className="sm:w-24 border border-slate-200 rounded-md px-2 py-2 text-sm" />
+            <input type="number" min={1} value={qtdSel} onChange={e => setQtdSel(e.target.value)} placeholder="Qtd" className="sm:w-24 border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input type="text" inputMode="decimal" value={precoSel} onChange={e => setPrecoSel(e.target.value)} placeholder="Preço de venda unit. (ex: 518,42)" className="sm:w-40 border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <button type="button" onClick={addItem} className="bg-slate-900 text-white text-sm px-3 py-2 rounded-md">Adicionar</button>
           </div>
@@ -1693,18 +1716,26 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
 
       {carrinho.length > 0 && (
         <div className="border border-slate-100 rounded-md divide-y">
-          {carrinho.map((it, idx) => (
+          {carrinho.map((it, idx) => {
+            // Aviso de pré-venda por linha, contando o que as linhas anteriores do mesmo
+            // produto/depósito já ocupam do estoque (espelha a ordem de consumo na venda).
+            const prodDaLinha = estoque.find(p => p.id === it.itemId);
+            const dispLinha = availableQty(prodDaLinha, it.depositoId);
+            const acumulado = carrinho.slice(0, idx + 1).filter(x => x.itemId === it.itemId && x.depositoId === it.depositoId).reduce((a, x) => a + x.quantidade, 0);
+            const semEstoque = Math.max(0, Math.min(it.quantidade, acumulado - dispLinha));
+            return (
             <div key={idx} className="flex justify-between items-center px-3 py-2 text-sm">
               <div>
                 <p>{it.descricao} {it.serial && <span className="text-xs font-mono text-slate-400">· SN {it.serial}</span>}</p>
-                <p className="text-xs text-slate-400">{it.quantidade}x {currency(it.precoVendaUnitario)} {it.depositoNome && <span className="inline-flex items-center gap-0.5">· <Warehouse size={10} className="inline" /> {it.depositoNome}</span>}</p>
+                <p className="text-xs text-slate-400">{it.quantidade}x {currency(it.precoVendaUnitario)} {it.depositoNome && <span className="inline-flex items-center gap-0.5">· <Warehouse size={10} className="inline" /> {it.depositoNome}</span>} {semEstoque > 0 && <span className="text-amber-600 font-medium">· {semEstoque} sem estoque (pré-venda)</span>}</p>
               </div>
               <div className="flex items-center gap-2">
                 <span className="font-medium">{currency(it.precoVendaUnitario * it.quantidade)}</span>
                 <button onClick={() => removeItem(idx)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -3321,8 +3352,9 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
   async function converterEmVenda(orc) {
     if (!(await askConfirm(`Converter o orçamento de ${orc.clienteNome} (${currency(orc.total)}) em venda? Isso vai dar baixa no estoque.`))) return;
-    const { novoEstoque, itensResultado, totalCusto, erros } = consumirEstoque(estoque, orc.itens);
+    const { novoEstoque, itensResultado, totalCusto, totalPendente, erros } = consumirEstoque(estoque, orc.itens, { permitirPendencia: true });
     if (erros.length > 0) { notify(`Não foi possível converter: ${erros[0]}`); return; }
+    if (totalPendente > 0 && !(await askConfirm(`${totalPendente} item(ns) sem estoque suficiente ficarão PENDENTES DE ENTREGA — a baixa é feita na aba Vendas quando a mercadoria chegar. Converter mesmo assim?`))) return;
     if (!(await setEstoque(novoEstoque))) return;
     const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '' };
     if (!(await setVendas([venda, ...vendas]))) return;
@@ -3517,8 +3549,9 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
   async function finalizarVenda() {
     if (!clienteId || carrinho.length === 0) return;
     const cliente = clientes.find(c => c.id === clienteId);
-    const { novoEstoque, itensResultado, totalCusto, erros } = consumirEstoque(estoque, carrinho);
+    const { novoEstoque, itensResultado, totalCusto, totalPendente, erros } = consumirEstoque(estoque, carrinho, { permitirPendencia: true });
     if (erros.length > 0) { notify(erros[0]); return; }
+    if (totalPendente > 0 && !(await askConfirm(`${totalPendente} item(ns) sem estoque suficiente ficarão PENDENTES DE ENTREGA — a baixa é feita na aba Vendas quando a mercadoria chegar. Confirmar a venda mesmo assim?`))) return;
     // A venda só é gravada se a baixa de estoque foi confirmada no banco. Sem isso, uma
     // baixa recusada deixava a venda registrada com o estoque intacto.
     if (!(await setEstoque(novoEstoque))) return;
@@ -3550,6 +3583,37 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 
     await setVendas(vendas.map(v => v.id === venda.id ? { ...v, anulado: true, anuladoEm: new Date().toISOString(), comprovantes: [] } : v));
     notify('Venda anulada e estoque devolvido');
+  }
+
+  // Dá baixa em um item que ficou pendente de entrega (pré-venda), agora que a mercadoria
+  // chegou. Consome o estoque no modo estrito (sem pendência) e atualiza o item da venda.
+  async function darBaixaPendente(venda, item, qtd, depositoId) {
+    const qtdBaixar = Math.min(parseInt(qtd) || 0, item.quantidadePendente || 0);
+    if (qtdBaixar < 1 || !depositoId) return;
+    const depositoNome = depositos.find(d => d.id === depositoId)?.nome || '';
+    const linha = { ...item, quantidade: qtdBaixar, depositoId, depositoNome, unidadeId: undefined, serial: undefined, loteConsumos: undefined, quantidadePendente: undefined };
+    const { novoEstoque, itensResultado, erros } = consumirEstoque(estoque, [linha]);
+    if (erros.length > 0) { notify(erros[0]); return; }
+    const consumido = itensResultado[0];
+    if (!(await setEstoque(novoEstoque))) return;
+    const next = vendas.map(v => {
+      if (v.id !== venda.id) return v;
+      const itens = v.itens.map(it => {
+        if (it.id !== item.id) return it;
+        const pendente = Math.max(0, (it.quantidadePendente || 0) - qtdBaixar);
+        const atualizado = { ...it, quantidadePendente: pendente, custoTotal: (it.custoTotal || 0) + consumido.custoTotal, depositoId, depositoNome };
+        if (consumido.unidadeId) { atualizado.unidadeId = consumido.unidadeId; atualizado.serial = consumido.serial; }
+        if (consumido.loteConsumos) atualizado.loteConsumos = [...(it.loteConsumos || []), ...consumido.loteConsumos];
+        return atualizado;
+      });
+      const totalCusto = itens.reduce((acc, i2) => acc + (i2.custoTotal || 0), 0);
+      return { ...v, itens, totalCusto };
+    });
+    if (!(await setVendas(next))) {
+      notify('⚠️ O estoque foi baixado, mas a venda NÃO foi atualizada. Recarregue a página (F5) e confira antes de repetir.');
+      return;
+    }
+    notify(`Baixa registrada${consumido.serial ? ` — SN ${consumido.serial}` : ''}`);
   }
 
   function gerarReciboVenda(venda, formato) {
@@ -3671,6 +3735,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                     <span className={v.anulado ? 'line-through' : ''}>{v.clienteNome}</span> {v.origemOrcamentoId && <span className="text-[11px] text-slate-400 font-normal">(via orçamento)</span>}
                     {v.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
                     {!v.anulado && v.quitado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Quitado</span>}
+                    {!v.anulado && v.itens.some(it => (it.quantidadePendente || 0) > 0) && <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">Entrega pendente</span>}
                   </p>
                   <p className="text-xs text-slate-400">{formatDate(v.data)} · {v.itens.length} item(ns) {v.anulado && `· anulado em ${formatDate(v.anuladoEm)}`} {!v.anulado && v.quitado && v.quitadoEm && `· quitado em ${formatDate(v.quitadoEm)}`}</p>
                 </div>
@@ -3689,7 +3754,15 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
             {expanded[v.id] && (
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1">
                 {v.itens.map((it, i) => (
-                  <p key={i} className="text-xs text-slate-600">{it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}</p>
+                  <div key={i}>
+                    <p className="text-xs text-slate-600">
+                      {it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}
+                      {(it.quantidadePendente || 0) > 0 && <span className="text-amber-600 font-medium"> · {it.quantidadePendente} pendente de entrega</span>}
+                    </p>
+                    {!v.anulado && (it.quantidadePendente || 0) > 0 && (
+                      <BaixaPendenteForm item={it} estoque={estoque} depositos={depositos} onBaixa={(qtd, depId) => darBaixaPendente(v, it, qtd, depId)} />
+                    )}
+                  </div>
                 ))}
 
                 {v.observacoes && (
@@ -3739,6 +3812,31 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 }
 
 /* ---------------- EXPEDIÇÃO (confirmação de entrega com fotos e nº de série) ---------------- */
+
+/* ---------------- BAIXA DE ITEM PENDENTE DE ENTREGA (pré-venda) ---------------- */
+
+function BaixaPendenteForm({ item, estoque, depositos, onBaixa }) {
+  const [depositoSel, setDepositoSel] = useState(depositos.length === 1 ? depositos[0].id : '');
+  const [qtdSel, setQtdSel] = useState(item.quantidadePendente || 1);
+  const produto = estoque.find(p => p.id === item.itemId);
+  const disp = depositoSel ? availableQty(produto, depositoSel) : 0;
+  const qtd = Math.min(parseInt(qtdSel) || 0, item.quantidadePendente || 0);
+  return (
+    <div className="flex flex-wrap items-center gap-2 mt-1 mb-1 pl-3">
+      <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1 text-xs">
+        <option value="">Depósito...</option>
+        {depositos.map(d => <option key={d.id} value={d.id}>{d.nome} ({availableQty(produto, d.id)} disp.)</option>)}
+      </select>
+      {!produto?.serializado && (item.quantidadePendente || 0) > 1 && (
+        <input type="number" min={1} max={item.quantidadePendente} value={qtdSel} onChange={e => setQtdSel(e.target.value)} className="w-16 border border-slate-200 rounded-md px-2 py-1 text-xs" />
+      )}
+      <button onClick={() => onBaixa(qtd, depositoSel)} disabled={!depositoSel || qtd < 1 || disp < qtd} className="text-xs bg-slate-900 text-white px-2.5 py-1 rounded-md disabled:opacity-30">
+        Dar baixa agora
+      </button>
+      {depositoSel && disp < qtd && <span className="text-[11px] text-amber-600">ainda sem estoque suficiente nesse depósito</span>}
+    </div>
+  );
+}
 
 /* ---------------- UPLOAD DE COMPROVANTE (com forma de recebimento) ---------------- */
 
@@ -3859,6 +3957,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
   const vendasFiltradas = useMemo(() => vendas.filter(v => !v.anulado && v.clienteNome.toLowerCase().includes(busca.toLowerCase())), [vendas, busca]);
 
   const itensClassificados = useMemo(() => {
+    const aguardandoMercadoria = [];
     const aguardandoSaida = [];
     const emRota = [];
     const concluidos = [];
@@ -3868,12 +3967,14 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
         const saida = regFor(chave, 'saida');
         const entrega = regFor(chave, 'entrega');
         const entry = { venda: v, item: it, chave, saida, entrega };
-        if (!saida) aguardandoSaida.push(entry);
+        // Item de pré-venda ainda sem baixa completa: não há o que separar até a mercadoria chegar.
+        if ((it.quantidadePendente || 0) > 0 && !saida) aguardandoMercadoria.push(entry);
+        else if (!saida) aguardandoSaida.push(entry);
         else if (!entrega) emRota.push(entry);
         else concluidos.push(entry);
       }
     }
-    return { aguardandoSaida, emRota, concluidos };
+    return { aguardandoMercadoria, aguardandoSaida, emRota, concluidos };
   }, [vendasFiltradas, expedicoes]);
 
   function agruparPorVenda(lista) {
@@ -3893,6 +3994,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
     });
   }
 
+  const gruposMercadoria = agruparPorVenda(itensClassificados.aguardandoMercadoria);
   const gruposSaida = agruparPorVenda(itensClassificados.aguardandoSaida);
   const gruposRota = agruparPorVenda(itensClassificados.emRota);
   const gruposConcluidos = agruparPorVenda(itensClassificados.concluidos);
@@ -3909,6 +4011,28 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
         ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
         ordenacaoOptions={[{ value: 'recente', label: 'Venda mais recente primeiro' }, { value: 'antigo', label: 'Venda mais antiga primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
       />
+
+      {gruposMercadoria.length > 0 && (
+        <>
+          <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><Warehouse size={14} /> Aguardando chegada de mercadoria (pré-venda)</h3>
+          <div className="space-y-2 mb-6">
+            {gruposMercadoria.map(g => (
+              <div key={g.venda.id} className="bg-white border border-amber-200 rounded-lg p-3">
+                <div className="flex justify-between items-center">
+                  <p className="font-medium text-sm truncate">{g.venda.clienteNome}</p>
+                  <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">Sem mercadoria</span>
+                </div>
+                <p className="text-xs text-slate-400 mb-1">{formatDate(g.venda.data)}</p>
+                {g.itens.map(e => (
+                  <p key={e.chave} className="text-xs text-amber-700">
+                    {e.item.descricao} — {e.item.quantidadePendente} de {e.item.quantidade} aguardando · a baixa é feita na aba Vendas quando a mercadoria chegar
+                  </p>
+                ))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><TruckIcon size={14} /> Aguardando saída da empresa</h3>
       <div className="space-y-2 mb-6">
