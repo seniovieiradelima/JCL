@@ -1068,6 +1068,12 @@ function SenhaDialogModal({ message, senhaCorreta, label = 'Apagar', destrutivo 
 
 function AppInner() {
   const [loading, setLoading] = useState(true);
+  // Se a leitura inicial falhar, o sistema PRECISA avisar em vez de entrar com dados vazios.
+  // Entrar com estoque zerado fazia todo lançamento seguinte ser descartado em silêncio.
+  const [erroCarregamento, setErroCarregamento] = useState(null);
+  // Falha de gravação vira uma tela bloqueante, não um toast: o toast de sucesso do fluxo
+  // seguinte apagava o aviso em milissegundos e a perda ficava invisível para o operador.
+  const [falhaGravacao, setFalhaGravacao] = useState(null); // 'conflito' | 'rede'
   const [tab, setTab] = useState('estoque');
   const [estoque, setEstoque] = useState([]);
   const [clientes, setClientes] = useState([]);
@@ -1133,20 +1139,31 @@ function AppInner() {
       const texto = await file.text();
       const dados = JSON.parse(texto);
       if (!(await askConfirm('Importar este backup vai SUBSTITUIR todos os dados atuais (estoque, vendas, clientes etc.) pelos dados do arquivo. Confirmar?'))) { setImportando(false); return; }
-      await persistEstoque(dados.estoque || []);
-      await persistClientes(dados.clientes || []);
-      await persistFornecedores(dados.fornecedores || []);
-      await persistVendas(dados.vendas || []);
-      await persistOrcamentos(dados.orcamentos || []);
-      await persistExpedicoes(dados.expedicoes || []);
-      await persistPedidosCompra(dados.pedidosCompra || []);
-      await persistRecebimentos(dados.recebimentos || []);
-      await persistDepositos(dados.depositos || []);
-      await persistTransferencias(dados.transferencias || []);
-      await persistFormasRecebimento(dados.formasRecebimento || []);
-      await persistPagamentos(dados.pagamentos || []);
-      await persistAjustesReposicao(dados.ajustesReposicao || []);
-      await persistBalancos(dados.balancos || []);
+      // Importa etapa por etapa e PARA na primeira falha: antes, uma gravação recusada no
+      // meio do caminho deixava o banco meio-importado e ainda anunciava sucesso.
+      const etapas = [
+        ['estoque', () => persistEstoque(dados.estoque || [])],
+        ['clientes', () => persistClientes(dados.clientes || [])],
+        ['fornecedores', () => persistFornecedores(dados.fornecedores || [])],
+        ['vendas', () => persistVendas(dados.vendas || [])],
+        ['orçamentos', () => persistOrcamentos(dados.orcamentos || [])],
+        ['expedições', () => persistExpedicoes(dados.expedicoes || [])],
+        ['pedidos de compra', () => persistPedidosCompra(dados.pedidosCompra || [])],
+        ['recebimentos', () => persistRecebimentos(dados.recebimentos || [])],
+        ['depósitos', () => persistDepositos(dados.depositos || [])],
+        ['transferências', () => persistTransferencias(dados.transferencias || [])],
+        ['formas de recebimento', () => persistFormasRecebimento(dados.formasRecebimento || [])],
+        ['pagamentos', () => persistPagamentos(dados.pagamentos || [])],
+        ['ajustes de reposição', () => persistAjustesReposicao(dados.ajustesReposicao || [])],
+        ['balanços', () => persistBalancos(dados.balancos || [])],
+      ];
+      for (const [nome, gravar] of etapas) {
+        if (!(await gravar())) {
+          notify(`⚠️ Importação interrompida na etapa "${nome}". O banco pode ter ficado parcialmente importado — recarregue a página (F5), confira e importe o backup de novo.`);
+          setImportando(false);
+          return;
+        }
+      }
       if (dados.senhaAprovacao) await persistSenhaAprovacao(dados.senhaAprovacao);
       notify('Backup importado com sucesso');
       setShowBackup(false);
@@ -1158,6 +1175,7 @@ function AppInner() {
 
   useEffect(() => {
     (async () => {
+      try {
       await migrarDadosAntigosSeNecessario();
       const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl] = await Promise.all([
         loadCollection('estoque', []),
@@ -1183,7 +1201,9 @@ function AppInner() {
       let estoqueFinal = e;
       if (depositosFinal.length === 0) {
         depositosFinal = [{ id: uid(), nome: 'Depósito Principal', endereco: '', observacoes: '' }];
-        await saveCollectionFull('depositos', depositosFinal);
+        const rDep = await saveCollectionFull('depositos', depositosFinal);
+        // Sem depósito gravado no banco, todo o estoque seria carimbado com um id fantasma.
+        if (!rDep.ok) throw new Error('Não foi possível criar o depósito inicial no banco');
       }
       const padraoId = depositosFinal[0].id;
       let mudou = false;
@@ -1200,7 +1220,9 @@ function AppInner() {
         if (alterado) { mudou = true; return { ...item, unidades, lotes }; }
         return item;
       });
-      if (mudou) await saveCollectionFull('estoque', estoqueFinal);
+      // Se a gravação da migração for recusada (outra aba abriu o sistema ao mesmo tempo),
+      // esta sessão segue com os dados do banco — memória divergente travaria toda gravação.
+      if (mudou && !(await saveCollectionDelta('estoque', e, estoqueFinal)).ok) estoqueFinal = e;
 
       // Migração: corrige a descrição (marca + modelo + potência) de itens já lançados em
       // pedidos, recebimentos e transferências antes dessa informação completa existir.
@@ -1221,7 +1243,7 @@ function AppInner() {
         if (alterado) { pedidosMudou = true; return { ...pedido, itens }; }
         return pedido;
       });
-      if (pedidosMudou) await saveCollectionFull('pedidosCompra', pedidosFinal);
+      if (pedidosMudou && !(await saveCollectionDelta('pedidosCompra', pc, pedidosFinal)).ok) pedidosFinal = pc;
 
       let recebimentosFinal = rc;
       let recebimentosMudou = false;
@@ -1233,7 +1255,7 @@ function AppInner() {
         }
         return r;
       });
-      if (recebimentosMudou) await saveCollectionFull('recebimentos', recebimentosFinal);
+      if (recebimentosMudou && !(await saveCollectionDelta('recebimentos', rc, recebimentosFinal)).ok) recebimentosFinal = rc;
 
       let transferenciasFinal = tr;
       let transferenciasMudou = false;
@@ -1245,7 +1267,7 @@ function AppInner() {
         }
         return t;
       });
-      if (transferenciasMudou) await saveCollectionFull('transferencias', transferenciasFinal);
+      if (transferenciasMudou && !(await saveCollectionDelta('transferencias', tr, transferenciasFinal)).ok) transferenciasFinal = tr;
 
       let formasFinal = fr;
       if (formasFinal.length === 0) {
@@ -1253,7 +1275,7 @@ function AppInner() {
           'Pix JCL Stone', 'PIx JCL BB', 'Dinheiro', 'PIx Terceiros', 'Pix Senio Com', 'Pix KMX', 'Cartão de Crédito',
         ].map(nome => ({ id: uid(), nome, multipla: false }));
         formasFinal.push({ id: uid(), nome: 'Múltiplas formas de pagamento', multipla: true });
-        await saveCollectionFull('formasRecebimento', formasFinal);
+        if (!(await saveCollectionFull('formasRecebimento', formasFinal)).ok) formasFinal = fr;
       }
 
       setEstoque(estoqueFinal); setClientes(c); setFornecedores(f); setVendas(v); setOrcamentos(or);
@@ -1264,41 +1286,74 @@ function AppInner() {
       setBalancos(bl);
       setFormasRecebimento(formasFinal);
       setLoading(false);
+      } catch (err) {
+        console.error('Falha ao carregar os dados', err);
+        setErroCarregamento(err?.message || 'Erro desconhecido');
+        setLoading(false);
+      }
     })();
   }, []);
 
   function notify(msg) { setToast(msg); setTimeout(() => setToast(null), 3000); }
 
+  // Grava e devolve true/false. Se o banco recusar (conflito com outra pessoa) ou falhar,
+  // desfaz a alteração na tela e abre a tela bloqueante — assim ninguém fica olhando para
+  // um dado que não foi salvo, e o aviso não pode ser engolido por um toast de sucesso.
   async function persist(collection, setter, next, anterior) {
     setter(next);
-    const ok = await saveCollectionDelta(collection, anterior, next);
-    if (!ok) notify('⚠️ Não foi possível salvar. Verifique sua conexão e tente novamente.');
+    const r = await saveCollectionDelta(collection, anterior, next);
+    if (r.ok) return true;
+    setter(anterior);
+    setFalhaGravacao(r.conflito ? 'conflito' : 'rede');
+    return false;
   }
-  async function persistEstoque(next) { await persist('estoque', setEstoque, next, estoque); }
-  async function persistClientes(next) { await persist('clientes', setClientes, next, clientes); }
-  async function persistFornecedores(next) { await persist('fornecedores', setFornecedores, next, fornecedores); }
-  async function persistVendas(next) { await persist('vendas', setVendas, next, vendas); }
-  async function persistOrcamentos(next) { await persist('orcamentos', setOrcamentos, next, orcamentos); }
-  async function persistExpedicoes(next) { await persist('expedicoes', setExpedicoes, next, expedicoes); }
-  async function persistPedidosCompra(next) { await persist('pedidosCompra', setPedidosCompra, next, pedidosCompra); }
-  async function persistRecebimentos(next) { await persist('recebimentos', setRecebimentos, next, recebimentos); }
-  async function persistDepositos(next) { await persist('depositos', setDepositos, next, depositos); }
-  async function persistTransferencias(next) { await persist('transferencias', setTransferencias, next, transferencias); }
-  async function persistFormasRecebimento(next) { await persist('formasRecebimento', setFormasRecebimento, next, formasRecebimento); }
+  async function persistEstoque(next) { return persist('estoque', setEstoque, next, estoque); }
+  async function persistClientes(next) { return persist('clientes', setClientes, next, clientes); }
+  async function persistFornecedores(next) { return persist('fornecedores', setFornecedores, next, fornecedores); }
+  async function persistVendas(next) { return persist('vendas', setVendas, next, vendas); }
+  async function persistOrcamentos(next) { return persist('orcamentos', setOrcamentos, next, orcamentos); }
+  async function persistExpedicoes(next) { return persist('expedicoes', setExpedicoes, next, expedicoes); }
+  async function persistPedidosCompra(next) { return persist('pedidosCompra', setPedidosCompra, next, pedidosCompra); }
+  async function persistRecebimentos(next) { return persist('recebimentos', setRecebimentos, next, recebimentos); }
+  async function persistDepositos(next) { return persist('depositos', setDepositos, next, depositos); }
+  async function persistTransferencias(next) { return persist('transferencias', setTransferencias, next, transferencias); }
+  async function persistFormasRecebimento(next) { return persist('formasRecebimento', setFormasRecebimento, next, formasRecebimento); }
   async function persistSenhaAprovacao(next) {
+    const anterior = senhaAprovacao;
     setSenhaAprovacao(next);
     const ok = await saveConfig('senhaAprovacao', next);
-    if (!ok) notify('⚠️ Não foi possível salvar. Verifique sua conexão e tente novamente.');
+    if (!ok) { setSenhaAprovacao(anterior); setFalhaGravacao('rede'); }
+    return ok;
   }
-  async function persistPagamentos(next) { await persist('pagamentos', setPagamentos, next, pagamentos); }
-  async function persistAjustesReposicao(next) { await persist('ajustesReposicao', setAjustesReposicao, next, ajustesReposicao); }
-  async function persistBalancos(next) { await persist('balancos', setBalancos, next, balancos); }
+  async function persistPagamentos(next) { return persist('pagamentos', setPagamentos, next, pagamentos); }
+  async function persistAjustesReposicao(next) { return persist('ajustesReposicao', setAjustesReposicao, next, ajustesReposicao); }
+  async function persistBalancos(next) { return persist('balancos', setBalancos, next, balancos); }
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex items-center gap-2 text-slate-500">
           <Loader2 className="animate-spin" size={20} /><span>Carregando dados...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Nunca deixe o sistema abrir com dados incompletos: sem isso, uma falha de leitura fazia o
+  // estoque aparecer vazio e todo lançamento seguinte era descartado sem aviso nenhum.
+  if (erroCarregamento) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+        <div className="bg-white border border-red-200 rounded-lg p-5 max-w-md text-center space-y-3">
+          <p className="font-medium text-red-600">Não foi possível carregar os dados</p>
+          <p className="text-sm text-slate-500">
+            O sistema não abriu porque a leitura do banco falhou. Isso é proposital — abrir com dados
+            incompletos faria seus lançamentos serem perdidos. Verifique sua conexão e tente de novo.
+          </p>
+          <p className="text-xs text-slate-400 font-mono break-words">{erroCarregamento}</p>
+          <button onClick={() => window.location.reload()} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md">
+            Tentar novamente
+          </button>
         </div>
       </div>
     );
@@ -1442,6 +1497,30 @@ function AppInner() {
       {toast && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm z-30 max-w-[90vw] text-center">
           <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />{toast}
+        </div>
+      )}
+
+      {falhaGravacao && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-5 text-center space-y-3">
+            <p className="font-medium text-red-600">
+              {falhaGravacao === 'conflito' ? 'Outra pessoa alterou estes dados' : 'Não foi possível salvar'}
+            </p>
+            <p className="text-sm text-slate-600">
+              {falhaGravacao === 'conflito'
+                ? 'Enquanto você trabalhava, outra pessoa salvou uma alteração nos mesmos registros. Para proteger o trabalho dela, NADA do seu último lançamento foi salvo. Recarregue a página e refaça o lançamento.'
+                : 'Falha de conexão com o banco de dados. NADA do seu último lançamento foi salvo. Verifique sua internet e tente de novo.'}
+            </p>
+            {falhaGravacao === 'conflito' ? (
+              <button onClick={() => window.location.reload()} className="w-full bg-slate-900 text-white text-sm px-4 py-2 rounded-md">
+                Recarregar a página
+              </button>
+            ) : (
+              <button onClick={() => setFalhaGravacao(null)} className="w-full bg-slate-900 text-white text-sm px-4 py-2 rounded-md">
+                Entendi, vou tentar de novo
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -2084,8 +2163,8 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial: null, loteDestinoIds: novosLotesDestino.map(l => l.id), quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
     }
 
-    await setEstoque(novoEstoque);
-    await setTransferencias([registro, ...transferencias]);
+    if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
+    if (!(await setTransferencias([registro, ...transferencias]))) { setEnviando(false); return; }
     setEnviando(false);
     notify('Transferência registrada');
     resetSelecao();
@@ -2141,8 +2220,8 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       return;
     }
 
-    await setEstoque(novoEstoque);
-    await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    if (!(await setEstoque(novoEstoque))) return;
+    if (!(await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x)))) return;
     notify('Transferência anulada e item devolvido ao depósito de origem');
   }
 
@@ -2370,12 +2449,14 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
       itensFinal.push({ id: uid(), produtoId, descricao: linha.descricao, categoria: linha.categoria, serializado: linha.serializado, quantidade: linha.quantidade, custoUnitario: linha.custoUnitario });
     }
 
-    await setEstoque(novoEstoque);
+    // O pedido só é gravado se os produtos novos realmente entraram no cadastro — sem isso,
+    // um pedido podia apontar para produtos que só existiram na memória desta aba.
+    if (!(await setEstoque(novoEstoque))) return;
     const pedido = {
       id: uid(), numeroPedidoFornecedor, numeroNotaFiscal, fornecedorId, fornecedorNome: fornecedor?.nome || '',
       data: new Date(data + 'T12:00:00').toISOString(), itens: itensFinal, valorTotal, cancelado: false,
     };
-    await setPedidos([pedido, ...pedidos]);
+    if (!(await setPedidos([pedido, ...pedidos]))) return;
     notify('Pedido de compra registrado. Dê entrada dos itens em "Recebimento" quando a mercadoria chegar.');
     setNumeroPedidoFornecedor(''); setNumeroNotaFiscal(''); setFornecedorId(''); setData(new Date().toISOString().slice(0, 10));
     setItensStaging([]); setShowForm(false);
@@ -2755,8 +2836,8 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
       return;
     }
 
-    await setEstoque(novoEstoque);
-    await setRecebimentos(recebimentos.map(r => r.id === registro.id ? { ...r, anulado: true, anuladoEm: new Date().toISOString() } : r));
+    if (!(await setEstoque(novoEstoque))) return;
+    if (!(await setRecebimentos(recebimentos.map(r => r.id === registro.id ? { ...r, anulado: true, anuladoEm: new Date().toISOString() } : r)))) return;
     notify('Recebimento anulado e item removido do estoque');
   }
 
@@ -2902,16 +2983,32 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     if (!depositoId) { notify('Selecione o depósito de destino'); return; }
     if (!serial.trim()) { notify('Digite o número de série do inversor'); return; }
     if (!foto) { notify('Anexe a foto da etiqueta de série'); return; }
+    // Sem esta conferência, um produto ausente da lista fazia a entrada ser descartada em
+    // silêncio e mesmo assim o recebimento era registrado.
+    if (!estoque.some(p => p.id === item.produtoId)) {
+      notify('Produto não encontrado no estoque — recarregue a página (F5) e tente de novo. Nada foi lançado.');
+      return;
+    }
+    const serialLimpo = serial.trim();
+    if (estoque.some(p => (p.unidades || []).some(u => u.serial === serialLimpo))) {
+      notify(`O número de série ${serialLimpo} já existe no estoque. Confira a etiqueta antes de lançar.`);
+      return;
+    }
     setEnviando(true);
     const agora = new Date().toISOString();
     const depositoNome = depositos.find(d => d.id === depositoId)?.nome || '';
-    const novaUnidade = { id: uid(), serial: serial.trim(), status: 'Disponível', custoCompra: item.custoUnitario, notaFiscal: pedido.numeroNotaFiscal, fornecedor: pedido.fornecedorNome, dataEntrada: agora, depositoId };
+    const novaUnidade = { id: uid(), serial: serialLimpo, status: 'Disponível', custoCompra: item.custoUnitario, notaFiscal: pedido.numeroNotaFiscal, fornecedor: pedido.fornecedorNome, dataEntrada: agora, depositoId };
     const novoEstoque = estoque.map(p => p.id === item.produtoId ? { ...p, unidades: [...(p.unidades || []), novaUnidade] } : p);
-    await setEstoque(novoEstoque);
-    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, unidadeId: novaUnidade.id, descricao: item.descricao, serial: serial.trim(), quantidade: 1, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
-    await setRecebimentos([registro, ...recebimentos]);
+    // Só registra o recebimento se a entrada no estoque realmente foi gravada no banco.
+    if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
+    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, unidadeId: novaUnidade.id, descricao: item.descricao, serial: serialLimpo, quantidade: 1, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
+    if (!(await setRecebimentos([registro, ...recebimentos]))) {
+      setEnviando(false);
+      notify('⚠️ O estoque foi somado, mas o registro do recebimento NÃO foi salvo. Recarregue a página (F5) e confira antes de lançar de novo.');
+      return;
+    }
     setEnviando(false);
-    notify(`Unidade SN ${serial.trim()} recebida em ${depositoNome}`);
+    notify(`Unidade SN ${serialLimpo} recebida em ${depositoNome}`);
     if (pendente - 1 <= 0) { onDone(); } else { setSerial(''); setFoto(null); }
   }
 
@@ -2919,14 +3016,23 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     if (!depositoId) { notify('Selecione o depósito de destino'); return; }
     const qtd = parseInt(qtdInput) || 0;
     if (qtd <= 0 || qtd > pendente) { notify(`Informe uma quantidade entre 1 e ${pendente}`); return; }
+    if (!estoque.some(p => p.id === item.produtoId)) {
+      notify('Produto não encontrado no estoque — recarregue a página (F5) e tente de novo. Nada foi lançado.');
+      return;
+    }
     setEnviando(true);
     const agora = new Date().toISOString();
     const depositoNome = depositos.find(d => d.id === depositoId)?.nome || '';
     const novoLote = { id: uid(), quantidade: qtd, quantidadeDisponivel: qtd, custoUnitario: item.custoUnitario, notaFiscal: pedido.numeroNotaFiscal, fornecedor: pedido.fornecedorNome, dataEntrada: agora, depositoId };
     const novoEstoque = estoque.map(p => p.id === item.produtoId ? { ...p, lotes: [...(p.lotes || []), novoLote] } : p);
-    await setEstoque(novoEstoque);
+    // Só registra o recebimento se a entrada no estoque realmente foi gravada no banco.
+    if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
     const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, loteId: novoLote.id, descricao: item.descricao, serial: null, quantidade: qtd, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
-    await setRecebimentos([registro, ...recebimentos]);
+    if (!(await setRecebimentos([registro, ...recebimentos]))) {
+      setEnviando(false);
+      notify('⚠️ O estoque foi somado, mas o registro do recebimento NÃO foi salvo. Recarregue a página (F5) e confira antes de lançar de novo.');
+      return;
+    }
     setEnviando(false);
     notify('Entrada registrada no estoque');
     onDone();
@@ -3217,10 +3323,10 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (!(await askConfirm(`Converter o orçamento de ${orc.clienteNome} (${currency(orc.total)}) em venda? Isso vai dar baixa no estoque.`))) return;
     const { novoEstoque, itensResultado, totalCusto, erros } = consumirEstoque(estoque, orc.itens);
     if (erros.length > 0) { notify(`Não foi possível converter: ${erros[0]}`); return; }
-    await setEstoque(novoEstoque);
+    if (!(await setEstoque(novoEstoque))) return;
     const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '' };
-    await setVendas([venda, ...vendas]);
-    await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
+    if (!(await setVendas([venda, ...vendas]))) return;
+    if (!(await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, status: 'Convertido', vendaId: venda.id } : o)))) return;
     notify('Orçamento convertido em venda e estoque atualizado');
   }
 
@@ -3413,9 +3519,11 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const cliente = clientes.find(c => c.id === clienteId);
     const { novoEstoque, itensResultado, totalCusto, erros } = consumirEstoque(estoque, carrinho);
     if (erros.length > 0) { notify(erros[0]); return; }
-    await setEstoque(novoEstoque);
+    // A venda só é gravada se a baixa de estoque foi confirmada no banco. Sem isso, uma
+    // baixa recusada deixava a venda registrada com o estoque intacto.
+    if (!(await setEstoque(novoEstoque))) return;
     const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined, observacoes };
-    await setVendas([venda, ...vendas]);
+    if (!(await setVendas([venda, ...vendas]))) return;
     if (orcamentoOrigemId && setOrcamentos) {
       await setOrcamentos(orcamentos.map(o => o.id === orcamentoOrigemId ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
     }
@@ -3429,11 +3537,11 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     if (!ok) return;
 
     const novoEstoque = reverterConsumoEstoque(estoque, venda.itens);
-    await setEstoque(novoEstoque);
+    if (!(await setEstoque(novoEstoque))) return;
 
     if (setExpedicoes) {
       const chavesDaVenda = new Set(venda.itens.map(it => chaveItemVenda(venda.id, it)));
-      await setExpedicoes(expedicoes.filter(ex => !chavesDaVenda.has(ex.chave)));
+      if (!(await setExpedicoes(expedicoes.filter(ex => !chavesDaVenda.has(ex.chave))))) return;
     }
 
     if (venda.origemOrcamentoId && setOrcamentos) {
@@ -4222,8 +4330,9 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
       }
     }
 
-    await setEstoque(novoEstoque);
-    await setBalancos(balancos.map(b => b.id === balanco.id ? { ...b, status: 'Concluído', concluidoEm: new Date().toISOString(), saldoFinanceiro } : b));
+    // O balanço só é marcado como Concluído se a correção de estoque foi gravada de verdade.
+    if (!(await setEstoque(novoEstoque))) return;
+    if (!(await setBalancos(balancos.map(b => b.id === balanco.id ? { ...b, status: 'Concluído', concluidoEm: new Date().toISOString(), saldoFinanceiro } : b)))) return;
     notify('Balanço finalizado e estoque corrigido');
     avisos.forEach(a => notify(a));
   }
