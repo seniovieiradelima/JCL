@@ -1017,6 +1017,50 @@ function qtdRecebida(recebimentos, pedidoId, itemLineId) {
   return recebimentos.filter(r => r.pedidoId === pedidoId && r.itemLineId === itemLineId && !r.anulado).reduce((a, r) => a + r.quantidade, 0);
 }
 
+// Quantidade de um produto comprada (pedido já pago ao fornecedor) e ainda não recebida —
+// é a base para saber quanta pré-venda pode ser assumida. Devolve também a previsão de
+// chegada mais próxima entre os pedidos que ainda têm saldo a receber.
+function qtdACaminho(pedidosCompra, recebimentos, produtoId) {
+  let total = 0;
+  let proximaChegada = null;
+  for (const p of (pedidosCompra || [])) {
+    if (p.cancelado || p.anulado) continue;
+    for (const it of (p.itens || [])) {
+      if (it.produtoId !== produtoId) continue;
+      const falta = it.quantidade - qtdRecebida(recebimentos, p.id, it.id);
+      if (falta > 0) {
+        total += falta;
+        if (p.previsaoChegada && (!proximaChegada || p.previsaoChegada < proximaChegada)) proximaChegada = p.previsaoChegada;
+      }
+    }
+  }
+  return { total, proximaChegada };
+}
+
+// Quantidade de um produto já comprometida em pré-vendas ativas (pendências de entrega).
+// Orçamento NÃO reserva; venda com pendência reserva.
+function qtdReservadaPreVenda(vendas, produtoId) {
+  return (vendas || []).filter(v => !v.anulado).reduce((acc, v) =>
+    acc + (v.itens || []).filter(it => it.itemId === produtoId).reduce((a, it) => a + (it.quantidadePendente || 0), 0), 0);
+}
+
+// Mensagem de confirmação de uma venda com pendência: diz se a quantidade pendente está
+// coberta pelo que já foi pago ao fornecedor e ainda não foi reservado por outras pré-vendas.
+function avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas) {
+  const porProduto = new Map();
+  for (const it of itensResultado) {
+    if ((it.quantidadePendente || 0) > 0) porProduto.set(it.itemId, (porProduto.get(it.itemId) || 0) + it.quantidadePendente);
+  }
+  const descoberto = [...porProduto.entries()].some(([produtoId, pend]) => {
+    const livre = Math.max(0, qtdACaminho(pedidosCompra, recebimentos, produtoId).total - qtdReservadaPreVenda(vendas, produtoId));
+    return pend > livre;
+  });
+  const cobertura = descoberto
+    ? ' ⚠️ ATENÇÃO: parte dessa quantidade NÃO está coberta por pedidos já pagos ao fornecedor — confirme com o setor de compras antes de prometer prazo.'
+    : ' Toda a quantidade pendente está coberta por pedidos já pagos, a caminho.';
+  return `${totalPendente} item(ns) sem estoque ficarão PENDENTES DE ENTREGA, reservados para este cliente.${cobertura} Confirmar?`;
+}
+
 function BalancoLockScreen({ senhaCorreta, onDesbloquear }) {
   const [valor, setValor] = useState('');
   const [erro, setErro] = useState('');
@@ -1501,11 +1545,13 @@ function AppInner() {
           <OrcamentoModule
             orcamentos={orcamentos} setOrcamentos={persistOrcamentos}
             vendas={vendas} setVendas={persistVendas}
-            clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} askSenha={askSenha} notify={notify}
+            clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos}
+            pedidosCompra={pedidosCompra} recebimentos={recebimentos}
+            askConfirm={askConfirm} askSenha={askSenha} notify={notify}
           />
         )}
         {tab === 'vendas' && (
-          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
+          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
         )}
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
@@ -1642,7 +1688,67 @@ function FiltroBar({ busca, setBusca, buscaPlaceholder, filtroValue, setFiltro, 
 
 /* ---------------- CARRINHO (compartilhado por Vendas e Orçamentos) ---------------- */
 
-function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
+/* ---------------- SELETOR COM BUSCA (digite para filtrar a lista) ---------------- */
+
+function SelectPesquisavel({ opcoes, value, onChange, placeholder, compacto }) {
+  const [aberto, setAberto] = useState(false);
+  const [busca, setBusca] = useState('');
+  const boxRef = React.useRef(null);
+
+  // Fecha ao clicar fora
+  useEffect(() => {
+    if (!aberto) return;
+    function fora(e) { if (boxRef.current && !boxRef.current.contains(e.target)) setAberto(false); }
+    document.addEventListener('mousedown', fora);
+    return () => document.removeEventListener('mousedown', fora);
+  }, [aberto]);
+
+  const ordenadas = useMemo(() => opcoes.slice().sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')), [opcoes]);
+  const termo = busca.trim().toLowerCase();
+  const filtradas = termo ? ordenadas.filter(o => o.label.toLowerCase().includes(termo)) : ordenadas;
+  const selecionada = opcoes.find(o => o.value === value);
+  const tamanho = compacto ? 'px-2 py-1.5 text-xs' : 'px-2 py-2 text-sm';
+
+  function escolher(v) { onChange(v); setBusca(''); setAberto(false); }
+
+  return (
+    <div ref={boxRef} className="relative w-full">
+      <button type="button" onClick={() => { setAberto(a => !a); setBusca(''); }}
+        className={`w-full border border-slate-200 rounded-md bg-white text-left flex justify-between items-center gap-2 ${tamanho}`}>
+        <span className={`truncate ${selecionada ? '' : 'text-slate-400'}`}>{selecionada ? selecionada.label : placeholder}</span>
+        <ChevronRight size={13} className={`text-slate-400 shrink-0 transition-transform ${aberto ? '-rotate-90' : 'rotate-90'}`} />
+      </button>
+      {aberto && (
+        <div className="absolute z-30 mt-1 w-full bg-white border border-slate-200 rounded-md shadow-lg overflow-hidden">
+          <div className="flex items-center gap-1.5 border-b border-slate-100 px-2">
+            <Search size={13} className="text-slate-400 shrink-0" />
+            <input
+              autoFocus value={busca}
+              onChange={e => setBusca(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Escape') setAberto(false);
+                if (e.key === 'Enter' && filtradas.length === 1) escolher(filtradas[0].value);
+              }}
+              placeholder="Digite para filtrar..."
+              className={`w-full outline-none ${tamanho}`}
+            />
+          </div>
+          <div className="max-h-60 overflow-y-auto">
+            {filtradas.length === 0 && <p className="text-xs text-slate-400 text-center py-3">Nada encontrado com esse texto.</p>}
+            {filtradas.map(o => (
+              <button key={o.value} type="button" onClick={() => escolher(o.value)}
+                className={`block w-full text-left ${tamanho} hover:bg-slate-50 ${o.value === value ? 'bg-amber-50 font-medium' : ''}`}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, pedidosCompra, recebimentos, vendas }) {
   const [produtoSel, setProdutoSel] = useState('');
   const [depositoSel, setDepositoSel] = useState(depositos.length === 1 ? depositos[0].id : '');
   const [qtdSel, setQtdSel] = useState(1);
@@ -1692,13 +1798,36 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify }) {
     <>
       <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
         <p className="text-xs text-slate-500 font-medium">Adicionar produto do estoque</p>
-        <select value={produtoSel} onChange={e => { setProdutoSel(e.target.value); setDepositoSel(depositos.length === 1 ? depositos[0].id : ''); }} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
-          <option value="">Selecione o produto...</option>
-          {estoque.map(i => {
+        <SelectPesquisavel
+          value={produtoSel}
+          onChange={v => { setProdutoSel(v); setDepositoSel(depositos.length === 1 ? depositos[0].id : ''); }}
+          placeholder="Selecione o produto..."
+          opcoes={estoque.map(i => {
             const disp = availableQty(i);
-            return <option key={i.id} value={i.id}>{i.categoria} · {descricaoProduto(i)} ({disp === 0 ? 'sem estoque — pré-venda' : `${disp} disp.`})</option>;
+            const aCaminho = qtdACaminho(pedidosCompra, recebimentos, i.id).total;
+            const rotulo = disp === 0 && aCaminho === 0 ? 'sem estoque — pré-venda'
+              : aCaminho > 0 ? `${disp} disp. + ${aCaminho} a caminho`
+              : `${disp} disp.`;
+            return { value: i.id, label: `${i.categoria} · ${descricaoProduto(i)} (${rotulo})` };
           })}
-        </select>
+        />
+        {produtoAtual && (() => {
+          // Painel do vendedor: o que tem no galpão, o que já foi pago e está vindo,
+          // o que outras pré-vendas já comprometeram, e o que sobra pra vender.
+          const emEstoque = availableQty(produtoAtual);
+          const { total: aCaminho, proximaChegada } = qtdACaminho(pedidosCompra, recebimentos, produtoAtual.id);
+          const reservado = qtdReservadaPreVenda(vendas, produtoAtual.id);
+          const livre = Math.max(0, aCaminho - reservado);
+          return (
+            <div className="bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
+              <span>Em estoque: <strong>{emEstoque}</strong></span>
+              <span>A caminho (pedidos pagos): <strong>{aCaminho}</strong></span>
+              <span>Reservado em pré-vendas: <strong>{reservado}</strong></span>
+              <span className={livre > 0 || emEstoque > 0 ? 'text-emerald-700' : 'text-amber-700'}>Livre para pré-venda: <strong>{livre}</strong></span>
+              {proximaChegada && <span>Próxima chegada: <strong>{formatDate(proximaChegada + 'T12:00:00')}</strong></span>}
+            </div>
+          );
+        })()}
         {produtoAtual && (
           <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o depósito...</option>
@@ -2276,10 +2405,12 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
         </div>
 
         {origemId && (
-          <select value={produtoId} onChange={e => { setProdutoId(e.target.value); setUnidadeId(''); }} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
-            <option value="">Selecione o produto...</option>
-            {produtosComEstoqueNaOrigem.map(p => <option key={p.id} value={p.id}>{p.categoria} · {descricaoProduto(p)} ({availableQty(p, origemId)} disp.)</option>)}
-          </select>
+          <SelectPesquisavel
+            value={produtoId}
+            onChange={v => { setProdutoId(v); setUnidadeId(''); }}
+            placeholder="Selecione o produto..."
+            opcoes={produtosComEstoqueNaOrigem.map(p => ({ value: p.id, label: `${p.categoria} · ${descricaoProduto(p)} (${availableQty(p, origemId)} disp.)` }))}
+          />
         )}
 
         {produto && produto.serializado && (
@@ -2417,6 +2548,7 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
 function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [numeroPedidoFornecedor, setNumeroPedidoFornecedor] = useState('');
+  const [previsaoChegada, setPrevisaoChegada] = useState('');
   const [numeroNotaFiscal, setNumeroNotaFiscal] = useState('');
   const [fornecedorId, setFornecedorId] = useState('');
   const [data, setData] = useState(new Date().toISOString().slice(0, 10));
@@ -2486,10 +2618,11 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
     const pedido = {
       id: uid(), numeroPedidoFornecedor, numeroNotaFiscal, fornecedorId, fornecedorNome: fornecedor?.nome || '',
       data: new Date(data + 'T12:00:00').toISOString(), itens: itensFinal, valorTotal, cancelado: false,
+      previsaoChegada: previsaoChegada || null,
     };
     if (!(await setPedidos([pedido, ...pedidos]))) return;
     notify('Pedido de compra registrado. Dê entrada dos itens em "Recebimento" quando a mercadoria chegar.');
-    setNumeroPedidoFornecedor(''); setNumeroNotaFiscal(''); setFornecedorId(''); setData(new Date().toISOString().slice(0, 10));
+    setNumeroPedidoFornecedor(''); setNumeroNotaFiscal(''); setFornecedorId(''); setData(new Date().toISOString().slice(0, 10)); setPrevisaoChegada('');
     setItensStaging([]); setShowForm(false);
   }
 
@@ -2636,13 +2769,21 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
           </div>
           {fornecedores.length === 0 && <p className="text-xs text-amber-600">Cadastre um fornecedor primeiro na aba "Fornecedores".</p>}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <select value={fornecedorId} onChange={e => setFornecedorId(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2">
-              <option value="">Selecione o fornecedor...</option>
-              {fornecedores.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
-            </select>
+            <div className="sm:col-span-2">
+              <SelectPesquisavel
+                value={fornecedorId}
+                onChange={setFornecedorId}
+                placeholder="Selecione o fornecedor..."
+                opcoes={fornecedores.map(f => ({ value: f.id, label: f.nome }))}
+              />
+            </div>
             <input placeholder="Número do pedido no fornecedor" value={numeroPedidoFornecedor} onChange={e => setNumeroPedidoFornecedor(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input placeholder="Número da nota fiscal" value={numeroNotaFiscal} onChange={e => setNumeroNotaFiscal(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input type="date" value={data} onChange={e => setData(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm sm:col-span-2" />
+            <div className="sm:col-span-2">
+              <label className="text-xs text-slate-500">Previsão de chegada da mercadoria (opcional) — aparece para os vendedores na pré-venda</label>
+              <input type="date" value={previsaoChegada} onChange={e => setPrevisaoChegada(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm mt-1" />
+            </div>
           </div>
 
           <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
@@ -2653,10 +2794,12 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
             </div>
 
             {!modoNovoProduto ? (
-              <select value={produtoSel} onChange={e => setProdutoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
-                <option value="">Selecione o produto...</option>
-                {estoque.map(i => <option key={i.id} value={i.id}>{i.categoria} · {descricaoProduto(i)}</option>)}
-              </select>
+              <SelectPesquisavel
+                value={produtoSel}
+                onChange={setProdutoSel}
+                placeholder="Selecione o produto..."
+                opcoes={estoque.map(i => ({ value: i.id, label: `${i.categoria} · ${descricaoProduto(i)}` }))}
+              />
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <select value={novoProd.categoria} onChange={e => setNovoProd(p => ({ ...p, categoria: e.target.value, serializado: SERIALIZAVEL_PADRAO[e.target.value] }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
@@ -2729,7 +2872,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                   <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[p.id] ? 'rotate-90' : ''}`} />
                   <div className="min-w-0">
                     <p className="font-medium text-sm truncate flex items-center gap-1.5"><span className={p.anulado ? 'line-through' : ''}>{p.fornecedorNome}</span> <span className={`text-[11px] px-1.5 py-0.5 rounded ${status.style}`}>{status.label}</span></p>
-                    <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} · {formatDate(p.data)} {p.anulado && `· anulado em ${formatDate(p.anuladoEm)}`}</p>
+                    <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} · {formatDate(p.data)} {p.previsaoChegada && `· chegada prevista ${formatDate(p.previsaoChegada + 'T12:00:00')}`} {p.anulado && `· anulado em ${formatDate(p.anuladoEm)}`}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -2776,10 +2919,13 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                   {!p.anulado && (
                     adicionandoItemEm === p.id ? (
                       <div className="bg-white border border-slate-200 rounded-md p-2 space-y-1.5 mt-1">
-                        <select value={novoItemProdutoId} onChange={e => setNovoItemProdutoId(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs">
-                          <option value="">Selecione o produto (já cadastrado)...</option>
-                          {estoque.map(prod => <option key={prod.id} value={prod.id}>{prod.categoria} · {descricaoProduto(prod)}</option>)}
-                        </select>
+                        <SelectPesquisavel
+                          compacto
+                          value={novoItemProdutoId}
+                          onChange={setNovoItemProdutoId}
+                          placeholder="Selecione o produto (já cadastrado)..."
+                          opcoes={estoque.map(prod => ({ value: prod.id, label: `${prod.categoria} · ${descricaoProduto(prod)}` }))}
+                        />
                         <div className="flex flex-col sm:flex-row gap-1.5">
                           <input type="number" min={1} value={novoItemQtd} onChange={e => setNovoItemQtd(e.target.value)} placeholder="Quantidade" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
                           <input type="text" inputMode="decimal" value={novoItemCusto} onChange={e => setNovoItemCusto(e.target.value)} placeholder="Custo unitário" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-32" />
@@ -2892,7 +3038,7 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedPedido[p.id] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
                   <p className="font-medium text-sm truncate">{p.fornecedorNome}</p>
-                  <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`}</p>
+                  <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} {p.previsaoChegada && `· chegada prevista ${formatDate(p.previsaoChegada + 'T12:00:00')}`}</p>
                 </div>
               </div>
               <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">Pendente</span>
@@ -3307,7 +3453,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
 
 /* ---------------- ORÇAMENTOS (carrinho que não baixa estoque até ser convertido) ---------------- */
 
-function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, estoque, setEstoque, depositos, askConfirm, askSenha, notify }) {
+function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, estoque, setEstoque, depositos, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [clienteId, setClienteId] = useState('');
@@ -3354,7 +3500,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (!(await askConfirm(`Converter o orçamento de ${orc.clienteNome} (${currency(orc.total)}) em venda? Isso vai dar baixa no estoque.`))) return;
     const { novoEstoque, itensResultado, totalCusto, totalPendente, erros } = consumirEstoque(estoque, orc.itens, { permitirPendencia: true });
     if (erros.length > 0) { notify(`Não foi possível converter: ${erros[0]}`); return; }
-    if (totalPendente > 0 && !(await askConfirm(`${totalPendente} item(ns) sem estoque suficiente ficarão PENDENTES DE ENTREGA — a baixa é feita na aba Vendas quando a mercadoria chegar. Converter mesmo assim?`))) return;
+    if (totalPendente > 0 && !(await askConfirm(avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas)))) return;
     if (!(await setEstoque(novoEstoque))) return;
     const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '' };
     if (!(await setVendas([venda, ...vendas]))) return;
@@ -3419,12 +3565,14 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
             <button onClick={cancelarForm}><X size={16} className="text-slate-400" /></button>
           </div>
           <p className="text-xs text-slate-400 -mt-2">Um orçamento não reserva nem dá baixa no estoque — isso só acontece quando ele é convertido em venda.</p>
-          <select value={clienteId} onChange={e => setClienteId(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
-            <option value="">Selecione o cliente...</option>
-            {clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-          </select>
+          <SelectPesquisavel
+            value={clienteId}
+            onChange={setClienteId}
+            placeholder="Selecione o cliente..."
+            opcoes={clientes.map(c => ({ value: c.id, label: c.nome }))}
+          />
 
-          <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} />
+          <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} />
 
           <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} placeholder="Observações da negociação (condições combinadas, prazo, forma de pagamento acertada, detalhes de instalação etc.) — ficam visíveis pra quem for tocar as próximas etapas, inclusive a expedição." rows={3} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm resize-none" />
 
@@ -3499,7 +3647,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
 /* ---------------- VENDAS (com baixa FIFO de custo) ---------------- */
 
-function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, askConfirm, askSenha, notify }) {
+function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
@@ -3551,7 +3699,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const cliente = clientes.find(c => c.id === clienteId);
     const { novoEstoque, itensResultado, totalCusto, totalPendente, erros } = consumirEstoque(estoque, carrinho, { permitirPendencia: true });
     if (erros.length > 0) { notify(erros[0]); return; }
-    if (totalPendente > 0 && !(await askConfirm(`${totalPendente} item(ns) sem estoque suficiente ficarão PENDENTES DE ENTREGA — a baixa é feita na aba Vendas quando a mercadoria chegar. Confirmar a venda mesmo assim?`))) return;
+    if (totalPendente > 0 && !(await askConfirm(avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas)))) return;
     // A venda só é gravada se a baixa de estoque foi confirmada no banco. Sem isso, uma
     // baixa recusada deixava a venda registrada com o estoque intacto.
     if (!(await setEstoque(novoEstoque))) return;
@@ -3694,12 +3842,14 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
             </div>
           )}
 
-          <select value={clienteId} onChange={e => setClienteId(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
-            <option value="">Selecione o cliente...</option>
-            {clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-          </select>
+          <SelectPesquisavel
+            value={clienteId}
+            onChange={setClienteId}
+            placeholder="Selecione o cliente..."
+            opcoes={clientes.map(c => ({ value: c.id, label: c.nome }))}
+          />
 
-          <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} />
+          <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} />
 
           <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} placeholder="Observações da negociação (condições combinadas, prazo, forma de pagamento acertada, detalhes de instalação etc.) — ficam visíveis pra quem for tocar as próximas etapas, inclusive a expedição." rows={3} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm resize-none" />
 
@@ -4510,10 +4660,12 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
           </div>
 
           <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
-            <select value={produtoSelId} onChange={e => selecionarProduto(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
-              <option value="">Selecione o produto a conferir...</option>
-              {estoque.map(p => <option key={p.id} value={p.id}>{p.categoria} · {descricaoProduto(p)} (sistema: {availableQty(p, balancoAtivo.depositoId)})</option>)}
-            </select>
+            <SelectPesquisavel
+              value={produtoSelId}
+              onChange={selecionarProduto}
+              placeholder="Selecione o produto a conferir..."
+              opcoes={estoque.map(p => ({ value: p.id, label: `${p.categoria} · ${descricaoProduto(p)} (sistema: ${availableQty(p, balancoAtivo.depositoId)})` }))}
+            />
 
             {produtoSel && produtoSel.serializado ? (
               <div>
