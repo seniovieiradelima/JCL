@@ -1,45 +1,40 @@
 # Sistema de Gestão — Estação Mossoró
 
-## 1. Configurar o banco de dados (Supabase)
+## Atualizar uma versão já publicada (o caso mais comum)
 
+1. Substitua **apenas** o arquivo `src/App.jsx` pelo novo que veio neste pacote.
+2. Faça commit e push no repositório GitHub já conectado à Vercel:
+   ```bash
+   git add src/App.jsx
+   git commit -m "Atualização do sistema"
+   git push
+   ```
+3. A Vercel publica sozinha em 1-2 minutos. Os dados no Supabase **não são afetados** — essa atualização só troca código.
+
+## Configuração do zero (primeira vez)
+
+### 1. Banco de dados (Supabase)
 1. Acesse seu projeto em https://supabase.com/dashboard
-2. Vá em **SQL Editor** → **New query**
-3. Cole o conteúdo do arquivo `supabase-schema.sql` e clique em **Run**
-4. Vá em **Authentication → Users → Add user** e crie um login (e-mail + senha) para cada pessoa da equipe que vai usar o sistema
+2. Vá em **SQL Editor** → **New query**, cole o conteúdo de `supabase-schema.sql` e rode
+3. Vá em **Authentication → Users → Add user** e crie um login (e-mail + senha) para cada pessoa da equipe
 
-## 2. Rodar localmente (opcional, para testar antes de publicar)
-
+### 2. Rodar localmente (opcional)
 ```bash
 npm install
 cp .env.example .env
 npm run dev
 ```
 
-Abra o endereço que aparecer no terminal (geralmente http://localhost:5173).
+### 3. Publicar no Vercel
+1. Suba esta pasta para um repositório no GitHub
+2. Em https://vercel.com → **Add New → Project** → importe o repositório
+3. Adicione as variáveis de ambiente:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+4. **Deploy**
 
-## 3. Publicar no Vercel
-
-1. Suba esta pasta para um repositório no GitHub (crie um repositório novo e faça push destes arquivos)
-2. Acesse https://vercel.com, clique em **Add New → Project** e importe esse repositório
-3. Na tela de configuração, adicione as variáveis de ambiente:
-   - `VITE_SUPABASE_URL` → `https://xxqbeeighccssfqlomxz.supabase.co`
-   - `VITE_SUPABASE_ANON_KEY` → a chave publishable do Supabase
-4. Clique em **Deploy**
-
-Em poucos minutos o Vercel te dá uma URL pública (tipo `sgm-estacao-mossoro.vercel.app`), já acessível de qualquer navegador.
-
-## 4. Domínio próprio (opcional)
-
-No painel do projeto na Vercel: **Settings → Domains** → adicione seu domínio (ex: `gestao.estacaomossoro.com.br`) e siga as instruções de DNS que a Vercel mostra.
-
-## 5. Atualizações futuras
-
-Quando eu (Claude) fizer uma melhoria no sistema, basta:
-1. Substituir o arquivo `src/App.jsx` pela versão nova
-2. Fazer commit e push no GitHub (a Vercel publica automaticamente)
-
-Os dados **não são apagados** nessas atualizações — eles ficam no Supabase, separados do código.
+### 4. Domínio próprio (opcional)
+No projeto na Vercel: **Settings → Domains** → adicione seu domínio e siga as instruções de DNS.
 
 ## Login
-
-Cada pessoa da equipe entra com o e-mail e senha criados no passo 1 (Authentication → Users). Não existe cadastro público — só o administrador cria novos acessos pelo painel do Supabase.
+Cada pessoa da equipe entra com e-mail e senha criados em Authentication → Users no Supabase. Não existe cadastro público.

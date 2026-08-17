@@ -1688,6 +1688,28 @@ function FiltroBar({ busca, setBusca, buscaPlaceholder, filtroValue, setFiltro, 
 
 /* ---------------- CARRINHO (compartilhado por Vendas e Orçamentos) ---------------- */
 
+/* ---------------- MINIATURA DE FOTO (clique amplia dentro do sistema) ---------------- */
+// As fotos ficam embutidas nos registros (base64). Navegadores bloqueiam abrir esse formato
+// em nova aba (a aba abre em branco), então a ampliação acontece aqui dentro, numa sobreposição.
+function MiniaturaFoto({ src, alt, className }) {
+  const [aberta, setAberta] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setAberta(true)} className="block" title="Clique para ampliar">
+        <img src={src} alt={alt} className={className} />
+      </button>
+      {aberta && (
+        <div className="fixed inset-0 bg-black/85 z-40 flex items-center justify-center p-4" onClick={() => setAberta(false)}>
+          <img src={src} alt={alt} className="max-w-full max-h-full rounded-lg shadow-2xl" onClick={e => e.stopPropagation()} />
+          <button type="button" onClick={() => setAberta(false)} className="absolute top-4 right-4 bg-white/10 hover:bg-white/20 text-white rounded-full p-2">
+            <X size={20} />
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ---------------- SELETOR COM BUSCA (digite para filtrar a lista) ---------------- */
 
 function SelectPesquisavel({ opcoes, value, onChange, placeholder, compacto }) {
@@ -3122,7 +3144,7 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                           </span>
                           {r.depositoNome && <span className="text-slate-400 flex items-center gap-0.5"><Warehouse size={10} /> {r.depositoNome}</span>}
                           <span className="text-slate-400">{formatDate(r.data)}</span>
-                          {r.foto && <a href={r.foto} target="_blank" rel="noreferrer"><img src={r.foto} alt="Foto da entrada" className="w-10 h-10 object-cover rounded border border-slate-200" /></a>}
+                          {r.foto && <MiniaturaFoto src={r.foto} alt="Foto da entrada" className="w-10 h-10 object-cover rounded border border-slate-200" />}
                           {r.anulado ? (
                             <span className="text-[10px] px-1 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>
                           ) : (
@@ -3929,9 +3951,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
                       {v.comprovantes.map(c => (
                         <div key={c.id} className="relative w-16">
                           {c.tipo.startsWith('image/') ? (
-                            <a href={c.dataUrl} target="_blank" rel="noreferrer">
-                              <img src={c.dataUrl} alt={c.nome} className="w-16 h-16 object-cover rounded-md border border-slate-200" />
-                            </a>
+                            <MiniaturaFoto src={c.dataUrl} alt={c.nome} className="w-16 h-16 object-cover rounded-md border border-slate-200" />
                           ) : (
                             <a href={c.dataUrl} download={c.nome} className="w-16 h-16 flex flex-col items-center justify-center gap-1 rounded-md border border-slate-200 bg-white text-slate-500">
                               <FileText size={18} />
@@ -4271,9 +4291,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         {saida.fotos && saida.fotos.length > 0 && (
                           <div className="flex gap-1.5 mt-1.5">
                             {saida.fotos.map((f, i) => (
-                              <a key={i} href={f} target="_blank" rel="noreferrer">
-                                <img src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
-                              </a>
+                              <MiniaturaFoto key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
                             ))}
                           </div>
                         )}
@@ -4339,9 +4357,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         {saida.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
                             {saida.fotos.map((f, i) => (
-                              <a key={i} href={f} target="_blank" rel="noreferrer">
-                                <img src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded border border-slate-200" />
-                              </a>
+                              <MiniaturaFoto key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded border border-slate-200" />
                             ))}
                           </div>
                         )}
@@ -4357,9 +4373,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         {entrega.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
                             {entrega.fotos.map((f, i) => (
-                              <a key={i} href={f} target="_blank" rel="noreferrer">
-                                <img src={f} alt="Foto da entrega" className="w-12 h-12 object-cover rounded border border-slate-200" />
-                              </a>
+                              <MiniaturaFoto key={i} src={f} alt="Foto da entrega" className="w-12 h-12 object-cover rounded border border-slate-200" />
                             ))}
                           </div>
                         )}
@@ -4931,7 +4945,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify 
               <p className="text-xs text-slate-500">{p.categoria} {p.beneficiario && `· ${p.beneficiario}`} · {formatDate(p.data)}</p>
               {p.comprovante && (
                 p.comprovante.tipo?.startsWith('image/') ? (
-                  <a href={p.comprovante.dataUrl} target="_blank" rel="noreferrer"><img src={p.comprovante.dataUrl} alt="Comprovante" className="w-12 h-12 object-cover rounded border border-slate-200 mt-1.5" /></a>
+                  <MiniaturaFoto src={p.comprovante.dataUrl} alt="Comprovante" className="w-12 h-12 object-cover rounded border border-slate-200 mt-1.5" />
                 ) : (
                   <a href={p.comprovante.dataUrl} download={p.comprovante.nome} className="text-xs text-amber-600 underline mt-1 inline-block">Ver comprovante (PDF)</a>
                 )
