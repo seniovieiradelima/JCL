@@ -750,7 +750,10 @@ function consumirEstoque(estoqueAtual, carrinho, opcoes = {}) {
 
 // Desfaz o consumo de estoque de uma venda apagada: devolve unidades ao status "Disponível"
 // e devolve quantidade aos lotes de onde saíram.
-function reverterConsumoEstoque(estoqueAtual, itens) {
+// unidadesProtegidas: unidades que OUTRA venda ativa está usando — não podem ser devolvidas.
+// Sem essa proteção, anular a venda A depois de a unidade ter sido revendida na venda B
+// marcava como "Disponível" um inversor que já pertencia (e foi entregue) à venda B.
+function reverterConsumoEstoque(estoqueAtual, itens, unidadesProtegidas = new Set()) {
   let novoEstoque = estoqueAtual.map(i => ({
     ...i,
     unidades: i.unidades ? i.unidades.map(u => ({ ...u })) : i.unidades,
@@ -761,6 +764,7 @@ function reverterConsumoEstoque(estoqueAtual, itens) {
     const idx = novoEstoque.findIndex(i => i.id === it.itemId);
     if (idx === -1) continue;
     if (it.unidadeId) {
+      if (unidadesProtegidas.has(it.unidadeId)) continue;
       const uIdx = novoEstoque[idx].unidades.findIndex(u => u.id === it.unidadeId);
       if (uIdx !== -1 && novoEstoque[idx].unidades[uIdx].status === 'Vendido') {
         novoEstoque[idx].unidades[uIdx] = { ...novoEstoque[idx].unidades[uIdx], status: 'Disponível' };
@@ -3867,8 +3871,16 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const ok = await askSenha(`Apagar a venda de ${venda.clienteNome} (${currency(venda.totalVenda)})? Os itens voltam ao estoque disponível, as expedições vinculadas serão removidas, e o lançamento ficará marcado como anulado no histórico. Comprovantes anexados também serão perdidos.`);
     if (!ok) return;
 
-    const novoEstoque = reverterConsumoEstoque(estoque, venda.itens);
+    // Unidades (nº de série) que outras vendas ativas estão usando: a devolução pula essas,
+    // senão anular esta venda "ressuscitaria" no estoque um aparelho que já é de outro cliente.
+    const unidadesDeOutrasVendas = new Set(
+      vendas.filter(x => !x.anulado && x.id !== venda.id)
+            .flatMap(x => (x.itens || []).map(it => it.unidadeId).filter(Boolean))
+    );
+    const puladas = (venda.itens || []).filter(it => it.unidadeId && unidadesDeOutrasVendas.has(it.unidadeId)).length;
+    const novoEstoque = reverterConsumoEstoque(estoque, venda.itens, unidadesDeOutrasVendas);
     if (!(await setEstoque(novoEstoque))) return;
+    if (puladas > 0) notify(`${puladas} unidade(s) com nº de série não voltaram ao estoque: já pertencem a outra venda ativa.`);
 
     if (setExpedicoes) {
       const chavesDaVenda = new Set(venda.itens.map(it => chaveItemVenda(venda.id, it)));
