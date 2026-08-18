@@ -810,6 +810,110 @@ function fileToDataUrl(file) {
   });
 }
 
+// ---- Fotos e comprovantes no Storage do Supabase ----
+// Antes, cada foto ficava embutida (base64) dentro do próprio registro, e o sistema baixava
+// TODAS as fotos a cada abertura — era isso que deixava o carregamento pesado. Agora o arquivo
+// vai para o bucket "fotos" e o registro guarda só o endereço.
+
+// Envia um arquivo para o bucket e devolve a URL pública.
+async function uploadParaStorage(blob, pasta, extensao) {
+  const caminho = `${pasta}/${uid()}${Math.random().toString(36).slice(2, 8)}.${extensao}`;
+  const { error } = await supabase.storage.from('fotos').upload(caminho, blob, {
+    contentType: blob.type || undefined,
+    cacheControl: '31536000',
+  });
+  if (error) throw error;
+  return supabase.storage.from('fotos').getPublicUrl(caminho).data.publicUrl;
+}
+
+// Comprime uma foto e envia para o Storage; devolve a URL.
+async function fotoParaStorage(file, pasta) {
+  const dataUrl = await fileToCompressedDataUrl(file);
+  const blob = await (await fetch(dataUrl)).blob();
+  return uploadParaStorage(blob, pasta, 'jpg');
+}
+
+// Envia um arquivo qualquer (ex: PDF) sem comprimir; devolve a URL.
+async function arquivoParaStorage(file, pasta) {
+  const ext = ((file.name || '').split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
+  return uploadParaStorage(file, pasta, ext);
+}
+
+// Converte uma foto antiga (base64 embutida) em arquivo no Storage; devolve a URL.
+async function dataUrlParaStorage(dataUrl, pasta) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const ext = (blob.type || '').includes('pdf') ? 'pdf' : 'jpg';
+  return uploadParaStorage(blob, pasta, ext);
+}
+
+const fotoEmbutida = (s) => typeof s === 'string' && s.startsWith('data:');
+
+// Migração em segundo plano: move as fotos antigas para o Storage, um punhado por sessão,
+// até não sobrar nenhuma embutida. Grava pela trava de conflito (saveCollectionDelta): se
+// outra pessoa mexer ao mesmo tempo, esta rodada é pulada em silêncio e a próxima continua.
+async function migrarFotosParaStorage(ctx, foiCancelado) {
+  let restante = 40; // arquivos por sessão, para não pesar na conexão de ninguém
+
+  async function migrarColecao(nome, lista, setter, migrarItem) {
+    if (restante <= 0 || foiCancelado()) return;
+    const novos = [];
+    let mudou = false;
+    for (const item of lista) {
+      if (restante > 0 && !foiCancelado()) {
+        try {
+          const novo = await migrarItem(item);
+          if (novo) { novos.push(novo); mudou = true; continue; }
+        } catch (e) { console.error('Falha ao migrar foto de', nome, e); }
+      }
+      novos.push(item);
+    }
+    if (mudou && !foiCancelado()) {
+      const res = await saveCollectionDelta(nome, lista, novos);
+      if (res.ok) setter(novos);
+    }
+  }
+
+  await migrarColecao('recebimentos', ctx.recebimentos, ctx.setRecebimentos, async (r) => {
+    if (!fotoEmbutida(r.foto)) return null;
+    const url = await dataUrlParaStorage(r.foto, 'recebimentos');
+    restante--;
+    return { ...r, foto: url };
+  });
+
+  await migrarColecao('vendas', ctx.vendas, ctx.setVendas, async (v) => {
+    const comps = v.comprovantes || [];
+    if (!comps.some(c => fotoEmbutida(c.dataUrl))) return null;
+    const novosComps = [];
+    for (const c of comps) {
+      if (restante > 0 && fotoEmbutida(c.dataUrl)) {
+        novosComps.push({ ...c, dataUrl: await dataUrlParaStorage(c.dataUrl, 'comprovantes') });
+        restante--;
+      } else novosComps.push(c);
+    }
+    return { ...v, comprovantes: novosComps };
+  });
+
+  await migrarColecao('expedicoes', ctx.expedicoes, ctx.setExpedicoes, async (ex) => {
+    const fotos = ex.fotos || [];
+    if (!fotos.some(fotoEmbutida)) return null;
+    const novasFotos = [];
+    for (const f of fotos) {
+      if (restante > 0 && fotoEmbutida(f)) {
+        novasFotos.push(await dataUrlParaStorage(f, 'expedicoes'));
+        restante--;
+      } else novasFotos.push(f);
+    }
+    return { ...ex, fotos: novasFotos };
+  });
+
+  await migrarColecao('pagamentos', ctx.pagamentos, ctx.setPagamentos, async (p) => {
+    if (!p.comprovante || !fotoEmbutida(p.comprovante.dataUrl)) return null;
+    const url = await dataUrlParaStorage(p.comprovante.dataUrl, 'pagamentos');
+    restante--;
+    return { ...p, comprovante: { ...p.comprovante, dataUrl: url } };
+  });
+}
+
 // Desenha um documento (orçamento/recibo) num canvas — layout genérico reutilizável
 function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, clienteLabel = 'Cliente', itens, totalLabel, totalValor, extraLinhas, observacoes }) {
   const largura = 900;
@@ -1357,6 +1461,23 @@ function AppInner() {
       }
     })();
   }, []);
+
+  // Migração em segundo plano das fotos antigas para o Storage: começa alguns segundos
+  // depois do sistema abrir, move um punhado por sessão e vai zerando o peso do carregamento.
+  useEffect(() => {
+    if (loading || erroCarregamento) return;
+    let cancelado = false;
+    const temporizador = setTimeout(() => {
+      migrarFotosParaStorage({
+        recebimentos, setRecebimentos,
+        vendas, setVendas,
+        expedicoes, setExpedicoes,
+        pagamentos, setPagamentos,
+      }, () => cancelado).catch(e => console.error('Migração de fotos interrompida', e));
+    }, 8000);
+    return () => { cancelado = true; clearTimeout(temporizador); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, erroCarregamento]);
 
   function notify(msg) { setToast(msg); setTimeout(() => setToast(null), 3000); }
 
@@ -3174,8 +3295,15 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
   async function handleFoto(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const comprimida = await fileToCompressedDataUrl(file);
-    setFoto(comprimida);
+    const input = e.target;
+    try {
+      setFoto(null);
+      setFoto(await fotoParaStorage(file, 'recebimentos'));
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar a foto. Verifique a conexão e tente de novo.');
+      input.value = '';
+    }
   }
 
   async function confirmarUnidade() {
@@ -3811,7 +3939,14 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
   async function anexarComprovante(vendaId, file, formaId, formaNome, valor) {
     if (!file) return;
     const isImage = file.type.startsWith('image/');
-    const dataUrl = isImage ? await fileToCompressedDataUrl(file) : await fileToDataUrl(file);
+    let dataUrl;
+    try {
+      dataUrl = isImage ? await fotoParaStorage(file, 'comprovantes') : await arquivoParaStorage(file, 'comprovantes');
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
+      return;
+    }
     const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0 };
     const next = vendas.map(v => {
       if (v.id !== vendaId) return v;
@@ -4403,9 +4538,15 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
   async function handleFiles(e) {
     const files = Array.from(e.target.files || []).slice(0, 4 - fotos.length);
     if (files.length === 0) return;
-    const novas = await Promise.all(files.map(f => fileToCompressedDataUrl(f)));
-    setFotos(f => [...f, ...novas]);
-    e.target.value = '';
+    const input = e.target;
+    try {
+      const novas = await Promise.all(files.map(f => fotoParaStorage(f, 'expedicoes')));
+      setFotos(f => [...f, ...novas]);
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar a(s) foto(s). Verifique a conexão e tente de novo.');
+    }
+    input.value = '';
   }
   function removeFoto(idx) { setFotos(f => f.filter((_, i) => i !== idx)); }
 
@@ -4817,9 +4958,16 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify 
   async function handleComprovante(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const isImage = file.type.startsWith('image/');
-    const dataUrl = isImage ? await fileToCompressedDataUrl(file) : await fileToDataUrl(file);
-    setComprovante({ nome: file.name, tipo: file.type, dataUrl });
+    const input = e.target;
+    try {
+      const isImage = file.type.startsWith('image/');
+      const dataUrl = isImage ? await fotoParaStorage(file, 'pagamentos') : await arquivoParaStorage(file, 'pagamentos');
+      setComprovante({ nome: file.name, tipo: file.type, dataUrl });
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
+      input.value = '';
+    }
   }
 
   async function salvar() {
