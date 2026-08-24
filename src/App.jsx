@@ -5375,6 +5375,17 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
             <div className="text-right">
               <p>Venda: <span className="font-medium">{currency(v.totalVenda)}</span></p>
               <p className="text-xs text-amber-600">Custo: {currency(v.totalCusto)}</p>
+              {v.totalVenda > 0 && (() => {
+                // Margem sobre a venda: (venda - custo) / venda — par percentual da
+                // "margem de contribuição" em reais mostrada nos cartões acima.
+                const pct = ((v.totalVenda - v.totalCusto) / v.totalVenda) * 100;
+                const parcial = (v.itens || []).some(it => (it.quantidadePendente || 0) > 0);
+                return (
+                  <p className={`text-xs ${pct < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                    Margem: {pct.toFixed(1).replace('.', ',')}%{parcial ? ' · parcial (entrega pendente)' : ''}
+                  </p>
+                );
+              })()}
             </div>
           </div>
         ))}
