@@ -1154,6 +1154,18 @@ function qtdReservadaPreVenda(vendas, produtoId) {
 
 // Mensagem de confirmação de uma venda com pendência: diz se a quantidade pendente está
 // coberta pelo que já foi pago ao fornecedor e ainda não foi reservado por outras pré-vendas.
+// Itens já entregues (ou parcialmente) que sairiam com custo R$ 0 — margem errada no Financeiro.
+function qtdItensSemCusto(itensResultado) {
+  return itensResultado.filter(it => {
+    const entregue = it.quantidade - (it.quantidadePendente || 0);
+    return entregue > 0 && !(it.custoTotal > 0);
+  }).length;
+}
+
+const AVISO_SEM_CUSTO = (n) =>
+  `⚠️ ${n} item(ns) desta venda estão SEM CUSTO anotado — a margem vai sair errada no Financeiro. ` +
+  'O ideal é cadastrar o custo antes (Estoque → lápis do produto → custo de referência). Confirmar mesmo assim?';
+
 function avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas) {
   const porProduto = new Map();
   for (const it of itensResultado) {
@@ -3655,6 +3667,8 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     const { novoEstoque, itensResultado, totalCusto, totalPendente, erros } = consumirEstoque(estoque, orc.itens, { permitirPendencia: true });
     if (erros.length > 0) { notify(`Não foi possível converter: ${erros[0]}`); return; }
     if (totalPendente > 0 && !(await askConfirm(avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas)))) return;
+    const semCusto = qtdItensSemCusto(itensResultado);
+    if (semCusto > 0 && !(await askConfirm(AVISO_SEM_CUSTO(semCusto)))) return;
     if (!(await setEstoque(novoEstoque))) return;
     const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '' };
     if (!(await setVendas([venda, ...vendas]))) return;
@@ -3854,6 +3868,8 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const { novoEstoque, itensResultado, totalCusto, totalPendente, erros } = consumirEstoque(estoque, carrinho, { permitirPendencia: true });
     if (erros.length > 0) { notify(erros[0]); return; }
     if (totalPendente > 0 && !(await askConfirm(avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas)))) return;
+    const semCusto = qtdItensSemCusto(itensResultado);
+    if (semCusto > 0 && !(await askConfirm(AVISO_SEM_CUSTO(semCusto)))) return;
     // A venda só é gravada se a baixa de estoque foi confirmada no banco. Sem isso, uma
     // baixa recusada deixava a venda registrada com o estoque intacto.
     if (!(await setEstoque(novoEstoque))) return;
@@ -3905,6 +3921,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     const { novoEstoque, itensResultado, erros } = consumirEstoque(estoque, [linha]);
     if (erros.length > 0) { notify(erros[0]); return; }
     const consumido = itensResultado[0];
+    if (!(consumido.custoTotal > 0) && !(await askConfirm(AVISO_SEM_CUSTO(1)))) return;
     if (!(await setEstoque(novoEstoque))) return;
     const next = vendas.map(v => {
       if (v.id !== venda.id) return v;
