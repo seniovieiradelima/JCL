@@ -1154,6 +1154,37 @@ function qtdReservadaPreVenda(vendas, produtoId) {
 
 // Mensagem de confirmação de uma venda com pendência: diz se a quantidade pendente está
 // coberta pelo que já foi pago ao fornecedor e ainda não foi reservado por outras pré-vendas.
+// Custo unitário ESTIMADO de um produto para pré-venda ainda sem baixa. Política conservadora
+// (melhor estimar margem menor do que mostrar lucro que não existiu):
+// 1º) maior custo entre os pedidos pagos com saldo a receber do produto;
+// 2º) senão, o maior entre o custo de referência e a compra mais recente.
+function custoEstimadoUnitario(produtoId, estoque, pedidosCompra, recebimentos) {
+  const aCaminho = [];
+  let compraMaisRecente = { data: '', custo: 0 };
+  for (const p of (pedidosCompra || [])) {
+    if (p.cancelado || p.anulado) continue;
+    for (const it of (p.itens || [])) {
+      if (it.produtoId !== produtoId || !(it.custoUnitario > 0)) continue;
+      if (it.quantidade - qtdRecebida(recebimentos || [], p.id, it.id) > 0) aCaminho.push(it.custoUnitario);
+      if ((p.data || '') >= compraMaisRecente.data) compraMaisRecente = { data: p.data || '', custo: it.custoUnitario };
+    }
+  }
+  if (aCaminho.length > 0) return Math.max(...aCaminho);
+  const ref = ((estoque || []).find(pr => pr.id === produtoId) || {}).custoReferencia || 0;
+  return Math.max(ref, compraMaisRecente.custo);
+}
+
+// Custo estimado das quantidades de uma venda ainda pendentes de entrega. O custo REAL
+// continua entrando na baixa; isto só evita que a margem apareça inflada até lá.
+function custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos) {
+  let total = 0;
+  for (const it of (v.itens || [])) {
+    const pend = it.quantidadePendente || 0;
+    if (pend > 0) total += pend * custoEstimadoUnitario(it.itemId, estoque, pedidosCompra, recebimentos);
+  }
+  return total;
+}
+
 // Itens já entregues (ou parcialmente) que sairiam com custo R$ 0 — margem errada no Financeiro.
 function qtdItensSemCusto(itensResultado) {
   return itensResultado.filter(it => {
@@ -1693,7 +1724,7 @@ function AppInner() {
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
-        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} askSenha={askSenha} notify={notify} />}
+        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
@@ -4957,7 +4988,7 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
   );
 }
 
-function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify }) {
+function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosCompra, recebimentos, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [tipo, setTipo] = useState('Saída');
   const [data, setData] = useState(new Date().toISOString().slice(0, 10));
@@ -5040,12 +5071,12 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify 
   const resumoMes = useMemo(() => {
     const inicioMes = new Date(); inicioMes.setDate(1); inicioMes.setHours(0, 0, 0, 0);
     const vendasMes = vendas.filter(v => !v.anulado && new Date(v.data) >= inicioMes);
-    const margemContribuicao = vendasMes.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto), 0);
+    const margemContribuicao = vendasMes.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos)), 0);
     const pagamentosMes = pagamentos.filter(p => !p.anulado && new Date(p.data) >= inicioMes);
     const entradasExtras = pagamentosMes.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
     const saidas = pagamentosMes.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
     return { margemContribuicao, entradasExtras, saidas, saldo: margemContribuicao + entradasExtras - saidas };
-  }, [vendas, pagamentos]);
+  }, [vendas, pagamentos, estoque, pedidosCompra, recebimentos]);
 
   return (
     <div>
@@ -5228,12 +5259,12 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
   // Saldo da margem de contribuição: acumulado desde sempre, nunca zera na virada do mês.
   // Cresce com a margem (venda - custo) de cada venda e é abatido pelas saídas de Pagamentos (somando entradas extras).
   const saldoMargemContribuicao = useMemo(() => {
-    const margemAcumulada = vendas.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto), 0);
+    const margemAcumulada = vendas.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos)), 0);
     const pagamentosValidos = (pagamentos || []).filter(p => !p.anulado);
     const entradasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
     const saidasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
     return margemAcumulada + entradasAcumuladas - saidasAcumuladas;
-  }, [vendas, pagamentos]);
+  }, [vendas, pagamentos, estoque, pedidosCompra, recebimentos]);
 
   const vendasFiltradas = useMemo(() => {
     if (periodo === 'tudo') return vendas;
@@ -5260,17 +5291,17 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
 
   const totais = useMemo(() => {
     const totalVenda = vendasFiltradas.reduce((acc, v) => acc + v.totalVenda, 0);
-    const totalCusto = vendasFiltradas.reduce((acc, v) => acc + v.totalCusto, 0);
+    const totalCusto = vendasFiltradas.reduce((acc, v) => acc + v.totalCusto + custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos), 0);
     return { totalVenda, totalCusto, margemContribuicao: totalVenda - totalCusto };
-  }, [vendasFiltradas]);
+  }, [vendasFiltradas, estoque, pedidosCompra, recebimentos]);
 
   // Saldo de reposição: acumulado desde sempre, independente do filtro de período.
   // Cresce com o custo (CMV) de cada venda e é abatido pelo valor de cada pedido de compra realizado.
   const saldoReposicao = useMemo(() => {
-    const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto, 0);
+    const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto + custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos), 0);
     const pedidosAcumulado = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado).reduce((acc, p) => acc + p.valorTotal, 0);
     return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado + totalAjustes };
-  }, [vendas, pedidosCompra, totalAjustes]);
+  }, [vendas, pedidosCompra, totalAjustes, estoque, recebimentos]);
 
   // Balanço da distribuidora: retrato do momento atual (não filtra por período)
   const balanco = useMemo(() => {
@@ -5431,6 +5462,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
       )}
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Detalhamento por venda (custo x venda)</h3>
+      <p className="text-[11px] text-slate-400 mb-2">Pré-venda aguardando mercadoria entra com custo estimado — o do pedido a caminho ou, sem pedido, o maior entre referência e última compra. O custo real substitui a estimativa na baixa.</p>
       <div className="space-y-2">
         {vendasFiltradas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma venda no período.</p>}
         {vendasFiltradas.map(v => (
@@ -5453,12 +5485,16 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
                 {v.totalVenda > 0 && (() => {
                   // Margem sobre a venda: (venda - custo) / venda — par percentual da
                   // "margem de contribuição" em reais mostrada nos cartões acima.
-                  const pct = ((v.totalVenda - v.totalCusto) / v.totalVenda) * 100;
-                  const parcial = (v.itens || []).some(it => (it.quantidadePendente || 0) > 0);
+                  // Quantidades pendentes de entrega entram com custo ESTIMADO (conservador).
+                  const estimado = custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos);
+                  const pct = ((v.totalVenda - v.totalCusto - estimado) / v.totalVenda) * 100;
                   return (
-                    <p className={`text-xs ${pct < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      Margem: {pct.toFixed(1).replace('.', ',')}%{parcial ? ' · parcial (entrega pendente)' : ''}
-                    </p>
+                    <>
+                      {estimado > 0 && <p className="text-[11px] text-slate-400">+ custo estimado (a entregar): {currency(estimado)}</p>}
+                      <p className={`text-xs ${pct < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        Margem: {pct.toFixed(1).replace('.', ',')}%{estimado > 0 ? ' · com custo estimado' : ''}
+                      </p>
+                    </>
                   );
                 })()}
               </div>
