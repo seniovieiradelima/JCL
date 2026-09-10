@@ -1694,7 +1694,7 @@ function AppInner() {
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} askSenha={askSenha} notify={notify} />}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toast && (
@@ -5139,11 +5139,14 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify 
   );
 }
 
-function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
   // Correção de custo de venda fechada (protegida pela senha de aprovação):
   // altera só o lado financeiro — estoque, expedição e valor cobrado não mudam.
   const [editandoCusto, setEditandoCusto] = useState(null);
   const [custosEdit, setCustosEdit] = useState({});
+  // Por item: se o custo corrigido também deve virar o custo de referência do produto.
+  // Vem marcado quando o produto está SEM referência (a causa mais comum do erro).
+  const [refsEdit, setRefsEdit] = useState({});
 
   function abrirCorrecaoCusto(v) {
     setEditandoCusto(v.id);
@@ -5151,26 +5154,40 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, pedidosComp
       const entregue = it.quantidade - (it.quantidadePendente || 0);
       return [it.id, entregue > 0 ? ((it.custoTotal || 0) / entregue).toFixed(2).replace('.', ',') : ''];
     })));
+    setRefsEdit(Object.fromEntries((v.itens || []).map(it => {
+      const produto = estoque.find(p => p.id === it.itemId);
+      return [it.id, !!produto && !((produto.custoReferencia || 0) > 0)];
+    })));
   }
 
   async function salvarCorrecaoCusto(venda) {
+    const referencias = {}; // produtoId -> novo custo de referência
     const itens = (venda.itens || []).map(it => {
       const bruto = custosEdit[it.id];
       const unit = parseValorBR(bruto);
       const entregue = it.quantidade - (it.quantidadePendente || 0);
       if (bruto === undefined || bruto === '' || isNaN(unit) || unit < 0 || entregue <= 0) return it;
+      if (refsEdit[it.id] && unit > 0) referencias[it.itemId] = unit;
       return { ...it, custoTotal: Math.round(unit * entregue * 100) / 100 };
     });
     const totalCusto = itens.reduce((a, i) => a + (i.custoTotal || 0), 0);
+    const qtdRefs = Object.keys(referencias).length;
     const ok = await askSenha(
-      `Corrigir o custo da venda de ${venda.clienteNome} para ${currency(totalCusto)}? A margem e o saldo de reposição mudam retroativamente. Estoque e valor cobrado não são afetados.`,
+      `Corrigir o custo da venda de ${venda.clienteNome} para ${currency(totalCusto)}?` +
+      (qtdRefs > 0 ? ` O custo de referência de ${qtdRefs} produto(s) também será atualizado no cadastro.` : '') +
+      ' A margem e o saldo de reposição mudam retroativamente. Estoque físico e valor cobrado não são afetados.',
       { label: 'Corrigir custo', destrutivo: false }
     );
     if (!ok) return;
     if (!(await setVendas(vendasTodas.map(x => x.id === venda.id ? { ...x, itens, totalCusto } : x)))) return;
-    notify('Custo da venda corrigido');
+    if (qtdRefs > 0 && setEstoque) {
+      const novoEstoque = estoque.map(p => referencias[p.id] !== undefined ? { ...p, custoReferencia: referencias[p.id] } : p);
+      if (!(await setEstoque(novoEstoque))) return;
+    }
+    notify(qtdRefs > 0 ? 'Custo da venda corrigido e referência(s) atualizada(s) no cadastro' : 'Custo da venda corrigido');
     setEditandoCusto(null);
     setCustosEdit({});
+    setRefsEdit({});
   }
 
   const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado), [vendasTodas]);
@@ -5455,9 +5472,16 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, pedidosComp
                     <div key={it.id} className="flex items-center gap-2 text-xs">
                       <span className="flex-1 truncate">{it.descricao} — {entregue}x</span>
                       {entregue > 0 ? (
-                        <input type="text" inputMode="decimal" value={custosEdit[it.id] ?? ''}
-                          onChange={e => setCustosEdit(c => ({ ...c, [it.id]: e.target.value }))}
-                          className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs text-right" />
+                        <>
+                          <input type="text" inputMode="decimal" value={custosEdit[it.id] ?? ''}
+                            onChange={e => setCustosEdit(c => ({ ...c, [it.id]: e.target.value }))}
+                            className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs text-right" />
+                          <label className="flex items-center gap-1 text-[10px] text-slate-400 shrink-0" title="Grava este valor também como custo de referência do produto no cadastro (vale para as próximas vendas)">
+                            <input type="checkbox" checked={!!refsEdit[it.id]}
+                              onChange={e => setRefsEdit(r => ({ ...r, [it.id]: e.target.checked }))} />
+                            atualizar referência
+                          </label>
+                        </>
                       ) : (
                         <span className="text-slate-400">pendente — custo entra na baixa</span>
                       )}
