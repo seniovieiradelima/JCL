@@ -4693,15 +4693,19 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 /* ---------------- BALANÇO DE ESTOQUE (contagem física, correção e relatório de divergências) ---------------- */
 
 function custoMedioProduto(produto, depositoId) {
+  // Itens que só existem via balanço (sem entrada por pedido) dependem do custo de
+  // referência: se a média calculada der zero — inclusive por lotes/unidades antigos
+  // gravados sem custo — cai na referência em vez de perpetuar o zero.
+  let media = 0;
   if (produto.serializado) {
     const unidades = (produto.unidades || []).filter(u => u.status === 'Disponível' && u.depositoId === depositoId);
-    if (!unidades.length) return produto.custoReferencia || 0;
-    return unidades.reduce((a, u) => a + (u.custoCompra || 0), 0) / unidades.length;
+    media = unidades.length ? unidades.reduce((a, u) => a + (u.custoCompra || 0), 0) / unidades.length : 0;
+  } else {
+    const lotes = (produto.lotes || []).filter(l => l.depositoId === depositoId && l.quantidadeDisponivel > 0);
+    const qtd = lotes.reduce((a, l) => a + l.quantidadeDisponivel, 0);
+    media = qtd ? lotes.reduce((a, l) => a + l.quantidadeDisponivel * (l.custoUnitario || 0), 0) / qtd : 0;
   }
-  const lotes = (produto.lotes || []).filter(l => l.depositoId === depositoId && l.quantidadeDisponivel > 0);
-  const qtd = lotes.reduce((a, l) => a + l.quantidadeDisponivel, 0);
-  if (!qtd) return produto.custoReferencia || 0;
-  return lotes.reduce((a, l) => a + l.quantidadeDisponivel * l.custoUnitario, 0) / qtd;
+  return media > 0 ? media : (produto.custoReferencia || 0);
 }
 
 function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, askSenha, notify }) {
@@ -4778,8 +4782,13 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
     if (balanco.itens.length === 0) { notify('Adicione ao menos um item contado antes de finalizar'); return; }
     const divergentes = balanco.itens.filter(it => it.quantidadeContada !== it.quantidadeSistema);
     const saldoFinanceiro = divergentes.reduce((acc, it) => acc + (it.quantidadeContada - it.quantidadeSistema) * it.custoUnitarioMedio, 0);
+    // Sobra entrando sem custo nenhum = lote com custo zero = margem errada nas vendas futuras.
+    const sobrasSemCusto = divergentes.filter(it => it.quantidadeContada > it.quantidadeSistema && !(it.custoUnitarioMedio > 0)).length;
+    const alertaSemCusto = sobrasSemCusto > 0
+      ? ` ⚠️ ATENÇÃO: ${sobrasSemCusto} item(ns) da sobra estão SEM CUSTO — entrariam no estoque valendo R$ 0 e as vendas sairão com margem errada. O ideal é cadastrar o custo de referência (Estoque → lápis do produto) e refazer este item do balanço antes de finalizar.`
+      : '';
     const ok = await askSenha(
-      `Finalizar balanço de ${balanco.depositoNome}? ${divergentes.length} item(ns) com divergência serão corrigidos no estoque. Saldo financeiro: ${currency(saldoFinanceiro)}.`,
+      `Finalizar balanço de ${balanco.depositoNome}? ${divergentes.length} item(ns) com divergência serão corrigidos no estoque. Saldo financeiro: ${currency(saldoFinanceiro)}.${alertaSemCusto}`,
       { label: 'Finalizar balanço', destrutivo: false }
     );
     if (!ok) return;
