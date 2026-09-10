@@ -1180,7 +1180,11 @@ function custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos) {
   let total = 0;
   for (const it of (v.itens || [])) {
     const pend = it.quantidadePendente || 0;
-    if (pend > 0) total += pend * custoEstimadoUnitario(it.itemId, estoque, pedidosCompra, recebimentos);
+    if (pend > 0) {
+      // Estimativa manual lançada na correção de custo tem prioridade sobre a automática.
+      const unit = it.custoPendenteUnitario > 0 ? it.custoPendenteUnitario : custoEstimadoUnitario(it.itemId, estoque, pedidosCompra, recebimentos);
+      total += pend * unit;
+    }
   }
   return total;
 }
@@ -5178,12 +5182,18 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
   // Por item: se o custo corrigido também deve virar o custo de referência do produto.
   // Vem marcado quando o produto está SEM referência (a causa mais comum do erro).
   const [refsEdit, setRefsEdit] = useState({});
+  // Estimativa manual de custo para a parte ainda pendente de entrega (por item).
+  const [estimativasEdit, setEstimativasEdit] = useState({});
 
   function abrirCorrecaoCusto(v) {
     setEditandoCusto(v.id);
     setCustosEdit(Object.fromEntries((v.itens || []).map(it => {
       const entregue = it.quantidade - (it.quantidadePendente || 0);
       return [it.id, entregue > 0 ? ((it.custoTotal || 0) / entregue).toFixed(2).replace('.', ',') : ''];
+    })));
+    setEstimativasEdit(Object.fromEntries((v.itens || []).filter(it => (it.quantidadePendente || 0) > 0).map(it => {
+      const unit = it.custoPendenteUnitario > 0 ? it.custoPendenteUnitario : custoEstimadoUnitario(it.itemId, estoque, pedidosCompra, recebimentos);
+      return [it.id, unit > 0 ? unit.toFixed(2).replace('.', ',') : ''];
     })));
     setRefsEdit(Object.fromEntries((v.itens || []).map(it => {
       const produto = estoque.find(p => p.id === it.itemId);
@@ -5194,12 +5204,21 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
   async function salvarCorrecaoCusto(venda) {
     const referencias = {}; // produtoId -> novo custo de referência
     const itens = (venda.itens || []).map(it => {
+      let atualizado = it;
+      const entregue = it.quantidade - (it.quantidadePendente || 0);
+      // Parte entregue: corrige o custo real lançado.
       const bruto = custosEdit[it.id];
       const unit = parseValorBR(bruto);
-      const entregue = it.quantidade - (it.quantidadePendente || 0);
-      if (bruto === undefined || bruto === '' || isNaN(unit) || unit < 0 || entregue <= 0) return it;
-      if (refsEdit[it.id] && unit > 0) referencias[it.itemId] = unit;
-      return { ...it, custoTotal: Math.round(unit * entregue * 100) / 100 };
+      if (bruto !== undefined && bruto !== '' && !isNaN(unit) && unit >= 0 && entregue > 0) {
+        if (refsEdit[it.id] && unit > 0) referencias[it.itemId] = unit;
+        atualizado = { ...atualizado, custoTotal: Math.round(unit * entregue * 100) / 100 };
+      }
+      // Parte pendente: grava a estimativa manual (vazio ou zero = volta ao automático).
+      if ((it.quantidadePendente || 0) > 0 && estimativasEdit[it.id] !== undefined) {
+        const unitEst = parseValorBR(estimativasEdit[it.id]);
+        atualizado = { ...atualizado, custoPendenteUnitario: (!isNaN(unitEst) && unitEst > 0) ? unitEst : undefined };
+      }
+      return atualizado;
     });
     const totalCusto = itens.reduce((a, i) => a + (i.custoTotal || 0), 0);
     const qtdRefs = Object.keys(referencias).length;
@@ -5219,6 +5238,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
     setEditandoCusto(null);
     setCustosEdit({});
     setRefsEdit({});
+    setEstimativasEdit({});
   }
 
   const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado), [vendasTodas]);
@@ -5504,11 +5524,12 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
                 <p className="text-xs text-slate-500">Custo unitário de cada item (R$) — só a parte já entregue conta:</p>
                 {(v.itens || []).map(it => {
                   const entregue = it.quantidade - (it.quantidadePendente || 0);
+                  const pend = it.quantidadePendente || 0;
                   return (
-                    <div key={it.id} className="flex items-center gap-2 text-xs">
-                      <span className="flex-1 truncate">{it.descricao} — {entregue}x</span>
-                      {entregue > 0 ? (
-                        <>
+                    <div key={it.id} className="space-y-1">
+                      {entregue > 0 && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="flex-1 truncate">{it.descricao} — {entregue}x entregue</span>
                           <input type="text" inputMode="decimal" value={custosEdit[it.id] ?? ''}
                             onChange={e => setCustosEdit(c => ({ ...c, [it.id]: e.target.value }))}
                             className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs text-right" />
@@ -5517,9 +5538,17 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
                               onChange={e => setRefsEdit(r => ({ ...r, [it.id]: e.target.checked }))} />
                             atualizar referência
                           </label>
-                        </>
-                      ) : (
-                        <span className="text-slate-400">pendente — custo entra na baixa</span>
+                        </div>
+                      )}
+                      {pend > 0 && (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="flex-1 truncate text-slate-500">{it.descricao} — {pend}x pendente · <span className="text-amber-600">estimativa</span></span>
+                          <input type="text" inputMode="decimal" value={estimativasEdit[it.id] ?? ''}
+                            onChange={e => setEstimativasEdit(c => ({ ...c, [it.id]: e.target.value }))}
+                            title="Custo unitário estimado da parte a entregar. Apague (ou zere) para voltar à estimativa automática. Na baixa, o custo real substitui."
+                            className="w-24 border border-amber-200 rounded-md px-2 py-1 text-xs text-right" />
+                          <span className="text-[10px] text-slate-400 shrink-0">real entra na baixa</span>
+                        </div>
                       )}
                     </div>
                   );
