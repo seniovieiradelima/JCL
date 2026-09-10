@@ -1694,7 +1694,7 @@ function AppInner() {
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} askSenha={askSenha} notify={notify} />}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toast && (
@@ -5139,7 +5139,40 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, askSenha, notify 
   );
 }
 
-function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+  // Correção de custo de venda fechada (protegida pela senha de aprovação):
+  // altera só o lado financeiro — estoque, expedição e valor cobrado não mudam.
+  const [editandoCusto, setEditandoCusto] = useState(null);
+  const [custosEdit, setCustosEdit] = useState({});
+
+  function abrirCorrecaoCusto(v) {
+    setEditandoCusto(v.id);
+    setCustosEdit(Object.fromEntries((v.itens || []).map(it => {
+      const entregue = it.quantidade - (it.quantidadePendente || 0);
+      return [it.id, entregue > 0 ? ((it.custoTotal || 0) / entregue).toFixed(2).replace('.', ',') : ''];
+    })));
+  }
+
+  async function salvarCorrecaoCusto(venda) {
+    const itens = (venda.itens || []).map(it => {
+      const bruto = custosEdit[it.id];
+      const unit = parseValorBR(bruto);
+      const entregue = it.quantidade - (it.quantidadePendente || 0);
+      if (bruto === undefined || bruto === '' || isNaN(unit) || unit < 0 || entregue <= 0) return it;
+      return { ...it, custoTotal: Math.round(unit * entregue * 100) / 100 };
+    });
+    const totalCusto = itens.reduce((a, i) => a + (i.custoTotal || 0), 0);
+    const ok = await askSenha(
+      `Corrigir o custo da venda de ${venda.clienteNome} para ${currency(totalCusto)}? A margem e o saldo de reposição mudam retroativamente. Estoque e valor cobrado não são afetados.`,
+      { label: 'Corrigir custo', destrutivo: false }
+    );
+    if (!ok) return;
+    if (!(await setVendas(vendasTodas.map(x => x.id === venda.id ? { ...x, itens, totalCusto } : x)))) return;
+    notify('Custo da venda corrigido');
+    setEditandoCusto(null);
+    setCustosEdit({});
+  }
+
   const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado), [vendasTodas]);
   const [periodo, setPeriodo] = useState('mes');
   const [dataInicio, setDataInicio] = useState('');
@@ -5384,26 +5417,59 @@ function FinanceiroModule({ vendas: vendasTodas, estoque, pedidosCompra, recebim
       <div className="space-y-2">
         {vendasFiltradas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma venda no período.</p>}
         {vendasFiltradas.map(v => (
-          <div key={v.id} className="bg-white border border-slate-200 rounded-lg p-3 flex justify-between items-center text-sm">
-            <div>
-              <p className="font-medium">{v.clienteNome}</p>
-              <p className="text-xs text-slate-400">{formatDate(v.data)}</p>
+          <div key={v.id} className="bg-white border border-slate-200 rounded-lg p-3 text-sm">
+            <div className="flex justify-between items-center">
+              <div>
+                <p className="font-medium">{v.clienteNome}</p>
+                <p className="text-xs text-slate-400">{formatDate(v.data)}</p>
+              </div>
+              <div className="text-right">
+                <p>Venda: <span className="font-medium">{currency(v.totalVenda)}</span></p>
+                <p className="text-xs text-amber-600 flex items-center gap-1 justify-end">
+                  Custo: {currency(v.totalCusto)}
+                  {setVendas && (
+                    <button onClick={() => editandoCusto === v.id ? setEditandoCusto(null) : abrirCorrecaoCusto(v)} title="Corrigir custo desta venda">
+                      <Pencil size={12} className="text-slate-300 hover:text-slate-600" />
+                    </button>
+                  )}
+                </p>
+                {v.totalVenda > 0 && (() => {
+                  // Margem sobre a venda: (venda - custo) / venda — par percentual da
+                  // "margem de contribuição" em reais mostrada nos cartões acima.
+                  const pct = ((v.totalVenda - v.totalCusto) / v.totalVenda) * 100;
+                  const parcial = (v.itens || []).some(it => (it.quantidadePendente || 0) > 0);
+                  return (
+                    <p className={`text-xs ${pct < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      Margem: {pct.toFixed(1).replace('.', ',')}%{parcial ? ' · parcial (entrega pendente)' : ''}
+                    </p>
+                  );
+                })()}
+              </div>
             </div>
-            <div className="text-right">
-              <p>Venda: <span className="font-medium">{currency(v.totalVenda)}</span></p>
-              <p className="text-xs text-amber-600">Custo: {currency(v.totalCusto)}</p>
-              {v.totalVenda > 0 && (() => {
-                // Margem sobre a venda: (venda - custo) / venda — par percentual da
-                // "margem de contribuição" em reais mostrada nos cartões acima.
-                const pct = ((v.totalVenda - v.totalCusto) / v.totalVenda) * 100;
-                const parcial = (v.itens || []).some(it => (it.quantidadePendente || 0) > 0);
-                return (
-                  <p className={`text-xs ${pct < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                    Margem: {pct.toFixed(1).replace('.', ',')}%{parcial ? ' · parcial (entrega pendente)' : ''}
-                  </p>
-                );
-              })()}
-            </div>
+            {editandoCusto === v.id && (
+              <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5">
+                <p className="text-xs text-slate-500">Custo unitário de cada item (R$) — só a parte já entregue conta:</p>
+                {(v.itens || []).map(it => {
+                  const entregue = it.quantidade - (it.quantidadePendente || 0);
+                  return (
+                    <div key={it.id} className="flex items-center gap-2 text-xs">
+                      <span className="flex-1 truncate">{it.descricao} — {entregue}x</span>
+                      {entregue > 0 ? (
+                        <input type="text" inputMode="decimal" value={custosEdit[it.id] ?? ''}
+                          onChange={e => setCustosEdit(c => ({ ...c, [it.id]: e.target.value }))}
+                          className="w-24 border border-slate-200 rounded-md px-2 py-1 text-xs text-right" />
+                      ) : (
+                        <span className="text-slate-400">pendente — custo entra na baixa</span>
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => salvarCorrecaoCusto(v)} className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-md">Salvar correção</button>
+                  <button onClick={() => setEditandoCusto(null)} className="text-xs text-slate-500 px-2 py-1.5">Cancelar</button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
