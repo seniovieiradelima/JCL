@@ -7,7 +7,7 @@ import LoginScreen from './LoginScreen';
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
 const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao'];
-const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'balanco', 'pagamentos', 'financeiro'];
+const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'pagamentos', 'financeiro'];
 const PAGAMENTO_CATEGORIAS_SAIDA = [
   'Salários e encargos', 'Pró-labore / retirada de sócio', 'Aluguel', 'Energia elétrica', 'Água',
   'Internet / Telefone', 'Combustível', 'Manutenção de veículo', 'Contador / Consultoria',
@@ -707,6 +707,7 @@ function AppInner() {
   const [pagamentos, setPagamentos] = useState([]);
   const [ajustesReposicao, setAjustesReposicao] = useState([]);
   const [balancos, setBalancos] = useState([]);
+  const [conferencias, setConferencias] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -736,7 +737,7 @@ function AppInner() {
     const dados = {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
-      formasRecebimento, senhaAprovacao, pagamentos, ajustesReposicao, balancos,
+      formasRecebimento, senhaAprovacao, pagamentos, ajustesReposicao, balancos, conferencias,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -773,6 +774,7 @@ function AppInner() {
         ['pagamentos', () => persistPagamentos(dados.pagamentos || [])],
         ['ajustes de reposição', () => persistAjustesReposicao(dados.ajustesReposicao || [])],
         ['balanços', () => persistBalancos(dados.balancos || [])],
+        ['conferências', () => persistConferencias(dados.conferencias || [])],
       ];
       for (const [nome, gravar] of etapas) {
         if (!(await gravar())) {
@@ -794,7 +796,7 @@ function AppInner() {
     (async () => {
       try {
       await migrarDadosAntigosSeNecessario();
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf] = await Promise.all([
         loadCollection('estoque', []),
         loadCollection('clientes', []),
         loadCollection('fornecedores', []),
@@ -810,6 +812,7 @@ function AppInner() {
         loadCollection('pagamentos', []),
         loadCollection('ajustesReposicao', []),
         loadCollection('balancos', []),
+        loadCollection('conferencias', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -901,6 +904,7 @@ function AppInner() {
       setPagamentos(pg);
       setAjustesReposicao(aj);
       setBalancos(bl);
+      setConferencias(cf);
       setFormasRecebimento(formasFinal);
       setLoading(false);
       } catch (err) {
@@ -962,6 +966,7 @@ function AppInner() {
   async function persistPagamentos(next) { return persist('pagamentos', setPagamentos, next, pagamentos); }
   async function persistAjustesReposicao(next) { return persist('ajustesReposicao', setAjustesReposicao, next, ajustesReposicao); }
   async function persistBalancos(next) { return persist('balancos', setBalancos, next, balancos); }
+  async function persistConferencias(next) { return persist('conferencias', setConferencias, next, conferencias); }
 
   if (loading) {
     return (
@@ -1041,6 +1046,7 @@ function AppInner() {
                 <SubTabButton icon={ArrowLeftRight} label="Transferências" active={tab === 'transferencias'} onClick={() => setTab('transferencias')} />
                 <SubTabButton icon={ClipboardList} label="Pedidos de compra" active={tab === 'pedidos'} onClick={() => setTab('pedidos')} />
                 <SubTabButton icon={TruckIcon} label="Recebimento" active={tab === 'recebimento'} onClick={() => setTab('recebimento')} />
+                <SubTabButton icon={ClipboardList} label="Conferência" active={tab === 'conferencia'} onClick={() => setTab('conferencia')} />
                 <SubTabButton icon={Scale} label="Balanço de estoque" active={tab === 'balanco'} onClick={() => setTab('balanco')} />
                 <SubTabButton icon={HandCoins} label="Pagamentos" active={tab === 'pagamentos'} onClick={() => setTab('pagamentos')} />
                 <SubTabButton icon={LineChart} label="Financeiro" active={tab === 'financeiro'} onClick={() => setTab('financeiro')} />
@@ -1093,6 +1099,15 @@ function AppInner() {
             depositos={depositos}
             askSenha={askSenha}
             notify={notify}
+          />
+        )}
+        {tab === 'conferencia' && (
+          <ConferenciaModule
+            conferencias={conferencias} setConferencias={persistConferencias}
+            balancos={balancos} setBalancos={persistBalancos}
+            estoque={estoque} depositos={depositos}
+            askConfirm={askConfirm} askSenha={askSenha} notify={notify}
+            irParaBalanco={() => setTab('balanco')}
           />
         )}
         {tab === 'balanco' && (
@@ -4086,6 +4101,244 @@ function custoMedioProduto(produto, depositoId) {
     media = qtd ? lotes.reduce((a, l) => a + l.quantidadeDisponivel * (l.custoUnitario || 0), 0) / qtd : 0;
   }
   return media > 0 ? media : (produto.custoReferencia || 0);
+}
+
+/* ---------------- CONFERÊNCIA DE ESTOQUE (contagem rápida; quem corrige é o balanço) ---------------- */
+
+function ConferenciaModule({ conferencias, setConferencias, balancos, setBalancos, estoque, depositos, askConfirm, askSenha, notify, irParaBalanco }) {
+  const [depositoNovoId, setDepositoNovoId] = useState(depositos.length === 1 ? depositos[0].id : '');
+  const [busca, setBusca] = useState('');
+  const [soPendentes, setSoPendentes] = useState(true);
+  const [qtdInputs, setQtdInputs] = useState({});
+  const [expandedHistorico, setExpandedHistorico] = useState({});
+
+  const ativa = conferencias.find(c => c.status === 'Em andamento');
+
+  function resumo(conf) {
+    const conferidos = conf.itens.filter(it => it.quantidadeContada !== null && it.quantidadeContada !== undefined);
+    const divergentes = conferidos.filter(it => it.quantidadeContada !== it.quantidadeSistema);
+    const diferencaVenda = divergentes.reduce((a, it) => a + (it.quantidadeContada - it.quantidadeSistema) * (it.precoVenda || 0), 0);
+    return { conferidos: conferidos.length, total: conf.itens.length, divergentes, diferencaVenda };
+  }
+
+  async function iniciarConferencia() {
+    if (!depositoNovoId) { notify('Selecione o depósito a conferir'); return; }
+    if (ativa) { notify('Conclua ou cancele a conferência em andamento antes de abrir outra'); return; }
+    const deposito = depositos.find(d => d.id === depositoNovoId);
+    // Fotografia do momento: todos os itens com saldo no depósito, com o preço de venda de hoje.
+    const itens = estoque
+      .filter(p => availableQty(p, depositoNovoId) > 0)
+      .map(p => ({
+        id: uid(), produtoId: p.id, descricao: descricaoProduto(p), categoria: p.categoria,
+        serializado: !!p.serializado,
+        quantidadeSistema: availableQty(p, depositoNovoId),
+        precoVenda: p.precoVenda || 0,
+        quantidadeContada: null,
+      }))
+      .sort((a, b) => `${a.categoria} ${a.descricao}`.localeCompare(`${b.categoria} ${b.descricao}`, 'pt-BR'));
+    if (itens.length === 0) { notify('Nenhum item com saldo nesse depósito'); return; }
+    const nova = { id: uid(), depositoId: depositoNovoId, depositoNome: deposito?.nome || '', data: new Date().toISOString(), status: 'Em andamento', itens };
+    if (!(await setConferencias([nova, ...conferencias]))) return;
+    notify(`Conferência iniciada: ${itens.length} item(ns) para contar`);
+  }
+
+  async function marcarItem(conf, item, valor) {
+    const qtd = parseInt(valor);
+    if (isNaN(qtd) || qtd < 0) { notify('Informe uma quantidade válida (0 ou mais)'); return; }
+    const next = conferencias.map(c => c.id !== conf.id ? c : ({
+      ...c, itens: c.itens.map(it => it.id === item.id ? { ...it, quantidadeContada: qtd } : it),
+    }));
+    if (!(await setConferencias(next))) return;
+    setQtdInputs(q => ({ ...q, [item.id]: '' }));
+  }
+
+  async function refazerItem(conf, item) {
+    const next = conferencias.map(c => c.id !== conf.id ? c : ({
+      ...c, itens: c.itens.map(it => it.id === item.id ? { ...it, quantidadeContada: null } : it),
+    }));
+    await setConferencias(next);
+  }
+
+  async function cancelarConferencia(conf) {
+    if (!(await askSenha(`Cancelar a conferência em andamento (${conf.depositoNome})? A contagem feita até aqui será descartada.`, { label: 'Cancelar conferência' }))) return;
+    await setConferencias(conferencias.filter(c => c.id !== conf.id));
+    notify('Conferência cancelada');
+  }
+
+  async function concluirConferencia(conf) {
+    const { conferidos, total, divergentes, diferencaVenda } = resumo(conf);
+    const pendentes = total - conferidos;
+    const aviso = pendentes > 0 ? ` ${pendentes} item(ns) ainda NÃO conferidos ficarão de fora do resultado.` : '';
+    if (!(await askConfirm(`Concluir a conferência de ${conf.depositoNome}? ${divergentes.length} divergência(s), diferença de ${currency(diferencaVenda)} em preço de venda.${aviso}`))) return;
+    if (!(await setConferencias(conferencias.map(c => c.id === conf.id ? { ...c, status: 'Concluída', concluidaEm: new Date().toISOString() } : c)))) return;
+    notify('Conferência concluída');
+  }
+
+  // Gera um balanço "Em andamento" com as divergências NÃO serializadas da conferência.
+  // Inversores (serializados) exigem marcar os números de série no próprio balanço.
+  async function gerarBalanco(conf) {
+    if (balancos.some(b => b.status === 'Em andamento')) { notify('Já existe um balanço em andamento — conclua ou cancele antes de gerar outro.'); return; }
+    const { divergentes } = resumo(conf);
+    const serializados = divergentes.filter(it => it.serializado);
+    // Recalcula contra o estoque ATUAL: divergência que já se resolveu fica de fora.
+    const itens = divergentes.filter(it => !it.serializado).map(it => {
+      const produto = estoque.find(p => p.id === it.produtoId);
+      if (!produto) return null;
+      return {
+        id: uid(), produtoId: it.produtoId, descricao: it.descricao, categoria: it.categoria,
+        serializado: false,
+        quantidadeSistema: availableQty(produto, conf.depositoId),
+        quantidadeContada: it.quantidadeContada,
+        custoUnitarioMedio: custoMedioProduto(produto, conf.depositoId),
+      };
+    }).filter(it => it && it.quantidadeContada !== it.quantidadeSistema);
+    if (itens.length === 0 && serializados.length === 0) { notify('Nenhuma divergência para ajustar'); return; }
+    const avisoSerial = serializados.length > 0
+      ? ` ATENÇÃO: ${serializados.length} divergência(s) de itens com nº de série ficam de fora — no balanço, adicione o produto e marque os seriais encontrados.`
+      : '';
+    if (!(await askConfirm(`Gerar balanço de ${conf.depositoNome} com ${itens.length} divergência(s) desta conferência?${avisoSerial} A correção do estoque só acontece ao FINALIZAR o balanço.`))) return;
+    const novo = { id: uid(), depositoId: conf.depositoId, depositoNome: conf.depositoNome, data: new Date().toISOString(), status: 'Em andamento', itens };
+    if (!(await setBalancos([novo, ...balancos]))) return;
+    notify('Balanço criado com as divergências da conferência');
+    if (irParaBalanco) irParaBalanco();
+  }
+
+  const concluidas = conferencias.filter(c => c.status === 'Concluída');
+
+  return (
+    <div>
+      <p className="text-xs text-slate-400 mb-4">A conferência é a contagem: o sistema lista tudo que consta no depósito e você confirma item a item. Ela <strong>não altera o estoque</strong> — ao final, as divergências podem virar um balanço, que é quem corrige.</p>
+
+      {!ativa && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+          <div className="flex-1">
+            <SelectPesquisavel
+              value={depositoNovoId}
+              onChange={setDepositoNovoId}
+              placeholder="Selecione o depósito..."
+              opcoes={depositos.map(d => ({ value: d.id, label: d.nome }))}
+            />
+          </div>
+          <button onClick={iniciarConferencia} className="bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap">Iniciar conferência</button>
+        </div>
+      )}
+
+      {ativa && (() => {
+        const { conferidos, total, divergentes, diferencaVenda } = resumo(ativa);
+        const termo = busca.trim().toLowerCase();
+        const visiveis = ativa.itens.filter(it => {
+          if (soPendentes && it.quantidadeContada !== null && it.quantidadeContada !== undefined) return false;
+          return `${it.categoria} ${it.descricao}`.toLowerCase().includes(termo);
+        });
+        return (
+          <div className="bg-white border border-amber-300 rounded-lg overflow-hidden mb-4">
+            <div className="p-3 bg-amber-50 border-b border-amber-200 flex flex-wrap justify-between items-center gap-2">
+              <div>
+                <p className="font-medium text-sm">Conferência em andamento · {ativa.depositoNome}</p>
+                <p className="text-xs text-slate-500">{formatDate(ativa.data)} · {conferidos} de {total} conferido(s) · {divergentes.length} divergência(s)</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-slate-500">Diferença (preço de venda)</p>
+                <p className={`font-semibold ${diferencaVenda < 0 ? 'text-red-600' : diferencaVenda > 0 ? 'text-emerald-600' : 'text-slate-600'}`}>{currency(diferencaVenda)}</p>
+              </div>
+            </div>
+
+            <div className="p-3 flex flex-col sm:flex-row gap-2 border-b border-slate-100">
+              <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar item..." className="flex-1 border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+              <label className="flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap">
+                <input type="checkbox" checked={soPendentes} onChange={e => setSoPendentes(e.target.checked)} /> mostrar só pendentes
+              </label>
+            </div>
+
+            <div className="divide-y divide-slate-100 max-h-[28rem] overflow-y-auto">
+              {visiveis.length === 0 && <p className="text-sm text-slate-400 text-center py-6">{soPendentes ? 'Nada pendente com esse filtro. 🎉' : 'Nenhum item com esse filtro.'}</p>}
+              {visiveis.map(it => {
+                const conferido = it.quantidadeContada !== null && it.quantidadeContada !== undefined;
+                const diff = conferido ? it.quantidadeContada - it.quantidadeSistema : 0;
+                return (
+                  <div key={it.id} className="px-3 py-2 flex items-center gap-2 text-sm">
+                    <div className="flex-1 min-w-0">
+                      <p className="truncate">{it.descricao}</p>
+                      <p className="text-xs text-slate-400">{it.categoria}{it.serializado ? ' · nº de série' : ''} · sistema: <strong>{it.quantidadeSistema}</strong></p>
+                    </div>
+                    {conferido ? (
+                      <>
+                        {diff === 0
+                          ? <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">✓ bateu</span>
+                          : <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">contado {it.quantidadeContada} ({diff > 0 ? '+' : ''}{diff})</span>}
+                        <button onClick={() => refazerItem(ativa, it)} title="Refazer este item"><X size={14} className="text-slate-300 hover:text-red-500" /></button>
+                      </>
+                    ) : (
+                      <>
+                        <input type="number" min={0} placeholder={String(it.quantidadeSistema)} value={qtdInputs[it.id] ?? ''}
+                          onChange={e => setQtdInputs(q => ({ ...q, [it.id]: e.target.value }))}
+                          onKeyDown={e => { if (e.key === 'Enter' && (qtdInputs[it.id] ?? '') !== '') marcarItem(ativa, it, qtdInputs[it.id]); }}
+                          className="w-20 border border-slate-200 rounded-md px-2 py-1 text-sm text-right shrink-0" />
+                        {(qtdInputs[it.id] ?? '') !== '' ? (
+                          <button onClick={() => marcarItem(ativa, it, qtdInputs[it.id])} className="text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md shrink-0">OK</button>
+                        ) : (
+                          <button onClick={() => marcarItem(ativa, it, it.quantidadeSistema)} className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white px-2.5 py-1.5 rounded-md shrink-0">✓ Bateu</button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="p-3 border-t border-slate-200 flex flex-wrap gap-2 justify-end">
+              <button onClick={() => cancelarConferencia(ativa)} className="text-xs text-slate-500 px-3 py-2">Cancelar conferência</button>
+              <button onClick={() => concluirConferencia(ativa)} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md">Concluir conferência</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      <h3 className="text-sm font-medium text-slate-500 mb-2">Conferências concluídas</h3>
+      <div className="space-y-2">
+        {concluidas.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma conferência concluída ainda.</p>}
+        {concluidas.map(c => {
+          const { conferidos, total, divergentes, diferencaVenda } = resumo(c);
+          return (
+            <div key={c.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+              <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpandedHistorico(x => ({ ...x, [c.id]: !x[c.id] }))}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedHistorico[c.id] ? 'rotate-90' : ''}`} />
+                  <div className="min-w-0">
+                    <p className="font-medium text-sm truncate">{c.depositoNome}</p>
+                    <p className="text-xs text-slate-400">{formatDate(c.data)} · {conferidos}/{total} conferidos · {divergentes.length} divergência(s)</p>
+                  </div>
+                </div>
+                <span className={`font-medium text-sm shrink-0 ${diferencaVenda < 0 ? 'text-red-600' : diferencaVenda > 0 ? 'text-emerald-600' : 'text-slate-500'}`}>{currency(diferencaVenda)}</span>
+              </div>
+              {expandedHistorico[c.id] && (
+                <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1">
+                  {divergentes.length === 0 && <p className="text-xs text-emerald-700">Tudo bateu — nenhuma divergência. 🎯</p>}
+                  {divergentes.map(it => (
+                    <p key={it.id} className="text-xs text-slate-600">
+                      {it.descricao} — sistema {it.quantidadeSistema}, contado {it.quantidadeContada}
+                      <span className={it.quantidadeContada < it.quantidadeSistema ? ' text-red-600' : ' text-emerald-600'}>
+                        {' '}({it.quantidadeContada - it.quantidadeSistema > 0 ? '+' : ''}{it.quantidadeContada - it.quantidadeSistema} · {currency((it.quantidadeContada - it.quantidadeSistema) * (it.precoVenda || 0))})
+                      </span>
+                      {it.serializado && <span className="text-amber-600"> · nº de série — ajustar no balanço marcando os seriais</span>}
+                    </p>
+                  ))}
+                  {total - conferidos > 0 && <p className="text-[11px] text-slate-400">{total - conferidos} item(ns) não foram conferidos.</p>}
+                  {divergentes.length > 0 && (
+                    <div className="pt-2">
+                      <button onClick={() => gerarBalanco(c)} className="flex items-center gap-1.5 text-xs bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium px-3 py-1.5 rounded-md">
+                        <Scale size={13} /> Gerar balanço com as divergências
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, askSenha, notify }) {
