@@ -543,6 +543,82 @@ function qtdACaminho(pedidosCompra, recebimentos, produtoId) {
   return { total, proximaChegada };
 }
 
+// ---- Versões "em mapa" dos cálculos de recebido/a-caminho/reserva/custo estimado ----
+// Calculadas UMA vez por mudança de dados (via useMemo nos componentes), em vez de refeitas
+// produto a produto a cada tecla digitada — era o maior peso de tela apontado na auditoria.
+
+function mapaRecebidoPorItem(recebimentos) {
+  const m = new Map();
+  for (const r of (recebimentos || [])) {
+    if (r.anulado) continue;
+    const k = `${r.pedidoId}|${r.itemLineId}`;
+    m.set(k, (m.get(k) || 0) + r.quantidade);
+  }
+  return m;
+}
+
+function mapaACaminhoPorProduto(pedidosCompra, recebimentos) {
+  const recebido = mapaRecebidoPorItem(recebimentos);
+  const m = new Map(); // produtoId -> { total, proximaChegada }
+  for (const p of (pedidosCompra || [])) {
+    if (p.cancelado || p.anulado) continue;
+    for (const it of (p.itens || [])) {
+      const falta = it.quantidade - (recebido.get(`${p.id}|${it.id}`) || 0);
+      if (falta <= 0) continue;
+      const e = m.get(it.produtoId) || { total: 0, proximaChegada: null };
+      e.total += falta;
+      if (p.previsaoChegada && (!e.proximaChegada || p.previsaoChegada < e.proximaChegada)) e.proximaChegada = p.previsaoChegada;
+      m.set(it.produtoId, e);
+    }
+  }
+  return m;
+}
+
+function mapaReservadoPorProduto(vendas) {
+  const m = new Map();
+  for (const v of (vendas || [])) {
+    if (v.anulado) continue;
+    for (const it of (v.itens || [])) {
+      const pend = it.quantidadePendente || 0;
+      if (pend > 0) m.set(it.itemId, (m.get(it.itemId) || 0) + pend);
+    }
+  }
+  return m;
+}
+
+// Mesma regra de custoEstimadoUnitario, calculada em lote para todos os produtos.
+function mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos) {
+  const recebido = mapaRecebidoPorItem(recebimentos);
+  const custoACaminho = new Map();
+  const ultimaCompra = new Map();
+  for (const p of (pedidosCompra || [])) {
+    if (p.cancelado || p.anulado) continue;
+    for (const it of (p.itens || [])) {
+      if (!(it.custoUnitario > 0)) continue;
+      if (it.quantidade - (recebido.get(`${p.id}|${it.id}`) || 0) > 0) {
+        custoACaminho.set(it.produtoId, Math.max(custoACaminho.get(it.produtoId) || 0, it.custoUnitario));
+      }
+      const u = ultimaCompra.get(it.produtoId);
+      if (!u || (p.data || '') >= u.data) ultimaCompra.set(it.produtoId, { data: p.data || '', custo: it.custoUnitario });
+    }
+  }
+  const m = new Map();
+  for (const prod of (estoque || [])) {
+    const emPedido = custoACaminho.get(prod.id) || 0;
+    m.set(prod.id, emPedido > 0 ? emPedido : Math.max(prod.custoReferencia || 0, ultimaCompra.get(prod.id)?.custo || 0));
+  }
+  return m;
+}
+
+function custoEstimadoPendenciasMapa(v, mapa) {
+  let total = 0;
+  for (const it of (v.itens || [])) {
+    const pend = it.quantidadePendente || 0;
+    if (pend > 0) total += pend * (it.custoPendenteUnitario > 0 ? it.custoPendenteUnitario : (mapa.get(it.itemId) || 0));
+  }
+  return total;
+}
+
 // Quantidade de um produto já comprometida em pré-vendas ativas (pendências de entrega).
 // Orçamento NÃO reserva; venda com pendência reserva.
 function qtdReservadaPreVenda(vendas, produtoId) {
@@ -727,7 +803,7 @@ function AppInner() {
   const [ajustesReposicao, setAjustesReposicao] = useState([]);
   const [balancos, setBalancos] = useState([]);
   const [conferencias, setConferencias] = useState([]);
-  const [toast, setToast] = useState(null);
+  const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
   function askConfirm(message) {
@@ -978,7 +1054,20 @@ function AppInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, erroCarregamento]);
 
-  function notify(msg) { setToast(msg); setTimeout(() => setToast(null), 3000); }
+  // Avisos empilham (não se atropelam), duram proporcional ao tamanho do texto, e
+  // mensagens com ⚠️ ganham cara de alerta e SÓ SAEM com clique — erro não pode sumir
+  // em 3 segundos vestido de verde.
+  function notify(msg) {
+    const texto = String(msg);
+    const id = uid();
+    const aviso = texto.includes('⚠️');
+    setToasts(t => [...t.slice(-4), { id, texto: texto.replace('⚠️', '').trim(), aviso }]);
+    if (!aviso) {
+      const duracao = Math.min(12000, 3000 + texto.length * 40);
+      setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), duracao);
+    }
+  }
+  function fecharToast(id) { setToasts(t => t.filter(x => x.id !== id)); }
 
   // Grava e devolve true/false. Se o banco recusar (conflito com outra pessoa) ou falhar,
   // desfaz a alteração na tela e abre a tela bloqueante — assim ninguém fica olhando para
@@ -1191,9 +1280,21 @@ function AppInner() {
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
-      {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm z-30 max-w-[90vw] text-center">
-          <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />{toast}
+      {toasts.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 flex flex-col-reverse gap-2 items-center max-w-[90vw]">
+          {toasts.map(t => (
+            <div key={t.id} className={`${t.aviso ? 'bg-red-700 border border-red-500' : 'bg-slate-900'} text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm text-center`}>
+              {t.aviso
+                ? <AlertTriangle size={16} className="text-amber-300 shrink-0" />
+                : <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />}
+              <span>{t.texto}</span>
+              {t.aviso && (
+                <button onClick={() => fecharToast(t.id)} className="ml-1 shrink-0 bg-white/10 hover:bg-white/20 rounded-full p-1" title="Fechar aviso">
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
@@ -1410,6 +1511,18 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
   const produtoAtual = estoque.find(i => i.id === produtoSel);
   useEffect(() => { if (produtoAtual) setPrecoSel(produtoAtual.precoVenda); }, [produtoSel]);
 
+  // Calculados uma vez por mudança de dados — não a cada tecla digitada.
+  const aCaminhoMap = useMemo(() => mapaACaminhoPorProduto(pedidosCompra, recebimentos), [pedidosCompra, recebimentos]);
+  const reservadoMap = useMemo(() => mapaReservadoPorProduto(vendas), [vendas]);
+  const opcoesProdutos = useMemo(() => estoque.map(i => {
+    const disp = availableQty(i);
+    const aCaminho = aCaminhoMap.get(i.id)?.total || 0;
+    const rotulo = disp === 0 && aCaminho === 0 ? 'sem estoque — pré-venda'
+      : aCaminho > 0 ? `${disp} disp. + ${aCaminho} a caminho`
+      : `${disp} disp.`;
+    return { value: i.id, label: `${i.categoria} · ${descricaoProduto(i)} (${rotulo})` };
+  }), [estoque, aCaminhoMap]);
+
   const depositosComEstoque = produtoAtual ? depositos.filter(d => availableQty(produtoAtual, d.id) > 0) : [];
 
   useEffect(() => {
@@ -1455,21 +1568,14 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
           value={produtoSel}
           onChange={v => { setProdutoSel(v); setDepositoSel(depositos.length === 1 ? depositos[0].id : ''); }}
           placeholder="Selecione o produto..."
-          opcoes={estoque.map(i => {
-            const disp = availableQty(i);
-            const aCaminho = qtdACaminho(pedidosCompra, recebimentos, i.id).total;
-            const rotulo = disp === 0 && aCaminho === 0 ? 'sem estoque — pré-venda'
-              : aCaminho > 0 ? `${disp} disp. + ${aCaminho} a caminho`
-              : `${disp} disp.`;
-            return { value: i.id, label: `${i.categoria} · ${descricaoProduto(i)} (${rotulo})` };
-          })}
+          opcoes={opcoesProdutos}
         />
         {produtoAtual && (() => {
           // Painel do vendedor: o que tem no galpão, o que já foi pago e está vindo,
           // o que outras pré-vendas já comprometeram, e o que sobra pra vender.
           const emEstoque = availableQty(produtoAtual);
-          const { total: aCaminho, proximaChegada } = qtdACaminho(pedidosCompra, recebimentos, produtoAtual.id);
-          const reservado = qtdReservadaPreVenda(vendas, produtoAtual.id);
+          const { total: aCaminho, proximaChegada } = aCaminhoMap.get(produtoAtual.id) || { total: 0, proximaChegada: null };
+          const reservado = reservadoMap.get(produtoAtual.id) || 0;
           const livre = Math.max(0, aCaminho - reservado);
           return (
             <div className="bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-xs text-slate-600 flex flex-wrap gap-x-4 gap-y-1">
@@ -2181,6 +2287,9 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
 /* ---------------- PEDIDOS DE COMPRA (como um "orçamento" de compra, ainda sem estoque) ---------------- */
 
 function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, askConfirm, askSenha, notify }) {
+  // Recebido por item de pedido, calculado uma vez — as listas abaixo consultam o mapa.
+  const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
+  const recebidoDe = (pedidoId, itemId) => recebidoPorItem.get(`${pedidoId}|${itemId}`) || 0;
   const [showForm, setShowForm] = useState(false);
   const [numeroPedidoFornecedor, setNumeroPedidoFornecedor] = useState('');
   const [previsaoChegada, setPrevisaoChegada] = useState('');
@@ -2269,7 +2378,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
 
   async function apagarPedido(p) {
     if (p.anulado) return;
-    const temRecebimento = p.itens.some(it => qtdRecebida(recebimentos, p.id, it.id) > 0);
+    const temRecebimento = p.itens.some(it => recebidoDe(p.id, it.id) > 0);
     const aviso = temRecebimento
       ? ` Atenção: parte deste pedido já foi recebida e o estoque correspondente NÃO será removido automaticamente — ajuste o estoque manualmente se necessário.`
       : '';
@@ -2295,7 +2404,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
     const novoCusto = parseValorBR(custoEditado);
     if (isNaN(novaQtd) || novaQtd <= 0) { notify('Informe uma quantidade válida'); return; }
     if (isNaN(novoCusto) || novoCusto < 0) { notify('Informe um custo unitário válido'); return; }
-    const recebido = qtdRecebida(recebimentos, pedido.id, item.id);
+    const recebido = recebidoDe(pedido.id, item.id);
     if (novaQtd < recebido) { notify(`Não é possível informar quantidade menor que o já recebido (${recebido})`); return; }
     if (novaQtd === item.quantidade && novoCusto === item.custoUnitario) { cancelarEdicaoItem(); return; }
 
@@ -2316,7 +2425,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
   }
 
   async function removerItemPedido(pedido, item) {
-    const recebido = qtdRecebida(recebimentos, pedido.id, item.id);
+    const recebido = recebidoDe(pedido.id, item.id);
     if (recebido > 0) { notify('Não é possível remover um item que já teve recebimento — anule o recebimento primeiro, se necessário'); return; }
     if (pedido.itens.length <= 1) { notify('O pedido precisa ter ao menos um item. Para removê-lo por completo, anule o pedido.'); return; }
     const ok = await askSenha(`Remover "${item.descricao}" (${item.quantidade}x ${currency(item.custoUnitario)}) do pedido ${pedido.numeroPedidoFornecedor}?`);
@@ -2365,7 +2474,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
   function statusPedido(p) {
     if (p.anulado) return { label: 'Anulado', style: 'bg-red-100 text-red-600' };
     if (p.cancelado) return { label: 'Cancelado', style: 'bg-red-100 text-red-600' };
-    const pendente = p.itens.some(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) > 0);
+    const pendente = p.itens.some(it => it.quantidade - recebidoDe(p.id, it.id) > 0);
     return pendente ? { label: 'Aguardando recebimento', style: 'bg-amber-100 text-amber-700' } : { label: 'Recebido', style: 'bg-emerald-100 text-emerald-700' };
   }
 
@@ -2523,7 +2632,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
               {expanded[p.id] && (
                 <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 space-y-1.5">
                   {p.itens.map((i, idx) => {
-                    const recebido = qtdRecebida(recebimentos, p.id, i.id);
+                    const recebido = recebidoDe(p.id, i.id);
                     const editando = editandoItem && editandoItem.pedidoId === p.id && editandoItem.itemId === i.id;
                     if (editando) {
                       return (
@@ -2588,6 +2697,8 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
 /* ---------------- RECEBIMENTO (entrada item a item, com foto e nº de série) ---------------- */
 
 function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, askSenha, notify }) {
+  const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
+  const recebidoDe = (pedidoId, itemId) => recebidoPorItem.get(`${pedidoId}|${itemId}`) || 0;
   const [busca, setBusca] = useState('');
   const [ordenacao, setOrdenacao] = useState('recente');
 
@@ -2607,12 +2718,12 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
   const pedidosComPendencia = useMemo(() => {
     return ordenar(pedidos
       .filter(p => !p.cancelado && !p.anulado && combina(p))
-      .map(p => ({ ...p, itensPendentes: p.itens.map(it => ({ ...it, pendente: it.quantidade - qtdRecebida(recebimentos, p.id, it.id) })).filter(it => it.pendente > 0) }))
+      .map(p => ({ ...p, itensPendentes: p.itens.map(it => ({ ...it, pendente: it.quantidade - recebidoDe(p.id, it.id) })).filter(it => it.pendente > 0) }))
       .filter(p => p.itensPendentes.length > 0));
   }, [pedidos, recebimentos, busca, ordenacao]);
 
   const pedidosConcluidos = useMemo(() => {
-    return ordenar(pedidos.filter(p => !p.cancelado && !p.anulado && combina(p) && p.itens.every(it => it.quantidade - qtdRecebida(recebimentos, p.id, it.id) <= 0)));
+    return ordenar(pedidos.filter(p => !p.cancelado && !p.anulado && combina(p) && p.itens.every(it => it.quantidade - recebidoDe(p.id, it.id) <= 0)));
   }, [pedidos, recebimentos, busca, ordenacao]);
 
   const [expandedPedido, setExpandedPedido] = useState({});
@@ -3759,7 +3870,12 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
 
 /* ---------------- EXPEDIÇÃO (confirmação de entrega com fotos e nº de série) ---------------- */
 function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify }) {
-  const regFor = (chave, etapa) => expedicoes.find(ex => ex.chave === chave && ex.etapa === etapa);
+  const regPorChave = useMemo(() => {
+    const m = new Map();
+    for (const ex of expedicoes) m.set(`${ex.chave}|${ex.etapa}`, ex);
+    return m;
+  }, [expedicoes]);
+  const regFor = (chave, etapa) => regPorChave.get(`${chave}|${etapa}`);
 
   const [busca, setBusca] = useState('');
   const [ordenacao, setOrdenacao] = useState('recente');
@@ -4730,6 +4846,7 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
 }
 
 function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosCompra, recebimentos, askSenha, notify }) {
+  const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
   const [showForm, setShowForm] = useState(false);
   const [tipo, setTipo] = useState('Saída');
   const [data, setData] = useState(new Date().toISOString().slice(0, 10));
@@ -4812,12 +4929,12 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
   const resumoMes = useMemo(() => {
     const inicioMes = new Date(); inicioMes.setDate(1); inicioMes.setHours(0, 0, 0, 0);
     const vendasMes = vendas.filter(v => !v.anulado && new Date(v.data) >= inicioMes);
-    const margemContribuicao = vendasMes.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos)), 0);
+    const margemContribuicao = vendasMes.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - custoEstimadoPendenciasMapa(v, custoUnitEstimadoMapa)), 0);
     const pagamentosMes = pagamentos.filter(p => !p.anulado && new Date(p.data) >= inicioMes);
     const entradasExtras = pagamentosMes.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
     const saidas = pagamentosMes.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
     return { margemContribuicao, entradasExtras, saidas, saldo: margemContribuicao + entradasExtras - saidas };
-  }, [vendas, pagamentos, estoque, pedidosCompra, recebimentos]);
+  }, [vendas, pagamentos, custoUnitEstimadoMapa]);
 
   return (
     <div>
@@ -4912,6 +5029,16 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
 }
 
 function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+  // Custo estimado das pendências por venda: calculado UMA vez (a auditoria achou a mesma
+  // conta cara refeita 5 vezes por render, uma delas por linha da lista).
+  const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
+  const estimadoPorVenda = useMemo(() => {
+    const m = new Map();
+    for (const v of vendasTodas) m.set(v.id, custoEstimadoPendenciasMapa(v, custoUnitEstimadoMapa));
+    return m;
+  }, [vendasTodas, custoUnitEstimadoMapa]);
+  const estimadoDe = (v) => estimadoPorVenda.get(v.id) || 0;
+
   // Correção de custo de venda fechada (protegida pela senha de aprovação):
   // altera só o lado financeiro — estoque, expedição e valor cobrado não mudam.
   const [editandoCusto, setEditandoCusto] = useState(null);
@@ -5016,12 +5143,12 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
   // Saldo da margem de contribuição: acumulado desde sempre, nunca zera na virada do mês.
   // Cresce com a margem (venda - custo) de cada venda e é abatido pelas saídas de Pagamentos (somando entradas extras).
   const saldoMargemContribuicao = useMemo(() => {
-    const margemAcumulada = vendas.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos)), 0);
+    const margemAcumulada = vendas.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - estimadoDe(v)), 0);
     const pagamentosValidos = (pagamentos || []).filter(p => !p.anulado);
     const entradasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
     const saidasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
     return margemAcumulada + entradasAcumuladas - saidasAcumuladas;
-  }, [vendas, pagamentos, estoque, pedidosCompra, recebimentos]);
+  }, [vendas, pagamentos, estimadoPorVenda]);
 
   const vendasFiltradas = useMemo(() => {
     if (periodo === 'tudo') return vendas;
@@ -5048,17 +5175,17 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
 
   const totais = useMemo(() => {
     const totalVenda = vendasFiltradas.reduce((acc, v) => acc + v.totalVenda, 0);
-    const totalCusto = vendasFiltradas.reduce((acc, v) => acc + v.totalCusto + custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos), 0);
+    const totalCusto = vendasFiltradas.reduce((acc, v) => acc + v.totalCusto + estimadoDe(v), 0);
     return { totalVenda, totalCusto, margemContribuicao: totalVenda - totalCusto };
-  }, [vendasFiltradas, estoque, pedidosCompra, recebimentos]);
+  }, [vendasFiltradas, estimadoPorVenda]);
 
   // Saldo de reposição: acumulado desde sempre, independente do filtro de período.
   // Cresce com o custo (CMV) de cada venda e é abatido pelo valor de cada pedido de compra realizado.
   const saldoReposicao = useMemo(() => {
-    const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto + custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos), 0);
+    const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto + estimadoDe(v), 0);
     const pedidosAcumulado = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado).reduce((acc, p) => acc + p.valorTotal, 0);
     return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado + totalAjustes };
-  }, [vendas, pedidosCompra, totalAjustes, estoque, recebimentos]);
+  }, [vendas, pedidosCompra, totalAjustes, estimadoPorVenda]);
 
   // Balanço da distribuidora: retrato do momento atual (não filtra por período)
   const balanco = useMemo(() => {
@@ -5073,10 +5200,11 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
     }
 
     let valorEstoqueAguardando = 0;
+    const recebidoAg = mapaRecebidoPorItem(recebimentos);
     for (const p of (pedidosCompra || [])) {
       if (p.cancelado || p.anulado) continue;
       for (const it of p.itens) {
-        const recebido = qtdRecebida(recebimentos || [], p.id, it.id);
+        const recebido = recebidoAg.get(`${p.id}|${it.id}`) || 0;
         const pendente = it.quantidade - recebido;
         if (pendente > 0) valorEstoqueAguardando += pendente * it.custoUnitario;
       }
@@ -5246,7 +5374,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
                   // Margem sobre a venda: (venda - custo) / venda — par percentual da
                   // "margem de contribuição" em reais mostrada nos cartões acima.
                   // Quantidades pendentes de entrega entram com custo ESTIMADO (conservador).
-                  const estimado = custoEstimadoPendencias(v, estoque, pedidosCompra, recebimentos);
+                  const estimado = estimadoDe(v);
                   const pct = ((v.totalVenda - v.totalCusto - estimado) / v.totalVenda) * 100;
                   return (
                     <>
