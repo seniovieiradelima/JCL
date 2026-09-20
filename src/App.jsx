@@ -171,7 +171,10 @@ function reverterConsumoEstoque(estoqueAtual, itens, unidadesProtegidas = new Se
       for (const lc of it.loteConsumos) {
         const lIdx = novoEstoque[idx].lotes.findIndex(l => l.id === lc.loteId);
         if (lIdx !== -1) {
-          novoEstoque[idx].lotes[lIdx] = { ...novoEstoque[idx].lotes[lIdx], quantidadeDisponivel: novoEstoque[idx].lotes[lIdx].quantidadeDisponivel + lc.quantidade };
+          const loteDev = novoEstoque[idx].lotes[lIdx];
+          // Teto: a devolução nunca deixa o disponível maior que o tamanho do lote (um balanço
+          // pode ter corrigido o lote entre a venda e a anulação).
+          novoEstoque[idx].lotes[lIdx] = { ...loteDev, quantidadeDisponivel: Math.min(loteDev.quantidade, loteDev.quantidadeDisponivel + lc.quantidade) };
         }
       }
     }
@@ -3471,7 +3474,16 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
 
   async function apagarVenda(venda) {
     if (venda.anulado) return;
-    const ok = await askSenha(`Apagar a venda de ${venda.clienteNome} (${currency(venda.totalVenda)})? Os itens voltam ao estoque disponível, as expedições vinculadas serão removidas, e o lançamento ficará marcado como anulado no histórico. Comprovantes anexados também serão perdidos.`);
+    // Venda com saída/entrega registrada: a mercadoria saiu da empresa. Anular devolve os
+    // itens ao estoque DO SISTEMA — então exige confirmar que a mercadoria voltou de fato.
+    const chavesDaVenda = new Set(venda.itens.map(it => chaveItemVenda(venda.id, it)));
+    const etapasDaVenda = expedicoes.filter(ex => chavesDaVenda.has(ex.chave) && !ex.anulado);
+    const jaEntregue = etapasDaVenda.some(ex => ex.etapa === 'entrega');
+    const jaSaiu = etapasDaVenda.some(ex => ex.etapa === 'saida');
+    if ((jaEntregue || jaSaiu) && !(await askConfirm(
+      `⚠️ Esta venda tem ${jaEntregue ? 'ENTREGA AO CLIENTE' : 'SAÍDA DA EMPRESA'} registrada na expedição — a mercadoria saiu daqui. Anular devolve os itens ao estoque do sistema. A mercadoria voltou fisicamente para o depósito?`
+    ))) return;
+    const ok = await askSenha(`Apagar a venda de ${venda.clienteNome} (${currency(venda.totalVenda)})? Os itens voltam ao estoque disponível, as expedições vinculadas ficam anuladas no histórico (fotos preservadas), e o lançamento fica marcado como anulado. Comprovantes anexados também serão perdidos.`);
     if (!ok) return;
 
     // Unidades (nº de série) que outras vendas ativas estão usando: a devolução pula essas,
@@ -3485,9 +3497,12 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     if (!(await setEstoque(novoEstoque))) return;
     if (puladas > 0) notify(`${puladas} unidade(s) com nº de série não voltaram ao estoque: já pertencem a outra venda ativa.`);
 
-    if (setExpedicoes) {
-      const chavesDaVenda = new Set(venda.itens.map(it => chaveItemVenda(venda.id, it)));
-      if (!(await setExpedicoes(expedicoes.filter(ex => !chavesDaVenda.has(ex.chave))))) return;
+    if (setExpedicoes && etapasDaVenda.length > 0) {
+      // Marca como anulada em vez de apagar: as fotos e confirmações de série são a prova
+      // do que aconteceu — histórico não se destrói.
+      if (!(await setExpedicoes(expedicoes.map(ex => chavesDaVenda.has(ex.chave) && !ex.anulado
+        ? { ...ex, anulado: true, anuladoEm: new Date().toISOString() }
+        : ex)))) return;
     }
 
     if (venda.origemOrcamentoId && setOrcamentos) {
@@ -3872,7 +3887,7 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
 function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify }) {
   const regPorChave = useMemo(() => {
     const m = new Map();
-    for (const ex of expedicoes) m.set(`${ex.chave}|${ex.etapa}`, ex);
+    for (const ex of expedicoes) { if (!ex.anulado) m.set(`${ex.chave}|${ex.etapa}`, ex); }
     return m;
   }, [expedicoes]);
   const regFor = (chave, etapa) => regPorChave.get(`${chave}|${etapa}`);
@@ -4643,6 +4658,10 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
       lotes: p.lotes ? p.lotes.map(l => ({ ...l })) : p.lotes,
     }));
     const avisos = [];
+    // Parte da falta apurada pode não ser aplicável (ex.: unidade vendida durante a contagem,
+    // ou lote que já baixou por venda). O saldo financeiro gravado reflete só o que foi
+    // corrigido de fato — e cada descarte gera aviso, nada some em silêncio.
+    let valorNaoAplicado = 0;
 
     for (const it of divergentes) {
       const idx = novoEstoque.findIndex(p => p.id === it.produtoId);
@@ -4652,7 +4671,18 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
       if (it.serializado) {
         if (diff < 0) {
           const idsNaoLocalizados = new Set((it.seriaisNaoLocalizados || []).map(s => s.id));
-          novoEstoque[idx].unidades = novoEstoque[idx].unidades.map(u => idsNaoLocalizados.has(u.id) ? { ...u, status: 'Extraviado' } : u);
+          let pulados = 0;
+          novoEstoque[idx].unidades = novoEstoque[idx].unidades.map(u => {
+            if (!idsNaoLocalizados.has(u.id)) return u;
+            // Só marca Extraviado quem AINDA está Disponível — se foi vendido/movido durante
+            // a contagem, o vínculo da venda é preservado.
+            if (u.status !== 'Disponível') { pulados++; return u; }
+            return { ...u, status: 'Extraviado' };
+          });
+          if (pulados > 0) {
+            valorNaoAplicado += pulados * (it.custoUnitarioMedio || 0);
+            avisos.push(`⚠️ ${it.descricao}: ${pulados} nº de série "não localizado" mudou de situação durante a contagem (ex.: foi vendido) e NÃO foi marcado como extraviado.`);
+          }
         } else if (diff > 0) {
           avisos.push(`${it.descricao}: sobra de ${diff} unidade(s) não foi corrigida automaticamente (item com série exige lançamento via Recebimento, com o número de série de cada unidade).`);
         }
@@ -4672,13 +4702,18 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
             restante -= consumo;
           }
           novoEstoque[idx].lotes = novoEstoque[idx].lotes.map(l => lotesOrdenados.find(lo => lo.id === l.id) || l);
+          if (restante > 0) {
+            valorNaoAplicado += restante * (it.custoUnitarioMedio || 0);
+            avisos.push(`⚠️ ${it.descricao}: falta de ${restante} un. não pôde ser aplicada (o estoque atual do depósito é menor que a falta apurada — provável venda durante a contagem).`);
+          }
         }
       }
     }
 
+    const saldoFinanceiroAplicado = saldoFinanceiro + valorNaoAplicado;
     // O balanço só é marcado como Concluído se a correção de estoque foi gravada de verdade.
     if (!(await setEstoque(novoEstoque))) return;
-    if (!(await setBalancos(balancos.map(b => b.id === balanco.id ? { ...b, status: 'Concluído', concluidoEm: new Date().toISOString(), saldoFinanceiro } : b)))) return;
+    if (!(await setBalancos(balancos.map(b => b.id === balanco.id ? { ...b, status: 'Concluído', concluidoEm: new Date().toISOString(), saldoFinanceiro: saldoFinanceiroAplicado } : b)))) return;
     notify('Balanço finalizado e estoque corrigido');
     avisos.forEach(a => notify(a));
   }
