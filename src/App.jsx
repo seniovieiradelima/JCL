@@ -4159,6 +4159,52 @@ function ConferenciaModule({ conferencias, setConferencias, balancos, setBalanco
     await setConferencias(next);
   }
 
+  // Folha de contagem para preencher com caneta no galpão e digitar depois.
+  function imprimirConferencia(conf) {
+    const esc = t => String(t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const linhas = conf.itens.map((it, i) => `
+      <tr>
+        <td class="n">${i + 1}</td>
+        <td class="item">${esc(it.descricao)}${it.serializado ? ' <span class="tag">nº série</span>' : ''}</td>
+        <td class="c">${it.quantidadeSistema}</td>
+        <td class="c check">&#9744;</td>
+        <td class="preencher"></td>
+        <td class="obs"></td>
+      </tr>`).join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Conferência — ${esc(conf.depositoNome)}</title>
+      <style>
+        body { font-family: -apple-system, Arial, sans-serif; font-size: 12px; color: #111; margin: 24px; }
+        h1 { font-size: 16px; margin: 0 0 4px; }
+        .meta { color: #555; margin: 0 0 14px; font-size: 11px; }
+        table { width: 100%; border-collapse: collapse; }
+        thead { display: table-header-group; }
+        th { text-align: left; font-size: 10px; text-transform: uppercase; color: #555; border-bottom: 2px solid #333; padding: 4px 6px; }
+        td { border-bottom: 1px solid #ccc; padding: 9px 6px; vertical-align: middle; }
+        tr { page-break-inside: avoid; }
+        .n { width: 26px; color: #888; }
+        .c { text-align: center; width: 56px; }
+        .check { font-size: 15px; }
+        .preencher { width: 80px; border-left: 1px solid #ddd; }
+        .obs { width: 120px; border-left: 1px solid #ddd; }
+        .tag { font-size: 9px; border: 1px solid #999; border-radius: 3px; padding: 0 3px; color: #555; }
+        .rodape { margin-top: 14px; font-size: 10px; color: #666; }
+        @media print { body { margin: 10mm; } }
+      </style></head><body>
+      <h1>Conferência de estoque — ${esc(conf.depositoNome)}</h1>
+      <p class="meta">Criada em ${formatDate(conf.data)} · ${conf.itens.length} item(ns) &nbsp;&nbsp;|&nbsp;&nbsp; Conferido por: ______________________________ &nbsp; Data: ____/____/____</p>
+      <table>
+        <thead><tr><th>#</th><th>Item</th><th>Sistema</th><th>Bateu</th><th>Contado</th><th>Obs.</th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table>
+      <p class="rodape">Marque <strong>Bateu</strong> quando a contagem conferir com o sistema; caso contrário, anote a quantidade em <strong>Contado</strong>. Depois lance no sistema: Setor de Compras → Conferência.</p>
+      <script>window.print();</script>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { notify('O navegador bloqueou a janela de impressão — libere pop-ups para este site.'); return; }
+    w.document.write(html);
+    w.document.close();
+  }
+
   async function cancelarConferencia(conf) {
     if (!(await askSenha(`Cancelar a conferência em andamento (${conf.depositoNome})? A contagem feita até aqui será descartada.`, { label: 'Cancelar conferência' }))) return;
     await setConferencias(conferencias.filter(c => c.id !== conf.id));
@@ -4287,6 +4333,9 @@ function ConferenciaModule({ conferencias, setConferencias, balancos, setBalanco
             </div>
 
             <div className="p-3 border-t border-slate-200 flex flex-wrap gap-2 justify-end">
+              <button onClick={() => imprimirConferencia(ativa)} className="flex items-center gap-1.5 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2 rounded-md">
+                <FileText size={13} /> Imprimir pra contar no papel
+              </button>
               <button onClick={() => cancelarConferencia(ativa)} className="text-xs text-slate-500 px-3 py-2">Cancelar conferência</button>
               <button onClick={() => concluirConferencia(ativa)} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md">Concluir conferência</button>
             </div>
