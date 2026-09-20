@@ -614,13 +614,32 @@ function avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebiment
   return `${totalPendente} item(ns) sem estoque ficarão PENDENTES DE ENTREGA, reservados para este cliente.${cobertura} Confirmar?`;
 }
 
-function BalancoLockScreen({ senhaCorreta, onDesbloquear }) {
+// ---- Senha de aprovação com impressão digital (hash) ----
+// O banco guarda só o SHA-256 da senha: nem o F12 do navegador, nem uma consulta direta à
+// API, nem o arquivo de backup revelam a senha em si. A comparação aceita também o formato
+// antigo (texto puro) durante a transição — a migração converte na primeira abertura.
+async function hashSenha(texto) {
+  const dados = new TextEncoder().encode(`sgm-aprovacao::${texto}`);
+  const buf = await crypto.subtle.digest('SHA-256', dados);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function conferirSenhaAprovacao(config, digitada) {
+  if (!config) return false;
+  if (config.senhaHash) return (await hashSenha(digitada)) === config.senhaHash;
+  if (config.senha) return digitada === config.senha;
+  return false;
+}
+
+const temSenhaAprovacao = (config) => !!(config && (config.senhaHash || config.senha));
+
+function BalancoLockScreen({ senhaConfig, onDesbloquear }) {
   const [valor, setValor] = useState('');
   const [erro, setErro] = useState('');
 
-  function confirmar() {
-    if (!senhaCorreta) { setErro('Nenhuma senha de aprovação foi cadastrada ainda. Configure em Cadastros → Senha de aprovação.'); return; }
-    if (valor !== senhaCorreta) { setErro('Senha incorreta.'); return; }
+  async function confirmar() {
+    if (!temSenhaAprovacao(senhaConfig)) { setErro('Nenhuma senha de aprovação foi cadastrada ainda. Configure em Cadastros → Senha de aprovação.'); return; }
+    if (!(await conferirSenhaAprovacao(senhaConfig, valor))) { setErro('Senha incorreta.'); return; }
     onDesbloquear();
   }
 
@@ -646,13 +665,13 @@ function BalancoLockScreen({ senhaCorreta, onDesbloquear }) {
   );
 }
 
-function SenhaDialogModal({ message, senhaCorreta, label = 'Apagar', destrutivo = true, onResolve }) {
+function SenhaDialogModal({ message, senhaConfig, label = 'Apagar', destrutivo = true, onResolve }) {
   const [valor, setValor] = useState('');
   const [erro, setErro] = useState('');
 
-  function confirmar() {
-    if (!senhaCorreta) { setErro('Nenhuma senha de aprovação foi cadastrada ainda. Configure em Cadastros → Senha de aprovação.'); return; }
-    if (valor !== senhaCorreta) { setErro('Senha incorreta.'); return; }
+  async function confirmar() {
+    if (!temSenhaAprovacao(senhaConfig)) { setErro('Nenhuma senha de aprovação foi cadastrada ainda. Configure em Cadastros → Senha de aprovação.'); return; }
+    if (!(await conferirSenhaAprovacao(senhaConfig, valor))) { setErro('Senha incorreta.'); return; }
     onResolve(true);
   }
 
@@ -737,7 +756,7 @@ function AppInner() {
     const dados = {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
-      formasRecebimento, senhaAprovacao, pagamentos, ajustesReposicao, balancos, conferencias,
+      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -756,7 +775,14 @@ function AppInner() {
     try {
       const texto = await file.text();
       const dados = JSON.parse(texto);
-      if (!(await askConfirm('Importar este backup vai SUBSTITUIR todos os dados atuais (estoque, vendas, clientes etc.) pelos dados do arquivo. Confirmar?'))) { setImportando(false); return; }
+      // A importação substitui a base INTEIRA — é a operação mais destrutiva do sistema,
+      // então exige a senha de aprovação (quando cadastrada) e guarda uma cópia do estado
+      // atual antes de sobrescrever.
+      const autorizado = temSenhaAprovacao(senhaAprovacao)
+        ? await askSenha('Importar este backup vai SUBSTITUIR todos os dados atuais (estoque, vendas, clientes etc.) pelos dados do arquivo. Digite a senha de aprovação para confirmar.', { label: 'Importar backup' })
+        : await askConfirm('Importar este backup vai SUBSTITUIR todos os dados atuais (estoque, vendas, clientes etc.) pelos dados do arquivo. Confirmar?');
+      if (!autorizado) { setImportando(false); return; }
+      exportarBackup(); // cópia de segurança do estado atual, antes de sobrescrever
       // Importa etapa por etapa e PARA na primeira falha: antes, uma gravação recusada no
       // meio do caminho deixava o banco meio-importado e ainda anunciava sucesso.
       const etapas = [
@@ -783,7 +809,12 @@ function AppInner() {
           return;
         }
       }
-      if (dados.senhaAprovacao) await persistSenhaAprovacao(dados.senhaAprovacao);
+      if (dados.senhaAprovacao) {
+        const cfg = dados.senhaAprovacao.senha
+          ? { senhaHash: await hashSenha(dados.senhaAprovacao.senha), atualizadoEm: dados.senhaAprovacao.atualizadoEm }
+          : dados.senhaAprovacao;
+        await persistSenhaAprovacao(cfg);
+      }
       notify('Backup importado com sucesso');
       setShowBackup(false);
     } catch (e) {
@@ -914,6 +945,21 @@ function AppInner() {
       }
     })();
   }, []);
+
+  // Migração da senha de aprovação: se ainda estiver no formato antigo (texto puro no
+  // banco), converte para impressão digital (hash) na primeira abertura. A senha em si
+  // não muda — só deixa de ficar legível.
+  useEffect(() => {
+    if (loading || erroCarregamento) return;
+    if (senhaAprovacao?.senha && !senhaAprovacao.senhaHash && window.crypto?.subtle) {
+      (async () => {
+        try {
+          await persistSenhaAprovacao({ senhaHash: await hashSenha(senhaAprovacao.senha), atualizadoEm: senhaAprovacao.atualizadoEm || new Date().toISOString() });
+        } catch (e) { console.error('Migração da senha adiada', e); }
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, erroCarregamento, senhaAprovacao]);
 
   // Migração em segundo plano das fotos antigas para o Storage: começa alguns segundos
   // depois do sistema abrir, move um punhado por sessão e vai zerando o peso do carregamento.
@@ -1120,7 +1166,7 @@ function AppInner() {
               notify={notify}
             />
           ) : (
-            <BalancoLockScreen senhaCorreta={senhaAprovacao?.senha} onDesbloquear={() => setBalancoDesbloqueado(true)} />
+            <BalancoLockScreen senhaConfig={senhaAprovacao} onDesbloquear={() => setBalancoDesbloqueado(true)} />
           )
         )}
         {tab === 'clientes' && <ClientesModule clientes={clientes} setClientes={persistClientes} askConfirm={askConfirm} notify={notify} />}
@@ -1198,7 +1244,7 @@ function AppInner() {
       {senhaDialog && (
         <SenhaDialogModal
           message={senhaDialog.message}
-          senhaCorreta={senhaAprovacao?.senha}
+          senhaConfig={senhaAprovacao}
           label={senhaDialog.label}
           destrutivo={senhaDialog.destrutivo}
           onResolve={(v) => { senhaDialog.resolve(v); setSenhaDialog(null); }}
@@ -2871,13 +2917,13 @@ function SenhaAprovacaoModule({ senhaAprovacao, setSenhaAprovacao, notify }) {
   const [nova, setNova] = useState('');
   const [confirmaNova, setConfirmaNova] = useState('');
 
-  const jaTemSenha = !!senhaAprovacao?.senha;
+  const jaTemSenha = temSenhaAprovacao(senhaAprovacao);
 
   async function salvar() {
-    if (jaTemSenha && atual !== senhaAprovacao.senha) { notify('Senha atual incorreta'); return; }
+    if (jaTemSenha && !(await conferirSenhaAprovacao(senhaAprovacao, atual))) { notify('Senha atual incorreta'); return; }
     if (!nova.trim()) { notify('Digite a nova senha'); return; }
     if (nova !== confirmaNova) { notify('A confirmação não confere com a nova senha'); return; }
-    await setSenhaAprovacao({ senha: nova, atualizadoEm: new Date().toISOString() });
+    await setSenhaAprovacao({ senhaHash: await hashSenha(nova), atualizadoEm: new Date().toISOString() });
     notify(jaTemSenha ? 'Senha de aprovação atualizada' : 'Senha de aprovação cadastrada');
     setAtual(''); setNova(''); setConfirmaNova('');
   }
@@ -5036,9 +5082,12 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
       }
     }
 
-    const valoresAReceber = vendas
-      .filter(v => !(v.comprovantes && v.comprovantes.length > 0))
-      .reduce((acc, v) => acc + v.totalVenda, 0);
+    // A receber = o que falta comprovar de cada venda ativa. Pagamento PARCIAL conta
+    // a parte que falta — antes, um único comprovante tirava a venda inteira do indicador.
+    const valoresAReceber = vendas.reduce((acc, v) => {
+      const comprovado = (v.comprovantes || []).reduce((a, c) => a + (c.valor || 0), 0);
+      return acc + Math.max(0, v.totalVenda - comprovado);
+    }, 0);
 
     return { valorEstoqueDisponivel, valorEstoqueAguardando, valoresAReceber };
   }, [estoque, pedidosCompra, recebimentos, vendas]);
