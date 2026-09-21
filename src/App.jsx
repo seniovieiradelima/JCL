@@ -1268,13 +1268,13 @@ function AppInner() {
           <OrcamentoModule
             orcamentos={orcamentos} setOrcamentos={persistOrcamentos}
             vendas={vendas} setVendas={persistVendas}
-            clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos}
+            clientes={clientes} setClientes={persistClientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos}
             pedidosCompra={pedidosCompra} recebimentos={recebimentos}
             askConfirm={askConfirm} askSenha={askSenha} notify={notify}
           />
         )}
         {tab === 'vendas' && (
-          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
+          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} setClientes={persistClientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
         )}
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
@@ -1442,6 +1442,70 @@ function MiniaturaFoto({ src, alt, className }) {
         </div>
       )}
     </>
+  );
+}
+
+// E-mail de quem está logado — carimbado como autor nos lançamentos e nas anulações.
+let autorAtual = '';
+
+// Detecta se uma venda consome estoque físico que as pré-vendas de outros clientes contavam
+// usar: depois dela, disponível + a caminho não cobre mais o total reservado.
+function itensInvadindoReserva(itensResultado, estoque, vendas, pedidosCompra, recebimentos) {
+  const reservado = mapaReservadoPorProduto(vendas);
+  const aCaminho = mapaACaminhoPorProduto(pedidosCompra, recebimentos);
+  const consumidoPorProduto = new Map();
+  for (const it of itensResultado) {
+    const consumido = it.quantidade - (it.quantidadePendente || 0);
+    if (consumido > 0) consumidoPorProduto.set(it.itemId, (consumidoPorProduto.get(it.itemId) || 0) + consumido);
+  }
+  const nomes = [];
+  for (const [produtoId, consumido] of consumidoPorProduto) {
+    const res = reservado.get(produtoId) || 0;
+    if (res <= 0) continue;
+    const p = estoque.find(x => x.id === produtoId);
+    const dispAntes = p ? availableQty(p) : 0;
+    const chegando = aCaminho.get(produtoId)?.total || 0;
+    if (dispAntes - consumido + chegando < res) nomes.push(p ? descricaoProduto(p) : produtoId);
+  }
+  return nomes;
+}
+
+/* ---------------- NOVO CLIENTE SEM SAIR DA VENDA (o carrinho fica intacto) ---------------- */
+
+function NovoClienteInline({ clientes, setClientes, onCriado, notify }) {
+  const [aberto, setAberto] = useState(false);
+  const [nome, setNome] = useState('');
+  const [telefone, setTelefone] = useState('');
+  const [salvando, setSalvando] = useState(false);
+
+  async function salvar() {
+    if (!nome.trim()) { notify('Digite o nome do cliente'); return; }
+    const novo = { id: uid(), nome: nome.trim(), documento: '', telefone: telefone.trim(), email: '', endereco: '', cidade: '', uc: '', observacoes: '', autor: autorAtual };
+    setSalvando(true);
+    const ok = await setClientes([novo, ...clientes]);
+    setSalvando(false);
+    if (!ok) return;
+    notify(`Cliente "${novo.nome}" cadastrado`);
+    setAberto(false); setNome(''); setTelefone('');
+    onCriado(novo.id);
+  }
+
+  if (!aberto) {
+    return (
+      <button type="button" onClick={() => setAberto(true)} className="text-xs text-slate-500 hover:text-slate-700 whitespace-nowrap px-2.5 py-2 border border-dashed border-slate-300 rounded-md">
+        + Novo cliente
+      </button>
+    );
+  }
+  return (
+    <div className="flex flex-col sm:flex-row gap-2 border border-dashed border-amber-300 rounded-md p-2 w-full">
+      <input autoFocus value={nome} onChange={e => setNome(e.target.value)} onKeyDown={e => e.key === 'Enter' && salvar()} placeholder="Nome do cliente" className="flex-1 border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+      <input value={telefone} onChange={e => setTelefone(e.target.value)} onKeyDown={e => e.key === 'Enter' && salvar()} placeholder="Telefone (opcional)" className="border border-slate-200 rounded-md px-2 py-1.5 text-sm sm:w-40" />
+      <div className="flex gap-1 shrink-0">
+        <button type="button" onClick={salvar} disabled={salvando} className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-md disabled:opacity-50">{salvando ? 'Salvando...' : 'Salvar'}</button>
+        <button type="button" onClick={() => setAberto(false)} className="text-xs text-slate-500 px-2">Cancelar</button>
+      </div>
+    </div>
   );
 }
 
@@ -2057,7 +2121,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
       if (uIdx === -1 || novoEstoque[idx].unidades[uIdx].status !== 'Disponível') { notify('Unidade não está mais disponível'); setEnviando(false); return; }
       const serial = novoEstoque[idx].unidades[uIdx].serial;
       novoEstoque[idx].unidades[uIdx] = { ...novoEstoque[idx].unidades[uIdx], depositoId: destinoId };
-      registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial, unidadeId, quantidade: 1, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
+      registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial, unidadeId, quantidade: 1, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino, autor: autorAtual };
     } else {
       const qtd = parseInt(quantidade) || 0;
       if (qtd <= 0 || qtd > disponivelOrigem) { notify(`Informe uma quantidade entre 1 e ${disponivelOrigem}`); setEnviando(false); return; }
@@ -2077,7 +2141,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
         ...novoEstoque[idx].lotes.map(l => lotesOrigem.find(lo => lo.id === l.id) || l),
         ...novosLotesDestino,
       ];
-      registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial: null, loteDestinoIds: novosLotesDestino.map(l => l.id), quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino };
+      registro = { id: uid(), data: agora, produtoId, descricao: descricaoProduto(produto), serial: null, loteDestinoIds: novosLotesDestino.map(l => l.id), quantidade: qtd, origemId, origemNome: nomeOrigem, destinoId, destinoNome: nomeDestino, autor: autorAtual };
     }
 
     if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
@@ -2113,7 +2177,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
     const idx = novoEstoque.findIndex(p => p.id === t.produtoId);
     if (idx === -1) {
       notify('Produto não encontrado — o lançamento foi marcado como anulado, mas nenhum estoque foi alterado');
-      await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+      await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : x));
       return;
     }
 
@@ -2138,7 +2202,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
     }
 
     if (!(await setEstoque(novoEstoque))) return;
-    if (!(await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x)))) return;
+    if (!(await setTransferencias(transferencias.map(x => x.id === t.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : x)))) return;
     notify('Transferência anulada e item devolvido ao depósito de origem');
   }
 
@@ -2379,6 +2443,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
       id: uid(), numeroPedidoFornecedor, numeroNotaFiscal, fornecedorId, fornecedorNome: fornecedor?.nome || '',
       data: new Date(data + 'T12:00:00').toISOString(), itens: itensFinal, valorTotal, cancelado: false,
       previsaoChegada: previsaoChegada || null,
+      autor: autorAtual,
     };
     if (!(await setPedidos([pedido, ...pedidos]))) return;
     notify('Pedido de compra registrado. Dê entrada dos itens em "Recebimento" quando a mercadoria chegar.');
@@ -2400,7 +2465,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
       : '';
     const ok = await askSenha(`Apagar o pedido ${p.numeroPedidoFornecedor} de ${p.fornecedorNome} (${currency(p.valorTotal)})? Ele ficará marcado como anulado no histórico.${aviso}`);
     if (!ok) return;
-    await setPedidos(pedidos.map(x => x.id === p.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    await setPedidos(pedidos.map(x => x.id === p.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : x));
     notify('Pedido de compra anulado');
   }
 
@@ -2776,7 +2841,7 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
     }
 
     if (!(await setEstoque(novoEstoque))) return;
-    if (!(await setRecebimentos(recebimentos.map(r => r.id === registro.id ? { ...r, anulado: true, anuladoEm: new Date().toISOString() } : r)))) return;
+    if (!(await setRecebimentos(recebimentos.map(r => r.id === registro.id ? { ...r, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : r)))) return;
     notify('Recebimento anulado e item removido do estoque');
   }
 
@@ -2952,7 +3017,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     const novoEstoque = estoque.map(p => p.id === item.produtoId ? { ...p, unidades: [...(p.unidades || []), novaUnidade] } : p);
     // Só registra o recebimento se a entrada no estoque realmente foi gravada no banco.
     if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
-    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, unidadeId: novaUnidade.id, descricao: item.descricao, serial: serialLimpo, quantidade: 1, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
+    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, unidadeId: novaUnidade.id, descricao: item.descricao, serial: serialLimpo, quantidade: 1, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome, autor: autorAtual };
     if (!(await setRecebimentos([registro, ...recebimentos]))) {
       setEnviando(false);
       notify('⚠️ O estoque foi somado, mas o registro do recebimento NÃO foi salvo. Recarregue a página (F5) e confira antes de lançar de novo.');
@@ -2978,7 +3043,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     const novoEstoque = estoque.map(p => p.id === item.produtoId ? { ...p, lotes: [...(p.lotes || []), novoLote] } : p);
     // Só registra o recebimento se a entrada no estoque realmente foi gravada no banco.
     if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
-    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, loteId: novoLote.id, descricao: item.descricao, serial: null, quantidade: qtd, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome };
+    const registro = { id: uid(), pedidoId: pedido.id, itemLineId: item.id, produtoId: item.produtoId, loteId: novoLote.id, descricao: item.descricao, serial: null, quantidade: qtd, custoUnitario: item.custoUnitario, foto, data: agora, depositoId, depositoNome, autor: autorAtual };
     if (!(await setRecebimentos([registro, ...recebimentos]))) {
       setEnviando(false);
       notify('⚠️ O estoque foi somado, mas o registro do recebimento NÃO foi salvo. Recarregue a página (F5) e confira antes de lançar de novo.');
@@ -3228,7 +3293,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, askSenha, notify })
 
 /* ---------------- ORÇAMENTOS (carrinho que não baixa estoque até ser convertido) ---------------- */
 
-function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, estoque, setEstoque, depositos, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
+function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, setClientes, estoque, setEstoque, depositos, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [clienteId, setClienteId] = useState('');
@@ -3250,7 +3315,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
       await setOrcamentos(next);
       notify('Orçamento atualizado');
     } else {
-      const novo = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: carrinho, total, observacoes, status: 'Aberto', vendaId: null };
+      const novo = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: carrinho, total, observacoes, status: 'Aberto', vendaId: null, autor: autorAtual };
       await setOrcamentos([novo, ...orcamentos]);
       notify('Orçamento salvo');
     }
@@ -3267,7 +3332,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (orc.anulado) return;
     const ok = await askSenha(`Apagar o orçamento de ${orc.clienteNome} (${currency(orc.total)})? Ele ficará marcado como anulado no histórico.`);
     if (!ok) return;
-    await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, anulado: true, anuladoEm: new Date().toISOString() } : o));
+    await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : o));
     notify('Orçamento anulado');
   }
 
@@ -3278,8 +3343,10 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (totalPendente > 0 && !(await askConfirm(avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas)))) return;
     const semCusto = qtdItensSemCusto(itensResultado);
     if (semCusto > 0 && !(await askConfirm(AVISO_SEM_CUSTO(semCusto)))) return;
+    const emReserva = itensInvadindoReserva(itensResultado, estoque, vendas, pedidosCompra, recebimentos);
+    if (emReserva.length > 0 && !(await askConfirm(`⚠️ Depois desta venda, o estoque restante (mesmo somando o que está a caminho) NÃO cobre as pré-vendas já reservadas de: ${emReserva.join(', ')}. Confirme com quem fez a(s) pré-venda(s) antes de prometer.`))) return;
     if (!(await setEstoque(novoEstoque))) return;
-    const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '' };
+    const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '', autor: autorAtual };
     if (!(await setVendas([venda, ...vendas]))) return;
     if (!(await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, status: 'Convertido', vendaId: venda.id } : o)))) return;
     notify('Orçamento convertido em venda e estoque atualizado');
@@ -3342,12 +3409,17 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
             <button onClick={cancelarForm}><X size={16} className="text-slate-400" /></button>
           </div>
           <p className="text-xs text-slate-400 -mt-2">Um orçamento não reserva nem dá baixa no estoque — isso só acontece quando ele é convertido em venda.</p>
-          <SelectPesquisavel
-            value={clienteId}
-            onChange={setClienteId}
-            placeholder="Selecione o cliente..."
-            opcoes={clientes.map(c => ({ value: c.id, label: c.nome }))}
-          />
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+            <div className="flex-1">
+              <SelectPesquisavel
+                value={clienteId}
+                onChange={setClienteId}
+                placeholder="Selecione o cliente..."
+                opcoes={clientes.map(c => ({ value: c.id, label: c.nome }))}
+              />
+            </div>
+            {setClientes && <NovoClienteInline clientes={clientes} setClientes={setClientes} onCriado={setClienteId} notify={notify} />}
+          </div>
 
           <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} />
 
@@ -3424,7 +3496,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
 /* ---------------- VENDAS (com baixa FIFO de custo) ---------------- */
 
-function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
+function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
@@ -3479,10 +3551,12 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
     if (totalPendente > 0 && !(await askConfirm(avisoPendencia(totalPendente, itensResultado, pedidosCompra, recebimentos, vendas)))) return;
     const semCusto = qtdItensSemCusto(itensResultado);
     if (semCusto > 0 && !(await askConfirm(AVISO_SEM_CUSTO(semCusto)))) return;
+    const emReserva = itensInvadindoReserva(itensResultado, estoque, vendas, pedidosCompra, recebimentos);
+    if (emReserva.length > 0 && !(await askConfirm(`⚠️ Depois desta venda, o estoque restante (mesmo somando o que está a caminho) NÃO cobre as pré-vendas já reservadas de: ${emReserva.join(', ')}. Confirme com quem fez a(s) pré-venda(s) antes de prometer.`))) return;
     // A venda só é gravada se a baixa de estoque foi confirmada no banco. Sem isso, uma
     // baixa recusada deixava a venda registrada com o estoque intacto.
     if (!(await setEstoque(novoEstoque))) return;
-    const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined, observacoes };
+    const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined, observacoes, autor: autorAtual };
     if (!(await setVendas([venda, ...vendas]))) return;
     if (orcamentoOrigemId && setOrcamentos) {
       await setOrcamentos(orcamentos.map(o => o.id === orcamentoOrigemId ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
@@ -3520,7 +3594,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
       // Marca como anulada em vez de apagar: as fotos e confirmações de série são a prova
       // do que aconteceu — histórico não se destrói.
       if (!(await setExpedicoes(expedicoes.map(ex => chavesDaVenda.has(ex.chave) && !ex.anulado
-        ? { ...ex, anulado: true, anuladoEm: new Date().toISOString() }
+        ? { ...ex, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual }
         : ex)))) return;
     }
 
@@ -3528,7 +3602,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
       await setOrcamentos(orcamentos.map(o => o.id === venda.origemOrcamentoId ? { ...o, status: 'Aberto', vendaId: null } : o));
     }
 
-    await setVendas(vendas.map(v => v.id === venda.id ? { ...v, anulado: true, anuladoEm: new Date().toISOString(), comprovantes: [] } : v));
+    await setVendas(vendas.map(v => v.id === venda.id ? { ...v, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual, comprovantes: [] } : v));
     notify('Venda anulada e estoque devolvido');
   }
 
@@ -3597,7 +3671,7 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
       notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
       return;
     }
-    const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0 };
+    const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0, autor: autorAtual };
     const next = vendas.map(v => {
       if (v.id !== vendaId) return v;
       const comprovantes = [...(v.comprovantes || []), comprovante];
@@ -3649,12 +3723,17 @@ function VendasModule({ vendas, setVendas, clientes, estoque, setEstoque, deposi
             </div>
           )}
 
-          <SelectPesquisavel
-            value={clienteId}
-            onChange={setClienteId}
-            placeholder="Selecione o cliente..."
-            opcoes={clientes.map(c => ({ value: c.id, label: c.nome }))}
-          />
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+            <div className="flex-1">
+              <SelectPesquisavel
+                value={clienteId}
+                onChange={setClienteId}
+                placeholder="Selecione o cliente..."
+                opcoes={clientes.map(c => ({ value: c.id, label: c.nome }))}
+              />
+            </div>
+            {setClientes && <NovoClienteInline clientes={clientes} setClientes={setClientes} onCriado={setClienteId} notify={notify} />}
+          </div>
 
           <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} />
 
@@ -4221,6 +4300,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
       id: uid(), etapa, chave: chaveItemVenda(vendaId, item), vendaId, descricao: item.descricao,
       serialEsperado: item.serial || null, serialConfirmado: item.serial ? serialConfirmado : null,
       fotos, data: new Date().toISOString(),
+      autor: autorAtual,
     };
     await setExpedicoes([registro, ...expedicoes]);
     setEnviando(false);
@@ -4342,7 +4422,7 @@ function ConferenciaModule({ conferencias, setConferencias, balancos, setBalanco
       }))
       .sort((a, b) => `${a.categoria} ${a.descricao}`.localeCompare(`${b.categoria} ${b.descricao}`, 'pt-BR'));
     if (itens.length === 0) { notify('Nenhum item com saldo nesse depósito'); return; }
-    const nova = { id: uid(), depositoId: depositoNovoId, depositoNome: deposito?.nome || '', data: new Date().toISOString(), status: 'Em andamento', itens };
+    const nova = { id: uid(), depositoId: depositoNovoId, depositoNome: deposito?.nome || '', data: new Date().toISOString(), status: 'Em andamento', itens, autor: autorAtual };
     if (!(await setConferencias([nova, ...conferencias]))) return;
     notify(`Conferência iniciada: ${itens.length} item(ns) para contar`);
   }
@@ -4448,7 +4528,7 @@ function ConferenciaModule({ conferencias, setConferencias, balancos, setBalanco
       ? ` ATENÇÃO: ${serializados.length} divergência(s) de itens com nº de série ficam de fora — no balanço, adicione o produto e marque os seriais encontrados.`
       : '';
     if (!(await askConfirm(`Gerar balanço de ${conf.depositoNome} com ${itens.length} divergência(s) desta conferência?${avisoSerial} A correção do estoque só acontece ao FINALIZAR o balanço.`))) return;
-    const novo = { id: uid(), depositoId: conf.depositoId, depositoNome: conf.depositoNome, data: new Date().toISOString(), status: 'Em andamento', itens };
+    const novo = { id: uid(), depositoId: conf.depositoId, depositoNome: conf.depositoNome, data: new Date().toISOString(), status: 'Em andamento', itens, autor: autorAtual };
     if (!(await setBalancos([novo, ...balancos]))) return;
     notify('Balanço criado com as divergências da conferência');
     if (irParaBalanco) irParaBalanco();
@@ -4623,7 +4703,7 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
   async function iniciarBalanco() {
     if (!depositoNovoId) { notify('Selecione o depósito a contar'); return; }
     const deposito = depositos.find(d => d.id === depositoNovoId);
-    const novo = { id: uid(), depositoId: depositoNovoId, depositoNome: deposito?.nome || '', data: new Date().toISOString(), status: 'Em andamento', itens: [] };
+    const novo = { id: uid(), depositoId: depositoNovoId, depositoNome: deposito?.nome || '', data: new Date().toISOString(), status: 'Em andamento', itens: [], autor: autorAtual };
     await setBalancos([novo, ...balancos]);
     notify('Balanço iniciado');
   }
@@ -4964,6 +5044,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     const novo = {
       id: uid(), tipo, data: new Date(data + 'T12:00:00').toISOString(), categoria, descricao: descricao.trim(),
       beneficiario: beneficiario.trim(), valor: v, comprovante, criadoEm: new Date().toISOString(),
+      autor: autorAtual,
     };
     await setPagamentos([novo, ...pagamentos]);
     setEnviando(false);
@@ -4975,7 +5056,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     if (p.anulado) return;
     const ok = await askSenha(`Apagar o lançamento "${p.descricao}" (${p.tipo === 'Entrada' ? '+' : '-'}${currency(p.valor)})? Ele ficará marcado como anulado no histórico.`);
     if (!ok) return;
-    await setPagamentos(pagamentos.map(x => x.id === p.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    await setPagamentos(pagamentos.map(x => x.id === p.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : x));
     notify('Lançamento anulado');
   }
 
@@ -5194,7 +5275,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
     const ok = await askSenha(`Lançar um ajuste de ${v > 0 ? '+' : ''}${currency(v)} no saldo de reposição? Motivo: "${motivoAjuste.trim()}".`, { label: 'Lançar ajuste', destrutivo: false });
     if (!ok) return;
     setEnviandoAjuste(true);
-    const novo = { id: uid(), data: new Date().toISOString(), valor: v, motivo: motivoAjuste.trim() };
+    const novo = { id: uid(), data: new Date().toISOString(), valor: v, motivo: motivoAjuste.trim(), autor: autorAtual };
     await setAjustesReposicao([novo, ...(ajustesReposicao || [])]);
     setEnviandoAjuste(false);
     notify('Ajuste lançado no saldo de reposição');
@@ -5205,7 +5286,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
     if (a.anulado) return;
     const ok = await askSenha(`Apagar o ajuste de ${currency(a.valor)} ("${a.motivo}")? Ficará marcado como anulado no histórico.`);
     if (!ok) return;
-    await setAjustesReposicao(ajustesReposicao.map(x => x.id === a.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString() } : x));
+    await setAjustesReposicao(ajustesReposicao.map(x => x.id === a.id ? { ...x, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual } : x));
     notify('Ajuste anulado');
   }
 
@@ -5529,10 +5610,12 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
+      autorAtual = data.session?.user?.email || '';
       setCheckingSession(false);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
+      autorAtual = newSession?.user?.email || '';
     });
     return () => listener.subscription.unsubscribe();
   }, []);
