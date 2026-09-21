@@ -1207,7 +1207,7 @@ function AppInner() {
 
       <main className="max-w-6xl mx-auto px-4 py-5">
         {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
-        {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} estoque={estoque} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'transferencias' && (
           <TransferenciasModule
             estoque={estoque} setEstoque={persistEstoque}
@@ -1217,7 +1217,7 @@ function AppInner() {
             notify={notify}
           />
         )}
-        {tab === 'fornecedores' && <FornecedoresModule fornecedores={fornecedores} setFornecedores={persistFornecedores} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'fornecedores' && <FornecedoresModule fornecedores={fornecedores} setFornecedores={persistFornecedores} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'pedidos' && (
           <PedidoCompraModule
             estoque={estoque} setEstoque={persistEstoque}
@@ -1261,8 +1261,8 @@ function AppInner() {
             <BalancoLockScreen senhaConfig={senhaAprovacao} onDesbloquear={() => setBalancoDesbloqueado(true)} />
           )
         )}
-        {tab === 'clientes' && <ClientesModule clientes={clientes} setClientes={persistClientes} askConfirm={askConfirm} notify={notify} />}
-        {tab === 'formasRecebimento' && <FormasRecebimentoModule formasRecebimento={formasRecebimento} setFormasRecebimento={persistFormasRecebimento} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'clientes' && <ClientesModule clientes={clientes} setClientes={persistClientes} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
+        {tab === 'formasRecebimento' && <FormasRecebimentoModule formasRecebimento={formasRecebimento} setFormasRecebimento={persistFormasRecebimento} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'senhaAprovacao' && <SenhaAprovacaoModule senhaAprovacao={senhaAprovacao} setSenhaAprovacao={persistSenhaAprovacao} notify={notify} />}
         {tab === 'orcamentos' && (
           <OrcamentoModule
@@ -1731,7 +1731,14 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
   }
 
   async function handleDelete(id) {
-    if (!(await askConfirm('Remover este produto do catálogo?'))) return;
+    const item = estoque.find(i => i.id === id);
+    if (!item) return;
+    // Produto com saldo não pode sumir do catálogo — o valor evaporaria do Financeiro sem rastro.
+    if (availableQty(item) > 0) {
+      notify(`⚠️ "${descricaoProduto(item)}" tem ${availableQty(item)} un. em estoque. Zere o saldo antes (venda, transferência ou balanço) para poder removê-lo.`);
+      return;
+    }
+    if (!(await askSenha(`Remover o produto "${descricaoProduto(item)}" do catálogo? Essa exclusão é definitiva (não fica no histórico).`))) return;
     await setEstoque(estoque.filter(i => i.id !== id));
     notify('Produto removido');
   }
@@ -1953,7 +1960,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
 
 /* ---------------- DEPÓSITOS ---------------- */
 
-function DepositosModule({ depositos, setDepositos, askConfirm, notify }) {
+function DepositosModule({ depositos, setDepositos, estoque, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm());
   function emptyForm() { return { nome: '', endereco: '', observacoes: '' }; }
@@ -1966,7 +1973,13 @@ function DepositosModule({ depositos, setDepositos, askConfirm, notify }) {
   }
   async function handleDelete(id) {
     if (depositos.length <= 1) { notify('É preciso manter ao menos um depósito'); return; }
-    if (!(await askConfirm('Remover este depósito? Itens ainda vinculados a ele continuarão registrados, mas ficarão sem depósito visível.'))) return;
+    // Depósito com itens dentro viraria estoque fantasma: conta no total, não aparece em seletor nenhum.
+    const comSaldo = (estoque || []).filter(p => availableQty(p, id) > 0);
+    if (comSaldo.length > 0) {
+      notify(`⚠️ Este depósito ainda tem ${comSaldo.length} produto(s) com saldo (ex.: ${descricaoProduto(comSaldo[0])}). Transfira tudo para outro depósito antes de removê-lo.`);
+      return;
+    }
+    if (!(await askSenha('Remover este depósito? Essa exclusão é definitiva.'))) return;
     await setDepositos(depositos.filter(d => d.id !== id));
     notify('Depósito removido');
   }
@@ -2203,7 +2216,7 @@ function TransferenciasModule({ estoque, setEstoque, depositos, transferencias, 
 
 /* ---------------- FORNECEDORES ---------------- */
 
-function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify }) {
+function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [busca, setBusca] = useState('');
   const [form, setForm] = useState(emptyForm());
@@ -2233,7 +2246,7 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, notify 
     resetForm();
   }
   async function handleDelete(id) {
-    if (!(await askConfirm('Remover este fornecedor?'))) return;
+    if (!(await askSenha('Remover este fornecedor? Essa exclusão é definitiva (não fica no histórico).'))) return;
     await setFornecedores(fornecedores.filter(f => f.id !== id));
     notify('Fornecedor removido');
   }
@@ -2898,10 +2911,13 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
   const [depositoId, setDepositoId] = useState(depositos.length === 1 ? depositos[0].id : '');
   const [enviando, setEnviando] = useState(false);
 
+  const [enviandoFoto, setEnviandoFoto] = useState(false);
+
   async function handleFoto(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     const input = e.target;
+    setEnviandoFoto(true);
     try {
       setFoto(null);
       setFoto(await fotoParaStorage(file, 'recebimentos'));
@@ -2909,6 +2925,8 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
       console.error(err);
       notify('⚠️ Não foi possível enviar a foto. Verifique a conexão e tente de novo.');
       input.value = '';
+    } finally {
+      setEnviandoFoto(false);
     }
   }
 
@@ -2989,12 +3007,13 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
         <input value={serial} onChange={e => setSerial(e.target.value)} placeholder="Número de série do inversor" className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm font-mono" />
         <div>
           <label className="text-xs text-slate-500 flex items-center gap-1"><Camera size={12} /> Foto da etiqueta de série</label>
-          <input type="file" accept="image/*" capture="environment" onChange={handleFoto} className="text-xs mt-1" />
+          <input type="file" accept="image/*" capture="environment" onChange={handleFoto} disabled={enviandoFoto} className="text-xs mt-1" />
+          {enviandoFoto && <p className="text-xs text-amber-600 flex items-center gap-1 mt-1"><Loader2 size={12} className="animate-spin" /> Enviando foto...</p>}
           {foto && <img src={foto} alt="Prévia" className="w-20 h-20 object-cover rounded-md border border-slate-200 mt-2" />}
         </div>
         <div className="flex gap-2">
-          <button onClick={confirmarUnidade} disabled={enviando} className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white text-xs px-3 py-2 rounded-md disabled:opacity-50">
-            <CheckCircle2 size={13} /> Confirmar esta unidade
+          <button onClick={confirmarUnidade} disabled={enviando || enviandoFoto} className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white text-xs px-3 py-2 rounded-md disabled:opacity-50">
+            <CheckCircle2 size={13} /> {enviandoFoto ? 'Enviando foto...' : 'Confirmar esta unidade'}
           </button>
           <button onClick={onCancel} className="text-xs text-slate-500 px-3 py-2">Cancelar</button>
         </div>
@@ -3063,7 +3082,7 @@ function SenhaAprovacaoModule({ senhaAprovacao, setSenhaAprovacao, notify }) {
 
 /* ---------------- FORMAS DE RECEBIMENTO (opções de pagamento) ---------------- */
 
-function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askConfirm, notify }) {
+function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [nome, setNome] = useState('');
   const [multipla, setMultipla] = useState(false);
@@ -3076,7 +3095,7 @@ function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askC
   }
 
   async function handleDelete(id) {
-    if (!(await askConfirm('Remover esta forma de recebimento?'))) return;
+    if (!(await askSenha('Remover esta forma de recebimento? Essa exclusão é definitiva.'))) return;
     await setFormasRecebimento(formasRecebimento.filter(f => f.id !== id));
     notify('Forma de recebimento removida');
   }
@@ -3121,7 +3140,7 @@ function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askC
 
 /* ---------------- CLIENTES ---------------- */
 
-function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
+function ClientesModule({ clientes, setClientes, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [busca, setBusca] = useState('');
   const [form, setForm] = useState(emptyForm());
@@ -3151,7 +3170,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, notify }) {
     resetForm();
   }
   async function handleDelete(id) {
-    if (!(await askConfirm('Remover este cliente?'))) return;
+    if (!(await askSenha('Remover este cliente? Essa exclusão é definitiva (não fica no histórico).'))) return;
     await setClientes(clientes.filter(c => c.id !== id));
     notify('Cliente removido');
   }
@@ -3781,6 +3800,7 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
   const [valorUnico, setValorUnico] = useState('');
   const [qtdMultipla, setQtdMultipla] = useState('');
   const [slots, setSlots] = useState(null); // array de { formaId, valor } quando "múltiplas formas" está ativo
+  const [enviandoAnexo, setEnviandoAnexo] = useState(false);
 
   const formaSelecionada = formasRecebimento.find(f => f.id === formaId);
   const opcoesSimples = formasRecebimento.filter(f => !f.multipla);
@@ -3803,7 +3823,8 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
     const valor = parseValorBR(slot.valor);
     if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago nessa parcela antes de anexar'); return; }
     if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
-    await onAnexar(vendaId, file, forma.id, forma.nome, valor);
+    setEnviandoAnexo(true);
+    try { await onAnexar(vendaId, file, forma.id, forma.nome, valor); } finally { setEnviandoAnexo(false); }
   }
 
   function resetar() {
@@ -3827,9 +3848,9 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
               {opcoesSimples.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
             </select>
             <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={slot.valor} onChange={e => atualizarSlot(idx, 'valor', e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
-            <label className="inline-flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1.5 rounded-md cursor-pointer whitespace-nowrap">
-              <Camera size={11} /> Anexar
-              <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => e.target.files[0] && anexarSlot(idx, e.target.files[0])} />
+            <label className={`inline-flex items-center gap-1 text-xs px-2 py-1.5 rounded-md whitespace-nowrap ${enviandoAnexo ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer'}`}>
+              {enviandoAnexo ? <Loader2 size={11} className="animate-spin" /> : <Camera size={11} />} {enviandoAnexo ? 'Enviando...' : 'Anexar'}
+              <input type="file" accept="image/*,application/pdf" className="hidden" disabled={enviandoAnexo} onChange={e => e.target.files[0] && anexarSlot(idx, e.target.files[0])} />
             </label>
           </div>
         ))}
@@ -3863,14 +3884,15 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
             ) : formaSelecionada ? (
               <>
                 <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={valorUnico} onChange={e => setValorUnico(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
-                <label className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer">
-                  <Camera size={12} /> Anexar comprovante
-                  <input type="file" accept="image/*,application/pdf" className="hidden" onChange={e => {
+                <label className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md ${enviandoAnexo ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer'}`}>
+                  {enviandoAnexo ? <Loader2 size={12} className="animate-spin" /> : <Camera size={12} />} {enviandoAnexo ? 'Enviando comprovante...' : 'Anexar comprovante'}
+                  <input type="file" accept="image/*,application/pdf" className="hidden" disabled={enviandoAnexo} onChange={async e => {
                     if (!e.target.files[0]) return;
                     const valor = parseValorBR(valorUnico);
                     if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago antes de anexar'); return; }
                     if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
-                    onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor);
+                    setEnviandoAnexo(true);
+                    try { await onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor); } finally { setEnviandoAnexo(false); }
                     resetar();
                   }} />
                 </label>
@@ -4171,16 +4193,21 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
   const datalistId = `series-${etapa}-${item.itemId}`;
   const rotulo = etapa === 'saida' ? 'saída da empresa' : 'entrega ao cliente';
 
+  const [enviandoFotos, setEnviandoFotos] = useState(false);
+
   async function handleFiles(e) {
     const files = Array.from(e.target.files || []).slice(0, 4 - fotos.length);
     if (files.length === 0) return;
     const input = e.target;
+    setEnviandoFotos(true);
     try {
       const novas = await Promise.all(files.map(f => fotoParaStorage(f, 'expedicoes')));
       setFotos(f => [...f, ...novas]);
     } catch (err) {
       console.error(err);
       notify('⚠️ Não foi possível enviar a(s) foto(s). Verifique a conexão e tente de novo.');
+    } finally {
+      setEnviandoFotos(false);
     }
     input.value = '';
   }
@@ -4234,7 +4261,8 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 
       <div>
         <label className="text-xs text-slate-500 flex items-center gap-1"><Camera size={12} /> Fotos da {rotulo} (etiqueta de série, produto, canhoto etc.)</label>
-        <input type="file" accept="image/*" capture="environment" multiple onChange={handleFiles} disabled={fotos.length >= 4} className="text-xs mt-1" />
+        <input type="file" accept="image/*" capture="environment" multiple onChange={handleFiles} disabled={fotos.length >= 4 || enviandoFotos} className="text-xs mt-1" />
+        {enviandoFotos && <p className="text-xs text-amber-600 flex items-center gap-1 mt-1"><Loader2 size={12} className="animate-spin" /> Enviando foto(s)...</p>}
         {fotos.length > 0 && (
           <div className="flex gap-1.5 mt-2 flex-wrap">
             {fotos.map((f, i) => (
@@ -4249,7 +4277,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
       </div>
 
       <div className="flex gap-2">
-        <button onClick={confirmar} disabled={enviando} className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white text-xs px-3 py-2 rounded-md disabled:opacity-50">
+        <button onClick={confirmar} disabled={enviando || enviandoFotos} className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white text-xs px-3 py-2 rounded-md disabled:opacity-50">
           <CheckCircle2 size={13} /> Confirmar {rotulo}
         </button>
         <button onClick={onCancel} className="text-xs text-slate-500 px-3 py-2">Cancelar</button>
@@ -4908,10 +4936,13 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     setDescricao(''); setBeneficiario(''); setValor(''); setComprovante(null); setShowForm(false);
   }
 
+  const [enviandoComprovante, setEnviandoComprovante] = useState(false);
+
   async function handleComprovante(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     const input = e.target;
+    setEnviandoComprovante(true);
     try {
       const isImage = file.type.startsWith('image/');
       const dataUrl = isImage ? await fotoParaStorage(file, 'pagamentos') : await arquivoParaStorage(file, 'pagamentos');
@@ -4920,6 +4951,8 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
       console.error(err);
       notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
       input.value = '';
+    } finally {
+      setEnviandoComprovante(false);
     }
   }
 
@@ -5016,7 +5049,8 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
           <div>
             <label className="inline-flex items-center gap-1.5 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md cursor-pointer">
               <Camera size={12} /> {comprovante ? 'Trocar comprovante' : 'Anexar comprovante (opcional)'}
-              <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handleComprovante} />
+              <input type="file" accept="image/*,application/pdf" className="hidden" onChange={handleComprovante} disabled={enviandoComprovante} />
+              {enviandoComprovante && <span className="text-xs text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Enviando...</span>}
             </label>
             {comprovante && <span className="text-xs text-slate-500 ml-2">{comprovante.nome}</span>}
           </div>
