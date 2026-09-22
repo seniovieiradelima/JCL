@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
 import { loadCollection, saveCollectionDelta, saveCollectionFull, loadConfig, saveConfig, migrarDadosAntigosSeNecessario } from './lib/storage';
 import { supabase } from './lib/supabaseClient';
@@ -622,6 +622,53 @@ function custoEstimadoPendenciasMapa(v, mapa) {
   return total;
 }
 
+// ---- Indicadores financeiros do momento (os 4 componentes do total imobilizado) ----
+// UMA função para os dois usos: o painel Financeiro (valores da tela) e a fotografia
+// diária gravada na coleção 'indicadores' (histórico do gráfico). Se a regra de cálculo
+// mudar, muda para os dois ao mesmo tempo — tela e gráfico nunca divergem.
+function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, ajustesReposicao, mapaCustoUnit }) {
+  const ativas = (vendas || []).filter(v => !v.anulado);
+  const pedidosValidos = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado);
+  const mapa = mapaCustoUnit || mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos);
+
+  const totalAjustes = (ajustesReposicao || []).filter(a => !a.anulado).reduce((acc, a) => acc + a.valor, 0);
+  const cmvAcumulado = ativas.reduce((acc, v) => acc + v.totalCusto + custoEstimadoPendenciasMapa(v, mapa), 0);
+  const pedidosAcumulado = pedidosValidos.reduce((acc, p) => acc + p.valorTotal, 0);
+  const saldoReposicao = cmvAcumulado - pedidosAcumulado + totalAjustes;
+
+  let valorEstoqueDisponivel = 0;
+  for (const item of (estoque || [])) {
+    const custoRef = item.custoReferencia || 0;
+    if (item.serializado) {
+      valorEstoqueDisponivel += (item.unidades || []).filter(u => u.status === 'Disponível').reduce((acc, u) => acc + (u.custoCompra > 0 ? u.custoCompra : custoRef), 0);
+    } else {
+      valorEstoqueDisponivel += (item.lotes || []).reduce((acc, l) => acc + l.quantidadeDisponivel * (l.custoUnitario > 0 ? l.custoUnitario : custoRef), 0);
+    }
+  }
+
+  let valorEstoqueAguardando = 0;
+  const recebidoAg = mapaRecebidoPorItem(recebimentos);
+  for (const p of pedidosValidos) {
+    for (const it of p.itens) {
+      const recebido = recebidoAg.get(`${p.id}|${it.id}`) || 0;
+      const pendente = it.quantidade - recebido;
+      if (pendente > 0) valorEstoqueAguardando += pendente * it.custoUnitario;
+    }
+  }
+
+  // A receber = o que falta comprovar de cada venda ativa (pagamento parcial conta a parte que falta).
+  const valoresAReceber = ativas.reduce((acc, v) => {
+    const comprovado = (v.comprovantes || []).reduce((a, c) => a + (c.valor || 0), 0);
+    return acc + Math.max(0, v.totalVenda - comprovado);
+  }, 0);
+
+  return {
+    valorEstoqueDisponivel, valorEstoqueAguardando, cmvAcumulado, pedidosAcumulado, totalAjustes,
+    saldoReposicao, valoresAReceber,
+    totalImobilizado: valorEstoqueDisponivel + valorEstoqueAguardando + saldoReposicao + valoresAReceber,
+  };
+}
+
 // Quantidade de um produto já comprometida em pré-vendas ativas (pendências de entrega).
 // Orçamento NÃO reserva; venda com pendência reserva.
 function qtdReservadaPreVenda(vendas, produtoId) {
@@ -806,6 +853,7 @@ function AppInner() {
   const [ajustesReposicao, setAjustesReposicao] = useState([]);
   const [balancos, setBalancos] = useState([]);
   const [conferencias, setConferencias] = useState([]);
+  const [indicadores, setIndicadores] = useState([]);
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -835,7 +883,7 @@ function AppInner() {
     const dados = {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
-      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias,
+      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -880,6 +928,7 @@ function AppInner() {
         ['ajustes de reposição', () => persistAjustesReposicao(dados.ajustesReposicao || [])],
         ['balanços', () => persistBalancos(dados.balancos || [])],
         ['conferências', () => persistConferencias(dados.conferencias || [])],
+        ['indicadores', () => persistIndicadores(dados.indicadores || [])],
       ];
       for (const [nome, gravar] of etapas) {
         if (!(await gravar())) {
@@ -906,7 +955,7 @@ function AppInner() {
     (async () => {
       try {
       await migrarDadosAntigosSeNecessario();
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind] = await Promise.all([
         loadCollection('estoque', []),
         loadCollection('clientes', []),
         loadCollection('fornecedores', []),
@@ -923,6 +972,7 @@ function AppInner() {
         loadCollection('ajustesReposicao', []),
         loadCollection('balancos', []),
         loadCollection('conferencias', []),
+        loadCollection('indicadores', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1015,6 +1065,7 @@ function AppInner() {
       setAjustesReposicao(aj);
       setBalancos(bl);
       setConferencias(cf);
+      setIndicadores(ind);
       setFormasRecebimento(formasFinal);
       setLoading(false);
       } catch (err) {
@@ -1056,6 +1107,44 @@ function AppInner() {
     return () => { cancelado = true; clearTimeout(temporizador); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, erroCarregamento]);
+
+  // Fotografia diária dos indicadores: um registro por dia na coleção 'indicadores' — é dela
+  // que o gráfico de histórico do Financeiro se alimenta. Se os números mudarem ao longo do
+  // dia, o registro do dia é atualizado (vale o último retrato). Conflito com outra sessão
+  // gravando ao mesmo tempo é ignorado em silêncio: a foto da outra sessão já serve.
+  useEffect(() => {
+    if (loading || erroCarregamento) return;
+    const temporizador = setTimeout(async () => {
+      try {
+        const agora = new Date();
+        const idDia = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getDate()).padStart(2, '0')}`;
+        const ind = calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, ajustesReposicao });
+        const arred = (v) => Math.round(v * 100) / 100;
+        const registro = {
+          id: idDia,
+          valorEstoqueDisponivel: arred(ind.valorEstoqueDisponivel),
+          valorEstoqueAguardando: arred(ind.valorEstoqueAguardando),
+          saldoReposicao: arred(ind.saldoReposicao),
+          valoresAReceber: arred(ind.valoresAReceber),
+          totalImobilizado: arred(ind.totalImobilizado),
+          gravadoEm: agora.toISOString(),
+          autor: autorAtual,
+        };
+        const existente = indicadores.find(i => i.id === idDia);
+        if (existente &&
+          existente.totalImobilizado === registro.totalImobilizado &&
+          existente.valorEstoqueDisponivel === registro.valorEstoqueDisponivel &&
+          existente.valorEstoqueAguardando === registro.valorEstoqueAguardando &&
+          existente.saldoReposicao === registro.saldoReposicao &&
+          existente.valoresAReceber === registro.valoresAReceber) return;
+        const proximos = existente ? indicadores.map(i => (i.id === idDia ? registro : i)) : [...indicadores, registro];
+        const r = await saveCollectionDelta('indicadores', indicadores, proximos);
+        if (r.ok) setIndicadores(proximos);
+      } catch (e) { console.error('Fotografia diária dos indicadores adiada', e); }
+    }, 12000);
+    return () => clearTimeout(temporizador);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, erroCarregamento, estoque, pedidosCompra, recebimentos, vendas, ajustesReposicao, indicadores]);
 
   // Avisos empilham (não se atropelam), duram proporcional ao tamanho do texto, e
   // mensagens com ⚠️ ganham cara de alerta e SÓ SAEM com clique — erro não pode sumir
@@ -1105,6 +1194,7 @@ function AppInner() {
   async function persistAjustesReposicao(next) { return persist('ajustesReposicao', setAjustesReposicao, next, ajustesReposicao); }
   async function persistBalancos(next) { return persist('balancos', setBalancos, next, balancos); }
   async function persistConferencias(next) { return persist('conferencias', setConferencias, next, conferencias); }
+  async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
 
   if (loading) {
     return (
@@ -1280,7 +1370,7 @@ function AppInner() {
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toasts.length > 0 && (
@@ -5178,7 +5268,173 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
   );
 }
 
-function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+// ---- Gráfico do histórico do total imobilizado ----
+// Lê a coleção 'indicadores' (uma fotografia por dia, gravada automaticamente quando o
+// sistema é usado). Padrão: últimos 30 dias; período selecionável, inclusive datas livres.
+function GraficoImobilizado({ indicadores }) {
+  const [faixa, setFaixa] = useState('30');
+  const [deDia, setDeDia] = useState('');
+  const [ateDia, setAteDia] = useState('');
+  const [foco, setFoco] = useState(null);
+  const areaRef = useRef(null);
+
+  const historico = useMemo(() =>
+    (indicadores || []).filter(i => i && i.id).slice().sort((a, b) => a.id.localeCompare(b.id)),
+  [indicadores]);
+
+  const pontos = useMemo(() => {
+    if (faixa === 'livre') return historico.filter(i => (!deDia || i.id >= deDia) && (!ateDia || i.id <= ateDia));
+    if (faixa === 'tudo') return historico;
+    const limite = new Date();
+    limite.setDate(limite.getDate() - parseInt(faixa, 10));
+    const corte = `${limite.getFullYear()}-${String(limite.getMonth() + 1).padStart(2, '0')}-${String(limite.getDate()).padStart(2, '0')}`;
+    return historico.filter(i => i.id >= corte);
+  }, [historico, faixa, deDia, ateDia]);
+
+  // Geometria fixa do desenho; o SVG estica na largura disponível
+  const L = 720, A = 240, mEsq = 64, mDir = 16, mTopo = 14, mBaixo = 26;
+
+  const desenho = useMemo(() => {
+    if (pontos.length === 0) return null;
+    const dias = pontos.map(p => new Date(p.id + 'T12:00:00').getTime());
+    const t0 = dias[0], t1 = dias[dias.length - 1];
+    const valores = pontos.map(p => p.totalImobilizado || 0);
+    let vMin = Math.min(...valores), vMax = Math.max(...valores);
+    if (vMin === vMax) { const folga = Math.max(Math.abs(vMin) * 0.05, 100); vMin -= folga; vMax += folga; }
+    const respiro = (vMax - vMin) * 0.08;
+    vMin -= respiro; vMax += respiro;
+    const x = (t) => (t1 === t0 ? mEsq + (L - mEsq - mDir) / 2 : mEsq + ((t - t0) / (t1 - t0)) * (L - mEsq - mDir));
+    const y = (v) => mTopo + (1 - (v - vMin) / (vMax - vMin)) * (A - mTopo - mBaixo);
+    const xy = pontos.map((p, i) => ({ x: x(dias[i]), y: y(valores[i]), p }));
+    // Linhas de grade em valores redondos (1/2/5 × potência de 10)
+    const bruto = (vMax - vMin) / 4;
+    const pot = Math.pow(10, Math.floor(Math.log10(bruto)));
+    const passo = [1, 2, 5, 10].map(m => m * pot).find(v => v >= bruto) || bruto;
+    const ticks = [];
+    for (let v = Math.ceil(vMin / passo) * passo; v <= vMax; v += passo) ticks.push(v);
+    return { xy, ticks, y };
+  }, [pontos]);
+
+  const fmtDia = (id) => `${id.slice(8, 10)}/${id.slice(5, 7)}`;
+  const fmtDiaLongo = (id) => `${id.slice(8, 10)}/${id.slice(5, 7)}/${id.slice(0, 4)}`;
+  const fmtCompacto = (v) => new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 }).format(v);
+
+  function aoMoverPonteiro(e) {
+    if (!desenho) return;
+    const caixa = areaRef.current.getBoundingClientRect();
+    const xView = ((e.clientX - caixa.left) / caixa.width) * L;
+    let melhor = 0;
+    for (let i = 1; i < desenho.xy.length; i++) {
+      if (Math.abs(desenho.xy[i].x - xView) < Math.abs(desenho.xy[melhor].x - xView)) melhor = i;
+    }
+    setFoco(melhor);
+  }
+
+  const focado = foco != null && desenho ? desenho.xy[Math.min(foco, desenho.xy.length - 1)] : null;
+  const ultimo = desenho ? desenho.xy[desenho.xy.length - 1] : null;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
+      <h3 className="text-sm font-medium mb-1">Histórico do total imobilizado</h3>
+      <p className="text-[11px] text-slate-400 mb-3">Uma fotografia por dia, tirada automaticamente quando o sistema é usado.</p>
+
+      <div className="flex gap-2 mb-3 flex-wrap">
+        {[['30', '30 dias'], ['90', '90 dias'], ['365', '12 meses'], ['tudo', 'Tudo'], ['livre', 'Período livre']].map(([v, l]) => (
+          <button key={v} onClick={() => { setFaixa(v); setFoco(null); }} className={`text-xs px-3 py-1.5 rounded-full border ${faixa === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+        ))}
+      </div>
+      {faixa === 'livre' && (
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <label className="text-xs text-slate-500">De</label>
+          <input type="date" value={deDia} onChange={e => { setDeDia(e.target.value); setFoco(null); }} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          <label className="text-xs text-slate-500">Até</label>
+          <input type="date" value={ateDia} onChange={e => { setAteDia(e.target.value); setFoco(null); }} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+        </div>
+      )}
+
+      {!desenho ? (
+        <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-md p-3">
+          {historico.length === 0
+            ? 'O histórico começa a ser gravado hoje: cada dia em que o sistema for aberto ganha uma fotografia do total imobilizado. Em alguns dias a curva aparece aqui.'
+            : 'Nenhuma fotografia no período escolhido.'}
+        </p>
+      ) : (
+        <svg ref={areaRef} viewBox={`0 0 ${L} ${A}`} className="w-full select-none" role="img" aria-label="Gráfico do total imobilizado por dia"
+          onPointerMove={aoMoverPonteiro} onPointerLeave={() => setFoco(null)}>
+          {desenho.ticks.map(v => (
+            <g key={v}>
+              <line x1={mEsq} x2={L - mDir} y1={desenho.y(v)} y2={desenho.y(v)} stroke="#e1e0d9" strokeWidth="1" />
+              <text x={mEsq - 8} y={desenho.y(v) + 3.5} textAnchor="end" fontSize="10" fill="#898781">{fmtCompacto(v)}</text>
+            </g>
+          ))}
+          <text x={desenho.xy[0].x} y={A - 8} textAnchor={desenho.xy.length === 1 ? 'middle' : 'start'} fontSize="10" fill="#898781">{fmtDia(desenho.xy[0].p.id)}</text>
+          {desenho.xy.length > 1 && (
+            <text x={ultimo.x} y={A - 8} textAnchor="end" fontSize="10" fill="#898781">{fmtDia(ultimo.p.id)}</text>
+          )}
+          {desenho.xy.length > 1 && (
+            <polygon points={`${desenho.xy.map(pt => `${pt.x},${pt.y}`).join(' ')} ${ultimo.x},${A - mBaixo} ${desenho.xy[0].x},${A - mBaixo}`} fill="#2a78d6" opacity="0.1" />
+          )}
+          {desenho.xy.length > 1 && (
+            <polyline points={desenho.xy.map(pt => `${pt.x},${pt.y}`).join(' ')} fill="none" stroke="#2a78d6" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+          )}
+          <circle cx={ultimo.x} cy={ultimo.y} r="4.5" fill="#2a78d6" stroke="#ffffff" strokeWidth="2" />
+          {!focado && (
+            <text x={Math.min(ultimo.x, L - mDir)} y={Math.max(ultimo.y - 10, 12)} textAnchor="end" fontSize="11" fontWeight="600" fill="#0b0b0b">{currency(ultimo.p.totalImobilizado || 0)}</text>
+          )}
+          {focado && (
+            <g>
+              <line x1={focado.x} x2={focado.x} y1={mTopo} y2={A - mBaixo} stroke="#c3c2b7" strokeWidth="1" />
+              <circle cx={focado.x} cy={focado.y} r="4.5" fill="#2a78d6" stroke="#ffffff" strokeWidth="2" />
+              <g transform={`translate(${focado.x > L - 200 ? focado.x - 182 : focado.x + 10}, ${mTopo + 4})`}>
+                <rect width="172" height="42" rx="6" fill="#ffffff" stroke="#e1e0d9" />
+                <text x="10" y="17" fontSize="10" fill="#52514e">{fmtDiaLongo(focado.p.id)}</text>
+                <text x="10" y="33" fontSize="12" fontWeight="600" fill="#0b0b0b">{currency(focado.p.totalImobilizado || 0)}</text>
+              </g>
+            </g>
+          )}
+        </svg>
+      )}
+
+      {historico.length > 0 && historico.length < 30 && (
+        <p className="text-[11px] text-slate-400 mt-2">Histórico gravado desde {fmtDiaLongo(historico[0].id)} — a curva se completa a cada dia de uso.</p>
+      )}
+
+      {pontos.length > 0 && (
+        <details className="mt-3">
+          <summary className="text-xs text-slate-500 cursor-pointer select-none">Ver tabela de valores</summary>
+          <div className="mt-2 max-h-64 overflow-auto">
+            <table className="w-full text-xs tabular-nums">
+              <thead>
+                <tr className="text-left text-slate-400">
+                  <th className="py-1 pr-2 font-normal">Dia</th>
+                  <th className="py-1 pr-2 font-normal text-right">Estoque</th>
+                  <th className="py-1 pr-2 font-normal text-right">A caminho</th>
+                  <th className="py-1 pr-2 font-normal text-right">Reposição</th>
+                  <th className="py-1 pr-2 font-normal text-right">A receber</th>
+                  <th className="py-1 font-normal text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pontos.slice().reverse().map(p => (
+                  <tr key={p.id} className="border-t border-slate-100">
+                    <td className="py-1 pr-2 text-slate-600">{fmtDiaLongo(p.id)}</td>
+                    <td className="py-1 pr-2 text-right text-slate-600">{currency(p.valorEstoqueDisponivel || 0)}</td>
+                    <td className="py-1 pr-2 text-right text-slate-600">{currency(p.valorEstoqueAguardando || 0)}</td>
+                    <td className="py-1 pr-2 text-right text-slate-600">{currency(p.saldoReposicao || 0)}</td>
+                    <td className="py-1 pr-2 text-right text-slate-600">{currency(p.valoresAReceber || 0)}</td>
+                    <td className="py-1 text-right font-medium">{currency(p.totalImobilizado || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
   // Custo estimado das pendências por venda: calculado UMA vez (a auditoria achou a mesma
   // conta cara refeita 5 vezes por render, uma delas por linha da lista).
   const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
@@ -5329,48 +5585,15 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
     return { totalVenda, totalCusto, margemContribuicao: totalVenda - totalCusto };
   }, [vendasFiltradas, estimadoPorVenda]);
 
-  // Saldo de reposição: acumulado desde sempre, independente do filtro de período.
-  // Cresce com o custo (CMV) de cada venda e é abatido pelo valor de cada pedido de compra realizado.
-  const saldoReposicao = useMemo(() => {
-    const cmvAcumulado = vendas.reduce((acc, v) => acc + v.totalCusto + estimadoDe(v), 0);
-    const pedidosAcumulado = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado).reduce((acc, p) => acc + p.valorTotal, 0);
-    return { cmvAcumulado, pedidosAcumulado, saldo: cmvAcumulado - pedidosAcumulado + totalAjustes };
-  }, [vendas, pedidosCompra, totalAjustes, estimadoPorVenda]);
-
-  // Balanço da distribuidora: retrato do momento atual (não filtra por período)
-  const balanco = useMemo(() => {
-    let valorEstoqueDisponivel = 0;
-    for (const item of estoque) {
-      const custoRef = item.custoReferencia || 0;
-      if (item.serializado) {
-        valorEstoqueDisponivel += (item.unidades || []).filter(u => u.status === 'Disponível').reduce((acc, u) => acc + (u.custoCompra > 0 ? u.custoCompra : custoRef), 0);
-      } else {
-        valorEstoqueDisponivel += (item.lotes || []).reduce((acc, l) => acc + l.quantidadeDisponivel * (l.custoUnitario > 0 ? l.custoUnitario : custoRef), 0);
-      }
-    }
-
-    let valorEstoqueAguardando = 0;
-    const recebidoAg = mapaRecebidoPorItem(recebimentos);
-    for (const p of (pedidosCompra || [])) {
-      if (p.cancelado || p.anulado) continue;
-      for (const it of p.itens) {
-        const recebido = recebidoAg.get(`${p.id}|${it.id}`) || 0;
-        const pendente = it.quantidade - recebido;
-        if (pendente > 0) valorEstoqueAguardando += pendente * it.custoUnitario;
-      }
-    }
-
-    // A receber = o que falta comprovar de cada venda ativa. Pagamento PARCIAL conta
-    // a parte que falta — antes, um único comprovante tirava a venda inteira do indicador.
-    const valoresAReceber = vendas.reduce((acc, v) => {
-      const comprovado = (v.comprovantes || []).reduce((a, c) => a + (c.valor || 0), 0);
-      return acc + Math.max(0, v.totalVenda - comprovado);
-    }, 0);
-
-    return { valorEstoqueDisponivel, valorEstoqueAguardando, valoresAReceber };
-  }, [estoque, pedidosCompra, recebimentos, vendas]);
-
-  const totalImobilizado = balanco.valorEstoqueDisponivel + balanco.valorEstoqueAguardando + saldoReposicao.saldo + balanco.valoresAReceber;
+  // Saldo de reposição e balanço da distribuidora: a MESMA conta da fotografia diária
+  // (calcularIndicadores) — o painel e o gráfico de histórico nunca divergem.
+  const indicadoresAgora = useMemo(
+    () => calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas: vendasTodas, ajustesReposicao, mapaCustoUnit: custoUnitEstimadoMapa }),
+    [estoque, pedidosCompra, recebimentos, vendasTodas, ajustesReposicao, custoUnitEstimadoMapa]
+  );
+  const saldoReposicao = { cmvAcumulado: indicadoresAgora.cmvAcumulado, pedidosAcumulado: indicadoresAgora.pedidosAcumulado, saldo: indicadoresAgora.saldoReposicao };
+  const balanco = indicadoresAgora;
+  const totalImobilizado = indicadoresAgora.totalImobilizado;
 
   const custoPorCategoria = useMemo(() => {
     const map = {};
@@ -5450,6 +5673,8 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, estoque, setEstoque,
           </div>
         </div>
       </div>
+
+      <GraficoImobilizado indicadores={indicadores} />
 
       <div className="flex gap-2 mb-2 flex-wrap">
         {[['mes', 'Este mês'], ['mesPassado', 'Mês passado'], ['30dias', 'Últimos 30 dias'], ['tudo', 'Tudo'], ['personalizado', 'Período personalizado']].map(([v, l]) => (
