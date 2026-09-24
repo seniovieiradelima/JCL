@@ -1296,7 +1296,7 @@ function AppInner() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5">
-        {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
+        {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} estoque={estoque} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'transferencias' && (
           <TransferenciasModule
@@ -1794,7 +1794,164 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
 
 /* ---------------- ESTOQUE (catálogo + visão de saldo/custo) ---------------- */
 
-function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, notify }) {
+// ---- Extrato de movimentações de um produto ----
+// O estoque guarda o ESTADO atual (lotes/unidades); o extrato reconstrói a HISTÓRIA a partir
+// dos registros que já existem: recebimentos (entrada), vendas (saída, com o cliente),
+// estornos de venda anulada, transferências entre depósitos e ajustes de balanço. Lote ou
+// unidade sem recebimento vinculado é entrada direta (implantação/estoque inicial).
+function movimentosDoProduto(item, { vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos }) {
+  const rows = [];
+  const nomeDep = (id) => (depositos || []).find(d => d.id === id)?.nome || '';
+
+  const recs = (recebimentos || []).filter(r => r.produtoId === item.id);
+  const lotesRecebidos = new Set(recs.map(r => r.loteId).filter(Boolean));
+  const unidadesRecebidas = new Set(recs.map(r => r.unidadeId).filter(Boolean));
+  for (const r of recs) {
+    const pedido = (pedidosCompra || []).find(p => p.id === r.pedidoId);
+    rows.push({
+      data: r.data, tipo: 'entrada', qtd: r.quantidade || 1,
+      titulo: 'Entrada — recebimento de pedido',
+      detalhe: [pedido ? `Pedido ${pedido.numeroPedidoFornecedor}` : '', pedido?.fornecedorNome || '', r.serial ? `SN ${r.serial}` : ''].filter(Boolean).join(' · '),
+      deposito: r.depositoNome || nomeDep(r.depositoId),
+    });
+  }
+
+  // Lotes criados por transferência não são entrada nova (a entrada é a do lote de origem)
+  const lotesDeTransferencia = new Set((transferencias || []).flatMap(t => t.loteDestinoIds || []));
+  for (const l of (item.lotes || [])) {
+    if (lotesRecebidos.has(l.id) || lotesDeTransferencia.has(l.id)) continue;
+    const sobraBalanco = l.notaFiscal === 'AJUSTE DE BALANÇO';
+    rows.push({
+      data: l.dataEntrada, tipo: 'entrada', qtd: l.quantidade,
+      titulo: sobraBalanco ? 'Entrada — sobra apurada em balanço' : 'Entrada — lançamento direto (implantação/estoque inicial)',
+      detalhe: [!sobraBalanco && l.notaFiscal ? `NF ${l.notaFiscal}` : '', l.fornecedor || ''].filter(Boolean).join(' · '),
+      deposito: nomeDep(l.depositoId),
+    });
+  }
+  for (const u of (item.unidades || [])) {
+    if (unidadesRecebidas.has(u.id)) continue;
+    rows.push({
+      data: u.dataEntrada, tipo: 'entrada', qtd: 1,
+      titulo: 'Entrada — lançamento direto (implantação/estoque inicial)',
+      detalhe: [u.serial ? `SN ${u.serial}` : '', u.notaFiscal ? `NF ${u.notaFiscal}` : '', u.fornecedor || ''].filter(Boolean).join(' · '),
+      deposito: nomeDep(u.depositoId),
+    });
+  }
+
+  for (const v of (vendas || [])) {
+    for (const it of (v.itens || [])) {
+      if (it.itemId !== item.id) continue;
+      const pendente = it.quantidadePendente || 0;
+      const saiu = it.quantidade - pendente;
+      if (saiu > 0) {
+        rows.push({
+          data: v.data, tipo: 'saida', qtd: saiu,
+          titulo: `Saída — venda para ${v.clienteNome}${v.anulado ? ' (venda anulada depois)' : ''}`,
+          detalhe: [it.serial ? `SN ${it.serial}` : '', pendente > 0 ? `${pendente} un. ainda aguardando chegada (não saiu do estoque)` : ''].filter(Boolean).join(' · '),
+          deposito: it.depositoNome || '',
+        });
+      } else if (pendente > 0 && !v.anulado) {
+        rows.push({
+          data: v.data, tipo: 'reserva', qtd: pendente,
+          titulo: `Reserva — pré-venda para ${v.clienteNome}`,
+          detalhe: 'Aguardando chegada de mercadoria — ainda não saiu do estoque',
+          deposito: it.depositoNome || '',
+        });
+      }
+      if (v.anulado && saiu > 0) {
+        rows.push({
+          data: v.anuladoEm || v.data, tipo: 'estorno', qtd: saiu,
+          titulo: `Estorno — venda de ${v.clienteNome} anulada`,
+          detalhe: 'Mercadoria devolvida ao estoque (unidade já usada em outra venda não volta)',
+          deposito: it.depositoNome || '',
+        });
+      }
+    }
+  }
+
+  for (const t of (transferencias || [])) {
+    if (t.produtoId !== item.id) continue;
+    rows.push({
+      data: t.data, tipo: 'transf', qtd: t.quantidade || 1,
+      titulo: `Transferência — ${t.origemNome} → ${t.destinoNome}${t.anulado ? ' (anulada)' : ''}`,
+      detalhe: t.serial ? `SN ${t.serial}` : '',
+      deposito: '',
+    });
+  }
+
+  // Ajustes NEGATIVOS de balanço (falta/extravio). Sobra já aparece como entrada pelo próprio lote.
+  for (const b of (balancos || [])) {
+    if (b.status !== 'Concluído') continue;
+    for (const it of (b.itens || [])) {
+      if (it.produtoId !== item.id) continue;
+      const diff = it.quantidadeContada - it.quantidadeSistema;
+      if (diff >= 0) continue;
+      rows.push({
+        data: b.concluidoEm || b.data, tipo: 'ajuste', qtd: -diff,
+        titulo: it.serializado ? 'Saída — extravio apurado em balanço' : 'Saída — falta apurada em balanço',
+        detalhe: (it.seriaisNaoLocalizados || []).map(x => `SN ${x.serial}`).join(', '),
+        deposito: b.depositoNome || '',
+      });
+    }
+  }
+
+  return rows.sort((a, b) => new Date(b.data || 0) - new Date(a.data || 0));
+}
+
+const ESTILO_MOVIMENTO = {
+  entrada: { sinal: '+', cor: 'text-emerald-700' },
+  estorno: { sinal: '+', cor: 'text-emerald-700' },
+  saida: { sinal: '−', cor: 'text-rose-600' },
+  ajuste: { sinal: '−', cor: 'text-rose-600' },
+  reserva: { sinal: '', cor: 'text-amber-600' },
+  transf: { sinal: '', cor: 'text-slate-500' },
+};
+
+function ExtratoMovimentacoes({ item, vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos }) {
+  const movimentos = useMemo(
+    () => movimentosDoProduto(item, { vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos }),
+    [item, vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos]
+  );
+  return (
+    <div className="mb-3">
+      <p className="text-slate-400 text-xs mb-1">Movimentações ({movimentos.length})</p>
+      {movimentos.length === 0 ? (
+        <p className="text-xs text-slate-400 py-1">Nenhuma movimentação registrada ainda.</p>
+      ) : (
+        <div className="max-h-72 overflow-auto bg-white border border-slate-200 rounded-md">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-slate-400 text-left border-b border-slate-100">
+                <th className="py-1.5 px-2 font-normal whitespace-nowrap">Data</th>
+                <th className="py-1.5 px-2 font-normal">Movimentação</th>
+                <th className="py-1.5 px-2 font-normal text-right">Qtd</th>
+                <th className="py-1.5 px-2 font-normal">Depósito</th>
+              </tr>
+            </thead>
+            <tbody>
+              {movimentos.map((m, i) => {
+                const estilo = ESTILO_MOVIMENTO[m.tipo] || ESTILO_MOVIMENTO.transf;
+                return (
+                  <tr key={i} className="border-t border-slate-100 align-top">
+                    <td className="py-1.5 px-2 whitespace-nowrap text-slate-500">{formatDate(m.data)}</td>
+                    <td className="py-1.5 px-2">
+                      <span className="text-slate-700">{m.titulo}</span>
+                      {m.detalhe && <span className="block text-[11px] text-slate-400">{m.detalhe}</span>}
+                    </td>
+                    <td className={`py-1.5 px-2 text-right font-medium whitespace-nowrap ${estilo.cor}`}>{estilo.sinal}{m.qtd}</td>
+                    <td className="py-1.5 px-2 text-slate-500">{m.deposito || '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, pedidosCompra, transferencias, balancos, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [filtroCategoria, setFiltroCategoria] = useState('Todos');
@@ -2069,6 +2226,8 @@ function EstoqueModule({ estoque, setEstoque, depositos, askConfirm, askSenha, n
                       </div>
                     </div>
                   )}
+                  <ExtratoMovimentacoes item={item} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} depositos={depositos} />
+                  <p className="text-slate-400 text-xs mb-1">Situação atual em estoque</p>
                   {item.serializado ? (
                     <table className="w-full text-xs">
                       <thead><tr className="text-slate-400 text-left"><th className="py-1 font-normal">Nº série</th><th className="py-1 font-normal">Status</th><th className="py-1 font-normal">Depósito</th><th className="py-1 font-normal">Custo compra</th><th className="py-1 font-normal">Entrada</th></tr></thead>
