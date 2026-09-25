@@ -5785,6 +5785,38 @@ function baixarCustosInstalacao(p) {
   canvas.toBlob(blob => baixarBlob(blob, `${nomeBase}.jpg`), 'image/jpeg', 0.92);
 }
 
+// Arquivo que o app Termo de Entrega importa (botão "Importar proposta do SGM" na tela
+// Novo projeto de lá): cria o projeto já com o cliente, os equipamentos e o financeiro
+// previsto. Uso interno da equipe — leva o custo na distribuidora de propósito, porque o
+// financeiro do termo compara previsto x realizado.
+function exportarParaTermo(p) {
+  const c = p.calculos || {};
+  const dados = {
+    tipo: 'proposta-estacao-mossoro',
+    versao: 1,
+    geradoEm: new Date().toISOString(),
+    dataProposta: p.data,
+    cliente: { nome: p.clienteNome || '', contato: p.clienteContato || '' },
+    vendedor: p.autor || '',
+    kwp: c.kwp || 0,
+    placa: p.placa ? { descricao: p.placa.descricao, quantidade: p.placa.quantidade, wp: p.placa.wp } : null,
+    inversor: p.inversor ? { descricao: p.inversor.descricao, quantidade: p.inversor.quantidade, kw: p.inversor.kw } : null,
+    kits: {
+      dc: { quantidade: p.kits?.dc?.quantidade || 0 },
+      estrutura: { quantidade: p.kits?.estrutura?.quantidade || 0 },
+    },
+    adicionais: (p.adicionais || []).map(a => ({ descricao: a.descricao, quantidade: a.quantidade })),
+    financeiro: {
+      custoEquipamentosDistribuidora: c.valorEquipamentosDistribuidora ?? null,
+      vendaEquipamentos: c.valorEquipamentosCliente ?? null,
+      valorInstalacao: c.instalacao?.valor ?? null,
+      totalAVista: c.totalAVista ?? null,
+    },
+  };
+  const nomeBase = `termo-${String(p.clienteNome || 'cliente').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cliente'}`;
+  baixarBlob(new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' }), `${nomeBase}.json`);
+}
+
 function baixarProposta(p, formato) {
   const canvas = desenharProposta(p);
   const nomeBase = `proposta-${String(p.clienteNome || 'cliente').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cliente'}`;
@@ -6185,6 +6217,7 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
                   <button onClick={() => baixarProposta(p, 'pdf')} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-2.5 py-1.5 rounded-md">Baixar PDF</button>
                   <button onClick={() => baixarProposta(p, 'jpg')} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-2.5 py-1.5 rounded-md">Baixar JPG</button>
                   <button onClick={() => baixarCustosInstalacao(p)} className="text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 px-2.5 py-1.5 rounded-md">JPG interno (resumo + custos)</button>
+                  <button onClick={() => exportarParaTermo(p)} className="text-xs bg-sky-100 hover:bg-sky-200 text-sky-800 border border-sky-300 px-2.5 py-1.5 rounded-md">Exportar p/ termo de entrega</button>
                   <button onClick={() => imprimirProposta(p)} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md">Imprimir</button>
                   <button onClick={() => editarProposta(p)} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md">Editar</button>
                   <button onClick={() => apagarProposta(p)} className="text-xs text-red-500 hover:bg-red-50 px-2.5 py-1.5 rounded-md">Apagar</button>
