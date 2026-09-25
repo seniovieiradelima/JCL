@@ -6,7 +6,7 @@ import LoginScreen from './LoginScreen';
 
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
-const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao'];
+const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao', 'logomarcas'];
 const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'pagamentos', 'financeiro'];
 const PAGAMENTO_CATEGORIAS_SAIDA = [
   'Salários e encargos', 'Pró-labore / retirada de sócio', 'Aluguel', 'Energia elétrica', 'Água',
@@ -254,6 +254,29 @@ async function dataUrlParaStorage(dataUrl, pasta) {
 
 const fotoEmbutida = (s) => typeof s === 'string' && s.startsWith('data:');
 
+// ---- Logomarcas dos documentos (config 'logomarcas' no banco) ----
+// integradora: propostas da aba Integradora; distribuidora: recibos, orçamentos e
+// relatórios das abas da distribuidora. Sem imagem, vale o selo "EM" desenhado.
+let logomarcasAtual = { integradora: '', distribuidora: '' };
+function carregarImagem(url) {
+  return new Promise((resolve) => {
+    if (!url) { resolve(null); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+// Desenha a logomarca no cabeçalho do canvas; devolve true se desenhou.
+function desenharLogo(ctx, logo, x, y, alturaMax) {
+  if (!logo || !logo.width || !logo.height) return false;
+  const alt = alturaMax;
+  const larg = Math.min(230, alt * (logo.width / logo.height));
+  ctx.drawImage(logo, x, y, larg, alt);
+  return true;
+}
+
 // Migração em segundo plano: move as fotos antigas para o Storage, um punhado por sessão,
 // até não sobrar nenhuma embutida. Grava pela trava de conflito (saveCollectionDelta): se
 // outra pessoa mexer ao mesmo tempo, esta rodada é pulada em silêncio e a próxima continua.
@@ -321,7 +344,7 @@ async function migrarFotosParaStorage(ctx, foiCancelado) {
 }
 
 // Desenha um documento (orçamento/recibo) num canvas — layout genérico reutilizável
-function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, clienteLabel = 'Cliente', itens, totalLabel, totalValor, extraLinhas, observacoes }) {
+function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, clienteLabel = 'Cliente', itens, totalLabel, totalValor, extraLinhas, observacoes }, logo) {
   const largura = 900;
   const margem = 50;
   const larguraUtil = largura - margem * 2;
@@ -346,20 +369,22 @@ function desenharDocumento({ titulo, numeroLabel, numero, data, cliente, cliente
 
   let y = margem;
 
-  ctx.fillStyle = '#f59e0b';
-  ctx.fillRect(margem, y, 40, 40);
-  ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 15px Arial';
-  ctx.textAlign = 'center';
-  ctx.fillText('EM', margem + 20, y + 26);
-  ctx.textAlign = 'left';
+  if (!desenharLogo(ctx, logo, margem, y - 2, 46)) {
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(margem, y, 40, 40);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 15px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('EM', margem + 20, y + 26);
+    ctx.textAlign = 'left';
 
-  ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 18px Arial';
-  ctx.fillText('Estação Mossoró', margem + 55, y + 18);
-  ctx.font = '11px Arial';
-  ctx.fillStyle = '#64748b';
-  ctx.fillText('Sistema de Gestão · Solar & Elétrica', margem + 55, y + 34);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText('Estação Mossoró', margem + 55, y + 18);
+    ctx.font = '11px Arial';
+    ctx.fillStyle = '#64748b';
+    ctx.fillText('Sistema de Gestão · Solar & Elétrica', margem + 55, y + 34);
+  }
 
   ctx.textAlign = 'right';
   ctx.font = 'bold 16px Arial';
@@ -508,8 +533,9 @@ function baixarBlob(blob, nomeArquivo) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-function baixarDocumento(dadosDocumento, nomeBase, formato) {
-  const canvas = desenharDocumento(dadosDocumento);
+async function baixarDocumento(dadosDocumento, nomeBase, formato) {
+  const logo = await carregarImagem(logomarcasAtual.distribuidora);
+  const canvas = desenharDocumento(dadosDocumento, logo);
   if (formato === 'jpg') {
     canvas.toBlob(blob => baixarBlob(blob, `${nomeBase}.jpg`), 'image/jpeg', 0.92);
   } else {
@@ -856,6 +882,7 @@ function AppInner() {
   const [conferencias, setConferencias] = useState([]);
   const [indicadores, setIndicadores] = useState([]);
   const [propostas, setPropostas] = useState([]);
+  const [logomarcas, setLogomarcas] = useState({ integradora: '', distribuidora: '' });
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -1071,6 +1098,12 @@ function AppInner() {
       setConferencias(cf);
       setIndicadores(ind);
       setPropostas(pr);
+      const lgm = await loadConfig('logomarcas', null);
+      if (lgm) {
+        const norm = { integradora: lgm.integradora || '', distribuidora: lgm.distribuidora || '' };
+        setLogomarcas(norm);
+        logomarcasAtual = norm;
+      }
       setFormasRecebimento(formasFinal);
       setLoading(false);
       } catch (err) {
@@ -1201,6 +1234,13 @@ function AppInner() {
   async function persistConferencias(next) { return persist('conferencias', setConferencias, next, conferencias); }
   async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
   async function persistPropostas(next) { return persist('propostas', setPropostas, next, propostas); }
+  async function salvarLogomarcas(next) {
+    const ok = await saveConfig('logomarcas', next);
+    if (!ok) { notify('⚠️ Não foi possível salvar a logomarca. Verifique a conexão e tente de novo.'); return false; }
+    setLogomarcas(next);
+    logomarcasAtual = { ...next };
+    return true;
+  }
 
   if (loading) {
     return (
@@ -1270,6 +1310,7 @@ function AppInner() {
                 <SubTabButton icon={Users} label="Clientes" active={tab === 'clientes'} onClick={() => setTab('clientes')} />
                 <SubTabButton icon={HandCoins} label="Formas de recebimento" active={tab === 'formasRecebimento'} onClick={() => setTab('formasRecebimento')} />
                 <SubTabButton icon={ShieldAlert} label="Senha de aprovação" active={tab === 'senhaAprovacao'} onClick={() => setTab('senhaAprovacao')} />
+                <SubTabButton icon={Camera} label="Logomarcas" active={tab === 'logomarcas'} onClick={() => setTab('logomarcas')} />
               </nav>
             </div>
           </div>
@@ -1386,6 +1427,7 @@ function AppInner() {
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
+        {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
@@ -1810,6 +1852,62 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
 }
 
 /* ---------------- ESTOQUE (catálogo + visão de saldo/custo) ---------------- */
+
+// ---- Logomarcas dos documentos ----
+// Duas marcas, dois papéis: a da INTEGRADORA sai nas propostas de sistema instalado
+// (aba Integradora); a da DISTRIBUIDORA sai nos recibos, orçamentos e relatórios.
+// Sem imagem, os documentos usam o selo "EM — Estação Mossoró" desenhado.
+function LogomarcasModule({ logomarcas, salvar, notify }) {
+  const [enviando, setEnviando] = useState('');
+  const slots = [
+    ['integradora', 'Integradora — propostas de sistema instalado', 'Sai no PDF/JPG e na impressão das propostas da aba Integradora.'],
+    ['distribuidora', 'Distribuidora — recibos, orçamentos e relatórios', 'Sai nos documentos gerados nas abas da distribuidora (recibo de venda, orçamento, relatórios). Enquanto não houver imagem, vale o selo "EM — Estação Mossoró".'],
+  ];
+  async function trocarImagem(slot, e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!(file.type || '').startsWith('image/')) { notify('Escolha um arquivo de imagem — PNG com fundo transparente fica melhor nos documentos.'); return; }
+    setEnviando(slot);
+    try {
+      const url = await arquivoParaStorage(file, 'logos');
+      if (await salvar({ ...logomarcas, [slot]: url })) notify('Logomarca atualizada — os próximos documentos já saem com ela');
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar a imagem. Verifique a conexão e tente de novo.');
+    }
+    setEnviando('');
+  }
+  async function removerImagem(slot) {
+    if (await salvar({ ...logomarcas, [slot]: '' })) notify('Logomarca removida — os documentos voltam ao selo padrão');
+  }
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Logomarcas dos documentos</h2>
+      <p className="text-xs text-slate-400 mb-4">Envie imagens PNG (de preferência com fundo transparente). A troca vale para os documentos gerados a partir de agora — os já baixados não mudam.</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {slots.map(([slot, titulo, descricao]) => (
+          <div key={slot} className="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 className="text-sm font-medium mb-1">{titulo}</h3>
+            <p className="text-[11px] text-slate-400 mb-3">{descricao}</p>
+            <div className="h-20 bg-slate-50 border border-dashed border-slate-200 rounded-md flex items-center justify-center mb-3 overflow-hidden">
+              {logomarcas[slot]
+                ? <img src={logomarcas[slot]} alt={`Logomarca ${slot}`} className="max-h-16 max-w-full object-contain" />
+                : <span className="text-xs text-slate-400">Nenhuma imagem — os documentos usam o selo padrão</span>}
+            </div>
+            <div className="flex gap-2 items-center">
+              <label className={`text-xs px-3 py-2 rounded-md cursor-pointer ${enviando === slot ? 'bg-slate-200 text-slate-400' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}>
+                {enviando === slot ? 'Enviando...' : (logomarcas[slot] ? 'Trocar imagem' : 'Enviar imagem')}
+                <input type="file" accept="image/*" className="hidden" disabled={enviando === slot} onChange={e => trocarImagem(slot, e)} />
+              </label>
+              {logomarcas[slot] && <button onClick={() => removerImagem(slot)} className="text-xs text-red-500 hover:bg-red-50 px-2.5 py-2 rounded-md">Remover</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ---- Extrato de movimentações de um produto ----
 // O estoque guarda o ESTADO atual (lotes/unidades); o extrato reconstrói a HISTÓRIA a partir
@@ -5516,7 +5614,7 @@ function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valor
 
 // Desenha a proposta num canvas para gerar JPG/PDF e enviar ao cliente.
 // Documento voltado ao cliente: mostra sistema, economia e investimento — NUNCA custos internos.
-function desenharProposta(p) {
+function desenharProposta(p, logo) {
   const c = p.calculos || {};
   const largura = 900, margem = 50;
   const larguraUtil = largura - margem * 2;
@@ -5548,13 +5646,15 @@ function desenharProposta(p) {
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, largura, altura);
 
   let y = margem;
-  ctx.fillStyle = '#f59e0b'; ctx.fillRect(margem, y, 40, 40);
-  ctx.fillStyle = '#0f172a'; ctx.font = 'bold 15px Arial'; ctx.textAlign = 'center';
-  ctx.fillText('EM', margem + 20, y + 26);
-  ctx.textAlign = 'left';
-  ctx.font = 'bold 18px Arial'; ctx.fillText('Estação Mossoró', margem + 55, y + 18);
-  ctx.font = '11px Arial'; ctx.fillStyle = '#64748b';
-  ctx.fillText('Energia Solar · Projeto e Instalação', margem + 55, y + 34);
+  if (!desenharLogo(ctx, logo, margem, y - 4, 48)) {
+    ctx.fillStyle = '#f59e0b'; ctx.fillRect(margem, y, 40, 40);
+    ctx.fillStyle = '#0f172a'; ctx.font = 'bold 15px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('EM', margem + 20, y + 26);
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 18px Arial'; ctx.fillText('Estação Mossoró', margem + 55, y + 18);
+    ctx.font = '11px Arial'; ctx.fillStyle = '#64748b';
+    ctx.fillText('Energia Solar · Projeto e Instalação', margem + 55, y + 34);
+  }
   ctx.textAlign = 'right'; ctx.font = 'bold 16px Arial'; ctx.fillStyle = '#0f172a';
   ctx.fillText('PROPOSTA — SISTEMA SOLAR', largura - margem, y + 16);
   ctx.font = '12px Arial'; ctx.fillStyle = '#64748b';
@@ -5636,7 +5736,7 @@ function desenharProposta(p) {
 // JPG interno para o vendedor: a proposta resumida (o que o cliente vê), os custos de cada
 // item na distribuidora e a previsão de custos da instalação — a planilha inteira numa imagem.
 // NUNCA vai para o cliente — é marcado como uso interno.
-function desenharCustosInstalacao(p) {
+function desenharCustosInstalacao(p, logo) {
   const c = p.calculos || {};
   const inst = c.instalacao || {};
   const largura = 900, margem = 50;
@@ -5684,13 +5784,18 @@ function desenharCustosInstalacao(p) {
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, largura, altura);
 
   let y = margem;
-  ctx.fillStyle = '#f59e0b'; ctx.fillRect(margem, y, 40, 40);
-  ctx.fillStyle = '#0f172a'; ctx.font = 'bold 15px Arial'; ctx.textAlign = 'center';
-  ctx.fillText('EM', margem + 20, y + 26);
-  ctx.textAlign = 'left';
-  ctx.font = 'bold 18px Arial'; ctx.fillText('Estação Mossoró', margem + 55, y + 18);
-  ctx.font = 'bold 11px Arial'; ctx.fillStyle = '#b91c1c';
-  ctx.fillText('USO INTERNO — NÃO ENVIAR AO CLIENTE', margem + 55, y + 34);
+  if (desenharLogo(ctx, logo, margem, y - 4, 40)) {
+    ctx.textAlign = 'left'; ctx.font = 'bold 11px Arial'; ctx.fillStyle = '#b91c1c';
+    ctx.fillText('USO INTERNO — NÃO ENVIAR AO CLIENTE', margem, y + 52);
+  } else {
+    ctx.fillStyle = '#f59e0b'; ctx.fillRect(margem, y, 40, 40);
+    ctx.fillStyle = '#0f172a'; ctx.font = 'bold 15px Arial'; ctx.textAlign = 'center';
+    ctx.fillText('EM', margem + 20, y + 26);
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 18px Arial'; ctx.fillText('Estação Mossoró', margem + 55, y + 18);
+    ctx.font = 'bold 11px Arial'; ctx.fillStyle = '#b91c1c';
+    ctx.fillText('USO INTERNO — NÃO ENVIAR AO CLIENTE', margem + 55, y + 34);
+  }
   ctx.textAlign = 'right'; ctx.font = 'bold 16px Arial'; ctx.fillStyle = '#b45309';
   ctx.fillText('PROPOSTA — RESUMO DO VENDEDOR', largura - margem, y + 16);
   ctx.font = '12px Arial'; ctx.fillStyle = '#64748b';
@@ -5779,8 +5884,8 @@ function desenharCustosInstalacao(p) {
   return canvas;
 }
 
-function baixarCustosInstalacao(p) {
-  const canvas = desenharCustosInstalacao(p);
+async function baixarCustosInstalacao(p) {
+  const canvas = desenharCustosInstalacao(p, await carregarImagem(logomarcasAtual.integradora));
   const nomeBase = `resumo-interno-${String(p.clienteNome || 'cliente').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cliente'}`;
   canvas.toBlob(blob => baixarBlob(blob, `${nomeBase}.jpg`), 'image/jpeg', 0.92);
 }
@@ -5828,8 +5933,8 @@ function exportarParaTermo(p) {
   baixarBlob(new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' }), `${nomeBase}.json`);
 }
 
-function baixarProposta(p, formato) {
-  const canvas = desenharProposta(p);
+async function baixarProposta(p, formato) {
+  const canvas = desenharProposta(p, await carregarImagem(logomarcasAtual.integradora));
   const nomeBase = `proposta-${String(p.clienteNome || 'cliente').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cliente'}`;
   if (formato === 'jpg') {
     canvas.toBlob(blob => baixarBlob(blob, `${nomeBase}.jpg`), 'image/jpeg', 0.92);
@@ -6006,6 +6111,7 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
         tr { page-break-inside: avoid; }
         @media print { body { margin: 12mm; } }
       </style></head><body>
+      ${logomarcasAtual.integradora ? `<img src="${logomarcasAtual.integradora.replace(/"/g, '&quot;')}" style="height:52px;max-width:260px;object-fit:contain;display:block;margin-bottom:8px;">` : ''}
       <h1>Proposta — Sistema Solar Fotovoltaico</h1>
       <p class="meta">Estação Mossoró · ${formatDate(p.data)}${p.clienteNome ? ` · Cliente: <strong>${esc(p.clienteNome)}</strong>` : ''}${p.clienteContato ? ` · ${esc(p.clienteContato)}` : ''}</p>
 
