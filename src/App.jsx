@@ -17,6 +17,7 @@ const PAGAMENTO_CATEGORIAS_ENTRADA = [
   'Aporte de sócio', 'Empréstimo recebido', 'Reembolso', 'Rendimento financeiro', 'Venda de ativo', 'Outros',
 ];
 const SETOR_VENDAS_TABS = ['orcamentos', 'vendas', 'expedicao'];
+const INTEGRADORA_TABS = ['propostas'];
 
 
 function uid() {
@@ -854,6 +855,7 @@ function AppInner() {
   const [balancos, setBalancos] = useState([]);
   const [conferencias, setConferencias] = useState([]);
   const [indicadores, setIndicadores] = useState([]);
+  const [propostas, setPropostas] = useState([]);
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -883,7 +885,7 @@ function AppInner() {
     const dados = {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
-      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores,
+      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores, propostas,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -929,6 +931,7 @@ function AppInner() {
         ['balanços', () => persistBalancos(dados.balancos || [])],
         ['conferências', () => persistConferencias(dados.conferencias || [])],
         ['indicadores', () => persistIndicadores(dados.indicadores || [])],
+        ['propostas', () => persistPropostas(dados.propostas || [])],
       ];
       for (const [nome, gravar] of etapas) {
         if (!(await gravar())) {
@@ -955,7 +958,7 @@ function AppInner() {
     (async () => {
       try {
       await migrarDadosAntigosSeNecessario();
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr] = await Promise.all([
         loadCollection('estoque', []),
         loadCollection('clientes', []),
         loadCollection('fornecedores', []),
@@ -973,6 +976,7 @@ function AppInner() {
         loadCollection('balancos', []),
         loadCollection('conferencias', []),
         loadCollection('indicadores', []),
+        loadCollection('propostas', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1066,6 +1070,7 @@ function AppInner() {
       setBalancos(bl);
       setConferencias(cf);
       setIndicadores(ind);
+      setPropostas(pr);
       setFormasRecebimento(formasFinal);
       setLoading(false);
       } catch (err) {
@@ -1195,6 +1200,7 @@ function AppInner() {
   async function persistBalancos(next) { return persist('balancos', setBalancos, next, balancos); }
   async function persistConferencias(next) { return persist('conferencias', setConferencias, next, conferencias); }
   async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
+  async function persistPropostas(next) { return persist('propostas', setPropostas, next, propostas); }
 
   if (loading) {
     return (
@@ -1251,6 +1257,7 @@ function AppInner() {
             <TabButton icon={Database} label="Cadastros" active={CADASTRO_TABS.includes(tab)} onClick={() => setTab(CADASTRO_TABS.includes(tab) ? tab : 'estoque')} />
             <TabButton icon={ShoppingBag} label="Setor de Compras" active={COMPRAS_TABS.includes(tab)} onClick={() => setTab(COMPRAS_TABS.includes(tab) ? tab : 'pedidos')} />
             <TabButton icon={HandCoins} label="Setor de Vendas" active={SETOR_VENDAS_TABS.includes(tab)} onClick={() => setTab(SETOR_VENDAS_TABS.includes(tab) ? tab : 'orcamentos')} />
+            <TabButton icon={FileText} label="Integradora" active={INTEGRADORA_TABS.includes(tab)} onClick={() => setTab(INTEGRADORA_TABS.includes(tab) ? tab : 'propostas')} />
           </nav>
         </div>
         {CADASTRO_TABS.includes(tab) && (
@@ -1289,6 +1296,15 @@ function AppInner() {
                 <SubTabButton icon={ClipboardCheck} label="Orçamentos" active={tab === 'orcamentos'} onClick={() => setTab('orcamentos')} />
                 <SubTabButton icon={ShoppingCart} label="Vendas" active={tab === 'vendas'} onClick={() => setTab('vendas')} />
                 <SubTabButton icon={PackageCheck} label="Expedição" active={tab === 'expedicao'} onClick={() => setTab('expedicao')} />
+              </nav>
+            </div>
+          </div>
+        )}
+        {INTEGRADORA_TABS.includes(tab) && (
+          <div className="bg-slate-800 border-t border-slate-700">
+            <div className="max-w-6xl mx-auto px-4">
+              <nav className="flex gap-1 overflow-x-auto">
+                <SubTabButton icon={FileText} label="Propostas" active={tab === 'propostas'} onClick={() => setTab('propostas')} />
               </nav>
             </div>
           </div>
@@ -1370,6 +1386,7 @@ function AppInner() {
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
+        {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
@@ -5420,6 +5437,413 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
               <span className={`font-medium text-sm ${p.tipo === 'Entrada' ? 'text-emerald-600' : 'text-slate-700'}`}>{p.tipo === 'Entrada' ? '+' : '-'} {currency(p.valor)}</span>
               {!p.anulado && <button onClick={() => apagarPagamento(p)} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>}
             </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---- Propostas da integradora (sistema instalado para o cliente final) ----
+// Reproduz a planilha de propostas: equipamentos ao preço de venda da distribuidora (a base
+// de dados do próprio site) + margem, e instalação calculada pelas fórmulas que variam com
+// quantidade/potência de placas e inversores. Proposta é papel comercial: nada aqui mexe em
+// estoque, vendas ou financeiro.
+const PARAMS_PROPOSTA_PADRAO = {
+  margemEquipamentos: 25,  // % sobre o preço de venda da distribuidora
+  markupInstalacao: 35,    // % sobre o custo de instalação
+  fatorGeracao: 130,       // kWh gerados por kWp por mês
+  tarifaKwh: 1.15,         // R$ por kWh da concessionária
+  percEconomia: 80,        // % da geração que vira economia na conta
+  moPorPlaca: 70,          // mão de obra por placa
+  comissionamento: 200,
+  admPorKwp: 100,          // administrativo por kWp
+};
+
+// Extrai o primeiro número de um texto de potência ("590wp" → 590, "7,5 kW" → 7.5)
+function numeroDe(texto) {
+  const m = String(texto || '').replace(',', '.').match(/\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : 0;
+}
+
+function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada }) {
+  const p = { ...PARAMS_PROPOSTA_PADRAO, ...(params || {}) };
+  const kwp = qtdPlacas * wpPlaca / 1000;
+  const geracaoMensal = kwp * p.fatorGeracao;
+  const contaAtual = geracaoMensal * p.tarifaKwh;
+  const economiaMensal = contaAtual * (p.percEconomia / 100);
+  const contaResidual = contaAtual - economiaMensal;
+
+  // Custos de instalação — as mesmas faixas da planilha
+  const moPlacas = p.moPorPlaca * qtdPlacas;
+  const moInversor = kwInversor > 29 ? 600 * qtdInversores
+    : kwInversor > 14 ? 400 * qtdInversores
+    : kwInversor > 2.99 ? 300 * qtdInversores
+    : 150 + 150 * qtdInversores;
+  const homologacao = kwp > 12 ? 500 : 300;
+  const comissionamento = p.comissionamento;
+  const administrativo = p.admPorKwp * kwp;
+  const materialEletrico = 600 + 120 * kwp;
+  const frete = qtdPlacas < 15 ? 100 : qtdPlacas < 50 ? 200 : 350;
+  const custoInstalacao = moPlacas + moInversor + homologacao + comissionamento + administrativo + materialEletrico + frete;
+  const valorInstalacao = custoInstalacao * (1 + p.markupInstalacao / 100);
+
+  const valorEquipamentosCliente = valorEquipamentos * (1 + p.margemEquipamentos / 100);
+  const totalAVista = valorEquipamentosCliente + valorInstalacao;
+  const roiMeses = economiaMensal > 0 ? totalAVista / economiaMensal : 0;
+
+  const saldo = Math.max(0, totalAVista - (entrada || 0));
+  const parcelamentos = [
+    { rotulo: 'Cartão 6x', parcelas: 6, valorParcela: (saldo / 0.9) / 6 },
+    { rotulo: 'Cartão 12x', parcelas: 12, valorParcela: (saldo / 0.84) / 12 },
+    { rotulo: 'Cartão 18x', parcelas: 18, valorParcela: (saldo / 0.79) / 18 },
+    { rotulo: 'Financiamento 12x (aprox.)', parcelas: 12, valorParcela: (saldo * 1.3) / 12 },
+    { rotulo: 'Financiamento 24x (aprox.)', parcelas: 24, valorParcela: saldo * 0.0553 * 1.2 },
+    { rotulo: 'Financiamento 36x (aprox.)', parcelas: 36, valorParcela: saldo * 0.041797 * 1.2 },
+    { rotulo: 'Financiamento 48x (aprox.)', parcelas: 48, valorParcela: saldo * 0.03531 * 1.2 },
+    { rotulo: 'Financiamento 60x (aprox.)', parcelas: 60, valorParcela: saldo * 0.03162 * 1.2 },
+  ];
+
+  return {
+    kwp, geracaoMensal, contaAtual, economiaMensal, contaResidual,
+    instalacao: { moPlacas, moInversor, homologacao, comissionamento, administrativo, materialEletrico, frete, custo: custoInstalacao, valor: valorInstalacao },
+    valorEquipamentosDistribuidora: valorEquipamentos, valorEquipamentosCliente, totalAVista, roiMeses,
+    entrada: entrada || 0, parcelamentos,
+  };
+}
+
+function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editandoId, setEditandoId] = useState(null);
+  const [clienteNome, setClienteNome] = useState('');
+  const [clienteContato, setClienteContato] = useState('');
+  const [placaId, setPlacaId] = useState('');
+  const [qtdPlacas, setQtdPlacas] = useState('');
+  const [wpPlaca, setWpPlaca] = useState('');
+  const [precoPlaca, setPrecoPlaca] = useState('');
+  const [inversorId, setInversorId] = useState('');
+  const [qtdInversores, setQtdInversores] = useState('1');
+  const [kwInversor, setKwInversor] = useState('');
+  const [precoInversor, setPrecoInversor] = useState('');
+  const [adicionais, setAdicionais] = useState([]);
+  const [addProdutoId, setAddProdutoId] = useState('');
+  const [addQtd, setAddQtd] = useState('1');
+  const [params, setParams] = useState({ ...PARAMS_PROPOSTA_PADRAO });
+  const [entrada, setEntrada] = useState('');
+  const [mostrarParams, setMostrarParams] = useState(false);
+  const [expanded, setExpanded] = useState({});
+
+  const num = (x) => parseFloat(String(x ?? '').replace(',', '.')) || 0;
+
+  const opcoesTodas = useMemo(() =>
+    estoque.slice().sort((a, b) => descricaoProduto(a).localeCompare(descricaoProduto(b), 'pt-BR'))
+      .map(i => ({ value: i.id, label: `${i.categoria} · ${descricaoProduto(i)} — ${currency(i.precoVenda)}` })),
+  [estoque]);
+  const opcoesPlacas = useMemo(() => {
+    const placas = estoque.filter(i => i.categoria === 'Painel');
+    const base = placas.length > 0 ? placas : estoque;
+    return base.slice().sort((a, b) => descricaoProduto(a).localeCompare(descricaoProduto(b), 'pt-BR'))
+      .map(i => ({ value: i.id, label: `${descricaoProduto(i)} — ${currency(i.precoVenda)}` }));
+  }, [estoque]);
+  const opcoesInversores = useMemo(() => {
+    const invs = estoque.filter(i => i.categoria === 'Inversor');
+    const base = invs.length > 0 ? invs : estoque;
+    return base.slice().sort((a, b) => descricaoProduto(a).localeCompare(descricaoProduto(b), 'pt-BR'))
+      .map(i => ({ value: i.id, label: `${descricaoProduto(i)} — ${currency(i.precoVenda)}` }));
+  }, [estoque]);
+
+  function escolherPlaca(id) {
+    setPlacaId(id);
+    const p = estoque.find(i => i.id === id);
+    if (p) {
+      setPrecoPlaca(String(p.precoVenda ?? '').replace('.', ','));
+      const wp = numeroDe(p.potencia);
+      if (wp > 0) setWpPlaca(String(wp));
+    }
+  }
+  function escolherInversor(id) {
+    setInversorId(id);
+    const p = estoque.find(i => i.id === id);
+    if (p) {
+      setPrecoInversor(String(p.precoVenda ?? '').replace('.', ','));
+      const kw = numeroDe(p.potencia);
+      if (kw > 0) setKwInversor(String(kw));
+    }
+  }
+  function adicionarItem() {
+    const p = estoque.find(i => i.id === addProdutoId);
+    const qtd = num(addQtd);
+    if (!p || qtd <= 0) { notify('Escolha o produto e a quantidade'); return; }
+    setAdicionais(a => [...a, { id: uid(), produtoId: p.id, descricao: descricaoProduto(p), quantidade: qtd, precoUnit: p.precoVenda || 0 }]);
+    setAddProdutoId(''); setAddQtd('1');
+  }
+
+  const placaSel = estoque.find(i => i.id === placaId);
+  const inversorSel = estoque.find(i => i.id === inversorId);
+  const valorEquipamentos = num(precoPlaca) * num(qtdPlacas) + num(precoInversor) * num(qtdInversores)
+    + adicionais.reduce((acc, a) => acc + a.precoUnit * a.quantidade, 0);
+
+  const calc = useMemo(() => calcularProposta({
+    qtdPlacas: num(qtdPlacas), wpPlaca: num(wpPlaca),
+    qtdInversores: num(qtdInversores), kwInversor: num(kwInversor),
+    valorEquipamentos, params, entrada: num(entrada),
+  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada]);
+
+  function limparForm() {
+    setEditandoId(null); setClienteNome(''); setClienteContato('');
+    setPlacaId(''); setQtdPlacas(''); setWpPlaca(''); setPrecoPlaca('');
+    setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
+    setAdicionais([]); setAddProdutoId(''); setAddQtd('1');
+    setParams({ ...PARAMS_PROPOSTA_PADRAO }); setEntrada('');
+    setShowForm(false);
+  }
+
+  async function salvarProposta() {
+    if (!clienteNome.trim()) { notify('Informe o nome do cliente'); return; }
+    if (!placaSel || num(qtdPlacas) <= 0) { notify('Escolha a placa e a quantidade'); return; }
+    if (num(wpPlaca) <= 0) { notify('Informe a potência da placa em Wp'); return; }
+    if (!inversorSel || num(qtdInversores) <= 0) { notify('Escolha o inversor e a quantidade'); return; }
+    if (num(kwInversor) <= 0) { notify('Informe a potência do inversor em kW'); return; }
+    const existente = editandoId ? propostas.find(x => x.id === editandoId) : null;
+    const registro = {
+      id: editandoId || uid(),
+      data: existente?.data || new Date().toISOString(),
+      atualizadoEm: editandoId ? new Date().toISOString() : undefined,
+      clienteNome: clienteNome.trim(), clienteContato: clienteContato.trim(),
+      placa: { produtoId: placaSel.id, descricao: descricaoProduto(placaSel), quantidade: num(qtdPlacas), wp: num(wpPlaca), precoUnit: num(precoPlaca) },
+      inversor: { produtoId: inversorSel.id, descricao: descricaoProduto(inversorSel), quantidade: num(qtdInversores), kw: num(kwInversor), precoUnit: num(precoInversor) },
+      adicionais, params: { ...params }, entrada: num(entrada),
+      calculos: calc,
+      autor: autorAtual,
+    };
+    const proximos = editandoId ? propostas.map(x => x.id === editandoId ? registro : x) : [registro, ...propostas];
+    if (!(await setPropostas(proximos))) return;
+    notify(editandoId ? 'Proposta atualizada' : 'Proposta salva');
+    limparForm();
+  }
+
+  function editarProposta(p) {
+    setEditandoId(p.id);
+    setClienteNome(p.clienteNome || ''); setClienteContato(p.clienteContato || '');
+    setPlacaId(p.placa?.produtoId || ''); setQtdPlacas(String(p.placa?.quantidade ?? ''));
+    setWpPlaca(String(p.placa?.wp ?? '')); setPrecoPlaca(String(p.placa?.precoUnit ?? '').replace('.', ','));
+    setInversorId(p.inversor?.produtoId || ''); setQtdInversores(String(p.inversor?.quantidade ?? '1'));
+    setKwInversor(String(p.inversor?.kw ?? '')); setPrecoInversor(String(p.inversor?.precoUnit ?? '').replace('.', ','));
+    setAdicionais(p.adicionais || []); setParams({ ...PARAMS_PROPOSTA_PADRAO, ...(p.params || {}) });
+    setEntrada(p.entrada ? String(p.entrada).replace('.', ',') : '');
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function apagarProposta(p) {
+    if (!(await askConfirm(`Apagar a proposta de ${p.clienteNome} (${currency(p.calculos?.totalAVista || 0)})? Propostas não mexem em estoque nem em vendas.`))) return;
+    if (!(await setPropostas(propostas.filter(x => x.id !== p.id)))) return;
+    notify('Proposta apagada');
+  }
+
+  function imprimirProposta(p) {
+    const esc = t => String(t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const c = p.calculos || {};
+    const inst = c.instalacao || {};
+    const linhasEquip = [
+      `${p.placa.quantidade}x ${esc(p.placa.descricao)}`,
+      `${p.inversor.quantidade}x ${esc(p.inversor.descricao)}`,
+      ...(p.adicionais || []).map(a => `${a.quantidade}x ${esc(a.descricao)}`),
+      'Estrutura de fixação, cabeamento e proteções',
+      'Instalação completa, homologação junto à concessionária e comissionamento',
+    ].map(t => `<li>${t}</li>`).join('');
+    const linhasParc = (c.parcelamentos || []).map(x =>
+      `<tr><td>${esc(x.rotulo)}</td><td class="dir">${x.parcelas}x de ${currency(x.valorParcela)}</td></tr>`).join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Proposta — ${esc(p.clienteNome)}</title>
+      <style>
+        body { font-family: -apple-system, Arial, sans-serif; font-size: 13px; color: #111; margin: 28px; max-width: 720px; }
+        h1 { font-size: 19px; margin: 0; }
+        h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #b45309; margin: 22px 0 6px; border-bottom: 2px solid #b45309; padding-bottom: 3px; }
+        .meta { color: #555; font-size: 11px; margin: 4px 0 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+        td { padding: 5px 6px; border-bottom: 1px solid #e5e5e5; }
+        .dir { text-align: right; white-space: nowrap; }
+        .grande { font-size: 22px; font-weight: 700; }
+        .caixa { background: #fef8ec; border: 1px solid #f0d9a8; border-radius: 8px; padding: 12px 14px; margin-top: 8px; }
+        ul { margin: 4px 0 0 18px; padding: 0; } li { margin: 2px 0; }
+        .rodape { margin-top: 26px; font-size: 10px; color: #777; border-top: 1px solid #ddd; padding-top: 8px; }
+        tr { page-break-inside: avoid; }
+        @media print { body { margin: 12mm; } }
+      </style></head><body>
+      <h1>Proposta — Sistema Solar Fotovoltaico</h1>
+      <p class="meta">Estação Mossoró · ${formatDate(p.data)}${p.clienteNome ? ` · Cliente: <strong>${esc(p.clienteNome)}</strong>` : ''}${p.clienteContato ? ` · ${esc(p.clienteContato)}` : ''}</p>
+
+      <h2>O sistema</h2>
+      <table>
+        <tr><td>Potência total instalada</td><td class="dir"><strong>${(c.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp</strong></td></tr>
+        <tr><td>Geração estimada</td><td class="dir">${Math.round(c.geracaoMensal || 0).toLocaleString('pt-BR')} kWh/mês</td></tr>
+        <tr><td>Conta de energia equivalente hoje</td><td class="dir">${currency(c.contaAtual || 0)}/mês</td></tr>
+        <tr><td>Economia estimada</td><td class="dir"><strong>${currency(c.economiaMensal || 0)}/mês</strong></td></tr>
+        <tr><td>Conta residual estimada</td><td class="dir">${currency(c.contaResidual || 0)}/mês</td></tr>
+        <tr><td>Retorno do investimento (payback)</td><td class="dir">${c.roiMeses ? `${(c.roiMeses / 12).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} anos (${Math.round(c.roiMeses)} meses)` : '—'}</td></tr>
+      </table>
+
+      <h2>Equipamentos e serviços inclusos</h2>
+      <ul>${linhasEquip}</ul>
+
+      <h2>Investimento</h2>
+      <div class="caixa">
+        <div>Valor total à vista</div>
+        <div class="grande">${currency(c.totalAVista || 0)}</div>
+        ${c.entrada > 0 ? `<div class="meta">Entrada de ${currency(c.entrada)} + saldo conforme opções abaixo</div>` : ''}
+      </div>
+      <table>${linhasParc}</table>
+
+      <p class="rodape">Proposta válida por 7 dias. Geração e economia são estimativas — variam com irradiação, sombreamento e hábitos de consumo. Valores de financiamento são aproximados e dependem de aprovação de crédito no banco.</p>
+      <script>window.print();</script>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { notify('O navegador bloqueou a janela de impressão — libere pop-ups para este site.'); return; }
+    w.document.write(html);
+    w.document.close();
+  }
+
+  const listaOrdenada = useMemo(() => propostas.slice().sort((a, b) => new Date(b.data) - new Date(a.data)), [propostas]);
+
+  const inputCls = 'border border-slate-200 rounded-md px-2 py-2 text-sm w-full';
+  const rotuloCls = 'text-xs text-slate-500 mb-0.5 block';
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">Propostas — Integradora</h2>
+          <p className="text-xs text-slate-400">Sistema instalado para o cliente final. Equipamentos saem do preço de venda da distribuidora + margem; a instalação é calculada pelas fórmulas da planilha.</p>
+        </div>
+        {!showForm && <button onClick={() => setShowForm(true)} className="flex items-center gap-1 text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-md shrink-0"><Plus size={16} /> Nova proposta</button>}
+      </div>
+
+      {showForm && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
+          <h3 className="text-sm font-medium mb-3">{editandoId ? 'Editar proposta' : 'Nova proposta'}</h3>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            <div><label className={rotuloCls}>Cliente</label><input value={clienteNome} onChange={e => setClienteNome(e.target.value)} placeholder="Nome do cliente" className={inputCls} /></div>
+            <div><label className={rotuloCls}>Contato / cidade (opcional)</label><input value={clienteContato} onChange={e => setClienteContato(e.target.value)} placeholder="Telefone, cidade..." className={inputCls} /></div>
+          </div>
+
+          <div className="border border-slate-200 rounded-md p-3 mb-3">
+            <p className="text-xs font-medium text-slate-600 mb-2">Placas</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-end">
+              <div className="col-span-2 sm:col-span-2"><label className={rotuloCls}>Modelo (base de dados do site)</label>
+                <SelectPesquisavel opcoes={opcoesPlacas} value={placaId} onChange={escolherPlaca} placeholder="Buscar placa..." /></div>
+              <div><label className={rotuloCls}>Quantidade</label><input type="text" inputMode="numeric" value={qtdPlacas} onChange={e => setQtdPlacas(e.target.value)} placeholder="Ex: 12" className={inputCls} /></div>
+              <div><label className={rotuloCls}>Potência (Wp)</label><input type="text" inputMode="decimal" value={wpPlaca} onChange={e => setWpPlaca(e.target.value)} placeholder="Ex: 590" className={inputCls} /></div>
+              <div className="col-span-2"><label className={rotuloCls}>Preço distribuidora (un.)</label><input type="text" inputMode="decimal" value={precoPlaca} onChange={e => setPrecoPlaca(e.target.value)} placeholder="Ex: 501,50" className={inputCls} /></div>
+            </div>
+          </div>
+
+          <div className="border border-slate-200 rounded-md p-3 mb-3">
+            <p className="text-xs font-medium text-slate-600 mb-2">Inversor</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-end">
+              <div className="col-span-2 sm:col-span-2"><label className={rotuloCls}>Modelo (base de dados do site)</label>
+                <SelectPesquisavel opcoes={opcoesInversores} value={inversorId} onChange={escolherInversor} placeholder="Buscar inversor..." /></div>
+              <div><label className={rotuloCls}>Quantidade</label><input type="text" inputMode="numeric" value={qtdInversores} onChange={e => setQtdInversores(e.target.value)} className={inputCls} /></div>
+              <div><label className={rotuloCls}>Potência (kW)</label><input type="text" inputMode="decimal" value={kwInversor} onChange={e => setKwInversor(e.target.value)} placeholder="Ex: 6" className={inputCls} /></div>
+              <div className="col-span-2"><label className={rotuloCls}>Preço distribuidora (un.)</label><input type="text" inputMode="decimal" value={precoInversor} onChange={e => setPrecoInversor(e.target.value)} placeholder="Ex: 1500,00" className={inputCls} /></div>
+            </div>
+          </div>
+
+          <div className="border border-slate-200 rounded-md p-3 mb-3">
+            <p className="text-xs font-medium text-slate-600 mb-2">Itens adicionais (bateria, estrutura, cabos...)</p>
+            {adicionais.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {adicionais.map(a => (
+                  <div key={a.id} className="flex items-center justify-between text-xs bg-slate-50 border border-slate-100 rounded px-2 py-1.5">
+                    <span>{a.quantidade}x {a.descricao} — {currency(a.precoUnit)} un.</span>
+                    <button onClick={() => setAdicionais(l => l.filter(x => x.id !== a.id))} className="text-slate-400 hover:text-red-500"><X size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 items-end">
+              <div className="col-span-2 sm:col-span-2"><SelectPesquisavel opcoes={opcoesTodas} value={addProdutoId} onChange={setAddProdutoId} placeholder="Buscar produto..." compacto /></div>
+              <div><input type="text" inputMode="numeric" value={addQtd} onChange={e => setAddQtd(e.target.value)} placeholder="Qtd" className={inputCls} /></div>
+              <div><button onClick={adicionarItem} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2.5 rounded-md w-full">+ Adicionar</button></div>
+            </div>
+          </div>
+
+          <div className="mb-3">
+            <button onClick={() => setMostrarParams(m => !m)} className="text-xs text-slate-500 underline">{mostrarParams ? 'Esconder parâmetros' : 'Ajustar parâmetros (margem, tarifa, geração...)'}</button>
+            {mostrarParams && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                {[
+                  ['margemEquipamentos', 'Margem equipamentos (%)'],
+                  ['markupInstalacao', 'Margem instalação (%)'],
+                  ['fatorGeracao', 'Geração (kWh/kWp/mês)'],
+                  ['tarifaKwh', 'Tarifa (R$/kWh)'],
+                  ['percEconomia', 'Economia da geração (%)'],
+                  ['moPorPlaca', 'M.O. por placa (R$)'],
+                  ['comissionamento', 'Comissionamento (R$)'],
+                  ['admPorKwp', 'Administrativo (R$/kWp)'],
+                ].map(([chave, rotulo]) => (
+                  <div key={chave}><label className={rotuloCls}>{rotulo}</label>
+                    <input type="text" inputMode="decimal" value={String(params[chave]).replace('.', ',')} onChange={e => setParams(pp => ({ ...pp, [chave]: parseFloat(e.target.value.replace(',', '.')) || 0 }))} className={inputCls} /></div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div><label className={rotuloCls}>Entrada (R$, opcional)</label><input type="text" inputMode="decimal" value={entrada} onChange={e => setEntrada(e.target.value)} placeholder="Ex: 3000" className={inputCls} /></div>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mb-3 text-sm">
+            <p className="text-xs font-medium text-slate-600 mb-2">Prévia da proposta</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs mb-2">
+              <span className="text-slate-500">Potência: <span className="font-medium text-slate-700">{calc.kwp.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp</span></span>
+              <span className="text-slate-500">Geração: <span className="font-medium text-slate-700">{Math.round(calc.geracaoMensal).toLocaleString('pt-BR')} kWh/mês</span></span>
+              <span className="text-slate-500">Economia: <span className="font-medium text-slate-700">{currency(calc.economiaMensal)}/mês</span></span>
+              <span className="text-slate-500">Payback: <span className="font-medium text-slate-700">{calc.roiMeses > 0 ? `${Math.round(calc.roiMeses)} meses` : '—'}</span></span>
+            </div>
+            <div className="space-y-1 text-xs border-t border-slate-200 pt-2">
+              <div className="flex justify-between"><span className="text-slate-500">Equipamentos (preço distribuidora)</span><span>{currency(valorEquipamentos)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Equipamentos para o cliente (+{params.margemEquipamentos}%)</span><span className="font-medium">{currency(calc.valorEquipamentosCliente)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Custo de instalação (M.O. {currency(calc.instalacao.moPlacas + calc.instalacao.moInversor)} · homolog. {currency(calc.instalacao.homologacao)} · adm. {currency(calc.instalacao.administrativo)} · mat. elétrico {currency(calc.instalacao.materialEletrico)} · comis. {currency(calc.instalacao.comissionamento)} · frete {currency(calc.instalacao.frete)})</span><span>{currency(calc.instalacao.custo)}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Instalação para o cliente (+{params.markupInstalacao}%)</span><span className="font-medium">{currency(calc.instalacao.valor)}</span></div>
+              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-800 font-medium">Total à vista</span><span className="font-semibold text-base">{currency(calc.totalAVista)}</span></div>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={salvarProposta} className="text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-md">{editandoId ? 'Salvar alterações' : 'Salvar proposta'}</button>
+            <button onClick={limparForm} className="text-sm text-slate-500 px-3 py-2">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      <h3 className="text-sm font-medium text-slate-500 mb-2">Propostas salvas</h3>
+      {listaOrdenada.length === 0 && <p className="text-sm text-slate-400">Nenhuma proposta ainda. Clique em "Nova proposta" para montar a primeira.</p>}
+      <div className="space-y-2">
+        {listaOrdenada.map(p => (
+          <div key={p.id} className="bg-white border border-slate-200 rounded-lg">
+            <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [p.id]: !x[p.id] }))}>
+              <div className="flex items-center gap-2 min-w-0">
+                <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[p.id] ? 'rotate-90' : ''}`} />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">{p.clienteNome}</p>
+                  <p className="text-xs text-slate-400">{formatDate(p.data)} · {(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · {p.placa?.quantidade}x placa + {p.inversor?.quantidade}x inversor</p>
+                </div>
+              </div>
+              <span className="text-sm font-semibold shrink-0">{currency(p.calculos?.totalAVista || 0)}</span>
+            </div>
+            {expanded[p.id] && (
+              <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 text-xs space-y-1">
+                <p className="text-slate-600">{p.placa?.quantidade}x {p.placa?.descricao} ({p.placa?.wp} Wp) · {p.inversor?.quantidade}x {p.inversor?.descricao} ({p.inversor?.kw} kW){(p.adicionais || []).map(a => ` · ${a.quantidade}x ${a.descricao}`).join('')}</p>
+                <p className="text-slate-500">Geração {Math.round(p.calculos?.geracaoMensal || 0)} kWh/mês · economia {currency(p.calculos?.economiaMensal || 0)}/mês · payback {Math.round(p.calculos?.roiMeses || 0)} meses</p>
+                <p className="text-slate-500">Equipamentos {currency(p.calculos?.valorEquipamentosCliente || 0)} + instalação {currency(p.calculos?.instalacao?.valor || 0)}{p.entrada > 0 ? ` · entrada ${currency(p.entrada)}` : ''}</p>
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => imprimirProposta(p)} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-2.5 py-1.5 rounded-md">Imprimir / PDF</button>
+                  <button onClick={() => editarProposta(p)} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md">Editar</button>
+                  <button onClick={() => apagarProposta(p)} className="text-xs text-red-500 hover:bg-red-50 px-2.5 py-1.5 rounded-md">Apagar</button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
