@@ -5812,6 +5812,17 @@ function exportarParaTermo(p) {
       valorInstalacao: c.instalacao?.valor ?? null,
       totalAVista: c.totalAVista ?? null,
     },
+    // Previsão de despesas linha a linha, com os parâmetros REAIS desta proposta —
+    // no termo elas entram como Previsto, para confrontar com o Realizado da obra.
+    previsaoInstalacao: c.instalacao ? [
+      { item: `MO Placas (R$ ${p.params?.moPorPlaca ?? 70} x ${p.placa?.quantidade ?? 0} placas)`, previsto: c.instalacao.moPlacas },
+      { item: 'MO Inversor (por faixa de kW)', previsto: c.instalacao.moInversor },
+      { item: 'Homologação', previsto: c.instalacao.homologacao },
+      { item: 'Comissionamento', previsto: c.instalacao.comissionamento },
+      { item: `Administrativo (R$ ${p.params?.admPorKwp ?? 100} x ${(c.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp)`, previsto: c.instalacao.administrativo },
+      { item: 'Material Elétrico (600 + 120 x kWp)', previsto: c.instalacao.materialEletrico },
+      { item: 'Frete entrega', previsto: c.instalacao.frete },
+    ] : [],
   };
   const nomeBase = `termo-${String(p.clienteNome || 'cliente').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cliente'}`;
   baixarBlob(new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' }), `${nomeBase}.json`);
