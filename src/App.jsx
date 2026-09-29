@@ -4477,10 +4477,10 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
               <div className="border-t border-slate-100 divide-y divide-slate-100">
                 {g.itens.map(({ item, chave }) => (
                   <div key={chave} className="p-3">
-                    <div className="flex justify-between items-center">
-                      <div>
+                    <div className="flex justify-between items-center gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="inline-flex items-center justify-center min-w-[2.6rem] px-2 py-1 rounded-md bg-slate-800 text-white text-lg font-bold leading-none shrink-0">{item.quantidade}x</span>
                         <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
-                        <p className="text-xs text-slate-400">{item.quantidade}x</p>
                       </div>
                       <button onClick={() => setFormAtivo({ chave, etapa: 'saida' })} className="flex items-center gap-1 text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">
                         <Camera size={12} /> Registrar saída
@@ -4532,17 +4532,20 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
               <div className="border-t border-slate-100 divide-y divide-slate-100">
                 {g.itens.map(({ item, chave, saida }) => (
                   <div key={chave} className="p-3">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
-                        <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Saída confirmada em {formatDate(saida.data)}</p>
-                        {saida.fotos && saida.fotos.length > 0 && (
-                          <div className="flex gap-1.5 mt-1.5">
-                            {saida.fotos.map((f, i) => (
-                              <MiniaturaFoto key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
-                            ))}
-                          </div>
-                        )}
+                    <div className="flex justify-between items-center gap-2">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <span className="inline-flex items-center justify-center min-w-[2.6rem] px-2 py-1 rounded-md bg-slate-800 text-white text-lg font-bold leading-none shrink-0">{item.quantidade}x</span>
+                        <div className="min-w-0">
+                          <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
+                          <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Saída confirmada em {formatDate(saida.data)}</p>
+                          {saida.fotos && saida.fotos.length > 0 && (
+                            <div className="flex gap-1.5 mt-1.5">
+                              {saida.fotos.map((f, i) => (
+                                <MiniaturaFoto key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       <button onClick={() => setFormAtivo({ chave, etapa: 'entrega' })} className="flex items-center gap-1 text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">
                         <Camera size={12} /> Registrar entrega
@@ -4592,7 +4595,10 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                 )}
                 {g.itens.map(({ item, chave, saida, entrega }) => (
                   <div key={chave} className="text-xs">
-                    <p className="text-slate-600 font-medium">{item.descricao} {item.serial && <span className="font-mono text-slate-400 font-normal">· SN {item.serial}</span>}</p>
+                    <div className="flex items-center gap-2.5">
+                      <span className="inline-flex items-center justify-center min-w-[2.6rem] px-2 py-1 rounded-md bg-slate-800 text-white text-lg font-bold leading-none shrink-0">{item.quantidade}x</span>
+                      <p className="text-slate-600 font-medium">{item.descricao} {item.serial && <span className="font-mono text-slate-400 font-normal">· SN {item.serial}</span>}</p>
+                    </div>
                     <div className="grid grid-cols-2 gap-2 mt-1.5">
                       <div className="border-l-2 border-slate-200 pl-2">
                         <p className="text-slate-500 font-medium flex items-center gap-1"><TruckIcon size={11} /> Saída da empresa</p>
