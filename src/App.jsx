@@ -2023,10 +2023,19 @@ const ESTILO_MOVIMENTO = {
 };
 
 function ExtratoMovimentacoes({ item, vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos }) {
-  const movimentos = useMemo(
-    () => movimentosDoProduto(item, { vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos }),
-    [item, vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos]
-  );
+  const movimentos = useMemo(() => {
+    const linhas = movimentosDoProduto(item, { vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos });
+    // Saldo APÓS cada movimentação: parte do estoque atual (verdade absoluta) e desfaz
+    // movimento a movimento indo para o passado — a linha mais recente mostra o saldo de hoje.
+    const efeito = (m) => (m.tipo === 'entrada' || m.tipo === 'estorno') ? m.qtd
+      : (m.tipo === 'saida' || m.tipo === 'ajuste') ? -m.qtd : 0;
+    let saldo = availableQty(item);
+    return linhas.map(m => {
+      const comSaldo = { ...m, saldoApos: saldo };
+      saldo -= efeito(m);
+      return comSaldo;
+    });
+  }, [item, vendas, recebimentos, pedidosCompra, transferencias, balancos, depositos]);
   return (
     <div className="mb-3">
       <p className="text-slate-400 text-xs mb-1">Movimentações ({movimentos.length})</p>
@@ -2041,6 +2050,7 @@ function ExtratoMovimentacoes({ item, vendas, recebimentos, pedidosCompra, trans
                 <th className="py-1.5 px-2 font-normal">Movimentação</th>
                 <th className="py-1.5 px-2 font-normal text-right">Qtd</th>
                 <th className="py-1.5 px-2 font-normal">Depósito</th>
+                <th className="py-1.5 px-2 font-normal text-right">Saldo</th>
               </tr>
             </thead>
             <tbody>
@@ -2055,11 +2065,13 @@ function ExtratoMovimentacoes({ item, vendas, recebimentos, pedidosCompra, trans
                     </td>
                     <td className={`py-1.5 px-2 text-right font-medium whitespace-nowrap ${estilo.cor}`}>{estilo.sinal}{m.qtd}</td>
                     <td className="py-1.5 px-2 text-slate-500">{m.deposito || '—'}</td>
+                    <td className="py-1.5 px-2 text-right font-semibold text-slate-700 whitespace-nowrap">{m.saldoApos}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          <p className="text-[11px] text-slate-400 px-2 py-1 border-t border-slate-100">Saldo = quantidade disponível do produto somando todos os depósitos, logo após cada movimentação — a linha mais recente bate com o estoque de hoje.</p>
         </div>
       )}
     </div>
