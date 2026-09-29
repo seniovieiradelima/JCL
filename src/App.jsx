@@ -4014,6 +4014,76 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     notify(`Baixa registrada${consumido.serial ? ` — SN ${consumido.serial}` : ''}`);
   }
 
+  // "Empréstimo": um item já entregue de uma venda ativa volta ao estoque disponível
+  // (pode ser vendido a outro cliente) e vira pendência de entrega DENTRO da venda, que
+  // segue íntegra. Quando chegar reposição, a baixa é o "Dar baixa" de sempre — e o ciclo
+  // pode se repetir quantas vezes for preciso.
+  async function emprestarItem(venda, item, qtd) {
+    const entregue = item.quantidade - (item.quantidadePendente || 0);
+    const qtdEmprestar = item.unidadeId ? 1 : Math.min(parseInt(qtd) || 0, entregue);
+    if (qtdEmprestar < 1) return;
+    const produto = estoque.find(p => p.id === item.itemId);
+
+    // Unidade com nº de série: só volta se ainda consta como Vendida (não extraviada/mexida)
+    if (item.unidadeId) {
+      const unidade = produto && (produto.unidades || []).find(u => u.id === item.unidadeId);
+      if (!unidade || unidade.status !== 'Vendido') {
+        notify('⚠️ A unidade desta venda não está mais marcada como Vendida no estoque — confira a situação dela antes de converter.');
+        return;
+      }
+    }
+
+    const devolucao = calcularDevolucaoEmprestimo(item, produto, qtdEmprestar);
+    if (!devolucao) { notify('⚠️ Os registros de consumo deste item não cobrem essa quantidade — confira a venda.'); return; }
+
+    // Item já expedido: a mercadoria saiu da empresa — exige confirmar o retorno físico
+    const chave = chaveItemVenda(venda.id, item);
+    const etapasDoItem = expedicoes.filter(ex => ex.chave === chave && !ex.anulado);
+    if (etapasDoItem.length > 0 && !(await askConfirm(
+      `⚠️ Este item tem ${etapasDoItem.some(e => e.etapa === 'entrega') ? 'ENTREGA AO CLIENTE' : 'SAÍDA DA EMPRESA'} registrada na expedição. Converter em pré-venda devolve a mercadoria ao estoque do sistema. Ela voltou fisicamente para o depósito?`
+    ))) return;
+
+    const ok = await askSenha(
+      `Converter ${qtdEmprestar}x ${item.descricao} da venda de ${venda.clienteNome} em pré-venda? A mercadoria volta ao estoque disponível (pode ser vendida a outro cliente) e este item fica aguardando nova chegada — a venda continua valendo como está.`,
+      { label: 'Converter em pré-venda' }
+    );
+    if (!ok) return;
+
+    if (!(await setEstoque(reverterConsumoEstoque(estoque, [devolucao.itemDevolucao])))) return;
+
+    // Etapas de expedição do item ficam anuladas (a reposição será expedida de novo)
+    if (etapasDoItem.length > 0 && setExpedicoes) {
+      if (!(await setExpedicoes(expedicoes.map(ex => ex.chave === chave && !ex.anulado
+        ? { ...ex, anulado: true, anuladoEm: new Date().toISOString(), anuladoPor: autorAtual }
+        : ex)))) {
+        notify('⚠️ O estoque foi devolvido, mas as etapas de expedição NÃO foram anuladas. Recarregue a página (F5) e confira.');
+        return;
+      }
+    }
+
+    const next = vendas.map(v => {
+      if (v.id !== venda.id) return v;
+      const itens = v.itens.map(it => {
+        if (it.id !== item.id) return it;
+        const atualizado = {
+          ...it,
+          quantidadePendente: (it.quantidadePendente || 0) + qtdEmprestar,
+          custoTotal: Math.max(0, (it.custoTotal || 0) - devolucao.custoDevolvido),
+        };
+        if (it.unidadeId) { atualizado.unidadeId = undefined; atualizado.serial = undefined; }
+        else atualizado.loteConsumos = devolucao.novosConsumos;
+        return atualizado;
+      });
+      const totalCusto = itens.reduce((acc, i2) => acc + (i2.custoTotal || 0), 0);
+      return { ...v, itens, totalCusto };
+    });
+    if (!(await setVendas(next))) {
+      notify('⚠️ O estoque foi devolvido, mas a venda NÃO foi atualizada. Recarregue a página (F5) e confira antes de repetir.');
+      return;
+    }
+    notify(`${qtdEmprestar}x ${item.descricao} convertido em pré-venda — mercadoria de volta ao estoque, item aguardando nova chegada`);
+  }
+
   function gerarReciboVenda(venda, formato) {
     const cliente = clientes.find(c => c.id === venda.clienteId) || { nome: venda.clienteNome };
     const extraLinhas = (venda.comprovantes || [])
@@ -4170,6 +4240,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
                     <p className="text-xs text-slate-600">
                       {it.descricao} {it.serial && <span className="font-mono text-slate-400">· SN {it.serial}</span>} — {it.quantidade}x {currency(it.precoVendaUnitario)}
                       {(it.quantidadePendente || 0) > 0 && <span className="text-amber-600 font-medium"> · {it.quantidadePendente} pendente de entrega</span>}
+                      {!v.anulado && <EmprestarPreVendaForm item={it} onEmprestar={(qtd) => emprestarItem(v, it, qtd)} />}
                     </p>
                     {!v.anulado && (it.quantidadePendente || 0) > 0 && (
                       <BaixaPendenteForm item={it} estoque={estoque} depositos={depositos} onBaixa={(qtd, depId) => darBaixaPendente(v, it, qtd, depId)} />
@@ -4222,6 +4293,65 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
 }
 
 /* ---------------- EXPEDIÇÃO (confirmação de entrega com fotos e nº de série) ---------------- */
+
+/* ---------------- EMPRÉSTIMO DE ITEM DE VENDA (vira pré-venda) ---------------- */
+
+// Calcula a devolução de um "empréstimo": quais consumos voltam ao estoque (dos lotes mais
+// recentes para os mais antigos) e o custo devolvido, pelos custos dos lotes de origem.
+// Unidade com nº de série volta inteira. Devolve null se os registros não cobrem a quantidade.
+function calcularDevolucaoEmprestimo(item, produto, qtdEmprestar) {
+  if (item.unidadeId) {
+    return {
+      itemDevolucao: { itemId: item.itemId, unidadeId: item.unidadeId },
+      custoDevolvido: item.custoTotal || 0,
+      novosConsumos: undefined,
+    };
+  }
+  const entregue = item.quantidade - (item.quantidadePendente || 0);
+  const consumos = (item.loteConsumos || []).map(c => ({ ...c }));
+  const devolver = [];
+  let restante = qtdEmprestar;
+  for (let i = consumos.length - 1; i >= 0 && restante > 0; i--) {
+    const tira = Math.min(consumos[i].quantidade, restante);
+    if (tira > 0) {
+      devolver.push({ loteId: consumos[i].loteId, quantidade: tira });
+      consumos[i] = { ...consumos[i], quantidade: consumos[i].quantidade - tira };
+      restante -= tira;
+    }
+  }
+  if (restante > 0) return null;
+  const custoMedio = entregue > 0 ? (item.custoTotal || 0) / entregue : 0;
+  const custoDevolvido = devolver.reduce((acc, d) => {
+    const lote = produto && (produto.lotes || []).find(l => l.id === d.loteId);
+    return acc + d.quantidade * (lote && lote.custoUnitario > 0 ? lote.custoUnitario : custoMedio);
+  }, 0);
+  return { itemDevolucao: { itemId: item.itemId, loteConsumos: devolver }, custoDevolvido, novosConsumos: consumos.filter(c => c.quantidade > 0) };
+}
+
+// Botão/formulário inline "Converter em pré-venda" ao lado do item da venda.
+function EmprestarPreVendaForm({ item, onEmprestar }) {
+  const entregue = item.quantidade - (item.quantidadePendente || 0);
+  const [aberto, setAberto] = useState(false);
+  const [qtdSel, setQtdSel] = useState(entregue);
+  if (entregue < 1) return null;
+  const qtd = item.unidadeId ? 1 : Math.min(parseInt(qtdSel) || 0, entregue);
+  return (
+    <span className="inline-flex items-center gap-1.5 ml-2 align-middle">
+      {!aberto ? (
+        <button onClick={() => { setQtdSel(entregue); setAberto(true); }} className="text-[11px] text-amber-700 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-1.5 py-0.5 rounded" title="Devolve a mercadoria ao estoque e deixa este item aguardando nova chegada — a venda continua valendo">
+        Converter em pré-venda</button>
+      ) : (
+        <>
+          {!item.unidadeId && entregue > 1 && (
+            <input type="number" min={1} max={entregue} value={qtdSel} onChange={e => setQtdSel(e.target.value)} className="w-14 border border-slate-200 rounded px-1.5 py-0.5 text-[11px]" />
+          )}
+          <button onClick={() => { setAberto(false); onEmprestar(qtd); }} disabled={qtd < 1} className="text-[11px] bg-amber-600 hover:bg-amber-700 text-white px-1.5 py-0.5 rounded disabled:opacity-30">Confirmar {qtd}x</button>
+          <button onClick={() => setAberto(false)} className="text-[11px] text-slate-400">cancelar</button>
+        </>
+      )}
+    </span>
+  );
+}
 
 /* ---------------- BAIXA DE ITEM PENDENTE DE ENTREGA (pré-venda) ---------------- */
 
