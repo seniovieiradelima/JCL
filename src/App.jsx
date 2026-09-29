@@ -3943,14 +3943,17 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
 
   async function apagarVenda(venda) {
     if (venda.anulado) return;
-    // Venda com saída/entrega registrada: a mercadoria saiu da empresa. Anular devolve os
-    // itens ao estoque DO SISTEMA — então exige confirmar que a mercadoria voltou de fato.
+    // Venda com entrega registrada: a mercadoria saiu da empresa — exige confirmar que
+    // voltou de fato. Apenas separada: a separação é desfeita, a mercadoria nem saiu.
     const chavesDaVenda = new Set(venda.itens.map(it => chaveItemVenda(venda.id, it)));
     const etapasDaVenda = expedicoes.filter(ex => chavesDaVenda.has(ex.chave) && !ex.anulado);
     const jaEntregue = etapasDaVenda.some(ex => ex.etapa === 'entrega');
-    const jaSaiu = etapasDaVenda.some(ex => ex.etapa === 'saida');
-    if ((jaEntregue || jaSaiu) && !(await askConfirm(
-      `⚠️ Esta venda tem ${jaEntregue ? 'ENTREGA AO CLIENTE' : 'SAÍDA DA EMPRESA'} registrada na expedição — a mercadoria saiu daqui. Anular devolve os itens ao estoque do sistema. A mercadoria voltou fisicamente para o depósito?`
+    const jaSeparou = etapasDaVenda.some(ex => ex.etapa === 'saida');
+    if (jaEntregue && !(await askConfirm(
+      '⚠️ Esta venda tem ENTREGA AO CLIENTE registrada na expedição — a mercadoria saiu daqui. Anular devolve os itens ao estoque do sistema. A mercadoria voltou fisicamente para o depósito?'
+    ))) return;
+    if (!jaEntregue && jaSeparou && !(await askConfirm(
+      'Esta venda tem itens SEPARADOS na expedição. Anular desfaz a separação (etapas ficam anuladas, fotos preservadas) e devolve os itens ao estoque. Continuar?'
     ))) return;
     const ok = await askSenha(`Apagar a venda de ${venda.clienteNome} (${currency(venda.totalVenda)})? Os itens voltam ao estoque disponível, as expedições vinculadas ficam anuladas no histórico (fotos preservadas), e o lançamento fica marcado como anulado. Comprovantes anexados também serão perdidos.`);
     if (!ok) return;
@@ -4036,11 +4039,16 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     const devolucao = calcularDevolucaoEmprestimo(item, produto, qtdEmprestar);
     if (!devolucao) { notify('⚠️ Os registros de consumo deste item não cobrem essa quantidade — confira a venda.'); return; }
 
-    // Item já expedido: a mercadoria saiu da empresa — exige confirmar o retorno físico
+    // Entregue não volta: mercadoria que já chegou ao cliente saiu da empresa de vez.
+    // Item apenas SEPARADO ainda está no depósito — a separação é desfeita e ele volta.
     const chave = chaveItemVenda(venda.id, item);
     const etapasDoItem = expedicoes.filter(ex => ex.chave === chave && !ex.anulado);
+    if (etapasDoItem.some(e => e.etapa === 'entrega')) {
+      notify('⚠️ Este item já foi ENTREGUE ao cliente — mercadoria entregue não pode ser convertida em pré-venda.');
+      return;
+    }
     if (etapasDoItem.length > 0 && !(await askConfirm(
-      `⚠️ Este item tem ${etapasDoItem.some(e => e.etapa === 'entrega') ? 'ENTREGA AO CLIENTE' : 'SAÍDA DA EMPRESA'} registrada na expedição. Converter em pré-venda devolve a mercadoria ao estoque do sistema. Ela voltou fisicamente para o depósito?`
+      'Este item já está SEPARADO na expedição. Converter em pré-venda desfaz a separação (a etapa fica anulada, com as fotos preservadas) e a mercadoria volta ao estoque disponível. Continuar?'
     ))) return;
 
     const ok = await askSenha(
@@ -4552,7 +4560,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
 
   return (
     <div>
-      <p className="text-xs text-slate-400 mb-4">A expedição tem dupla verificação: primeiro a <strong>saída da empresa</strong>, depois a <strong>entrega ao cliente</strong> — cada etapa exige foto e, para inversores, confirmação do número de série. Só é possível expedir produtos que tiveram entrada e passaram pelo estoque.</p>
+      <p className="text-xs text-slate-400 mb-4">A expedição tem dupla verificação: primeiro a <strong>separação da mercadoria</strong>, depois a <strong>entrega ao cliente</strong> — cada etapa exige foto e, para inversores, confirmação do número de série. Só é possível expedir produtos que tiveram entrada e passaram pelo estoque.</p>
 
       <FiltroBar
         busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por cliente..."
@@ -4582,9 +4590,9 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
         </>
       )}
 
-      <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><TruckIcon size={14} /> Aguardando saída da empresa</h3>
+      <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><TruckIcon size={14} /> Aguardando separação</h3>
       <div className="space-y-2 mb-6">
-        {gruposSaida.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nada pendente de saída.</p>}
+        {gruposSaida.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nada pendente de separação.</p>}
         {gruposSaida.map(g => (
           <div key={g.venda.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpandedGrupo(x => ({ ...x, [`s-${g.venda.id}`]: !x[`s-${g.venda.id}`] }))}>
@@ -4595,7 +4603,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                   <p className="text-xs text-slate-400">{formatDate(g.venda.data)} · {g.itens.length} item(ns) pendente(s)</p>
                 </div>
               </div>
-              <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">Aguardando saída</span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">Aguardando separação</span>
             </div>
             {g.venda.observacoes && (
               <div className="mx-3 mb-2 bg-amber-50 border border-amber-200 rounded-md p-2">
@@ -4613,7 +4621,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
                       </div>
                       <button onClick={() => setFormAtivo({ chave, etapa: 'saida' })} className="flex items-center gap-1 text-xs bg-slate-900 text-white px-2.5 py-1.5 rounded-md">
-                        <Camera size={12} /> Registrar saída
+                        <Camera size={12} /> Registrar separação
                       </button>
                     </div>
                     {formAtivo && formAtivo.chave === chave && formAtivo.etapa === 'saida' && (
@@ -4637,9 +4645,9 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
         ))}
       </div>
 
-      <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><PackageCheck size={14} /> Em rota — aguardando confirmação de entrega</h3>
+      <h3 className="text-sm font-medium text-slate-500 mb-2 flex items-center gap-1.5"><PackageCheck size={14} /> Separado — aguardando entrega</h3>
       <div className="space-y-2 mb-6">
-        {gruposRota.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nada em rota no momento.</p>}
+        {gruposRota.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum item separado aguardando entrega.</p>}
         {gruposRota.map(g => (
           <div key={g.venda.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpandedGrupo(x => ({ ...x, [`r-${g.venda.id}`]: !x[`r-${g.venda.id}`] }))}>
@@ -4647,10 +4655,10 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandedGrupo[`r-${g.venda.id}`] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
                   <p className="font-medium text-sm truncate flex items-center gap-1.5">{g.venda.clienteNome} {g.venda.observacoes && <ClipboardList size={12} className="text-amber-500 shrink-0" />}</p>
-                  <p className="text-xs text-slate-400">{formatDate(g.venda.data)} · {g.itens.length} item(ns) em rota</p>
+                  <p className="text-xs text-slate-400">{formatDate(g.venda.data)} · {g.itens.length} item(ns) separado(s)</p>
                 </div>
               </div>
-              <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 shrink-0">Em rota</span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 shrink-0">Separado</span>
             </div>
             {g.venda.observacoes && (
               <div className="mx-3 mb-2 bg-amber-50 border border-amber-200 rounded-md p-2">
@@ -4667,11 +4675,11 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         <span className="inline-flex items-center justify-center min-w-[2.6rem] px-2 py-1 rounded-md bg-slate-800 text-white text-lg font-bold leading-none shrink-0">{item.quantidade}x</span>
                         <div className="min-w-0">
                           <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
-                          <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Saída confirmada em {formatDate(saida.data)}</p>
+                          <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Separado em {formatDate(saida.data)}</p>
                           {saida.fotos && saida.fotos.length > 0 && (
                             <div className="flex gap-1.5 mt-1.5">
                               {saida.fotos.map((f, i) => (
-                                <MiniaturaFoto key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
+                                <MiniaturaFoto key={i} src={f} alt="Foto da separação" className="w-12 h-12 object-cover rounded-md border border-slate-200" />
                               ))}
                             </div>
                           )}
@@ -4731,7 +4739,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                     </div>
                     <div className="grid grid-cols-2 gap-2 mt-1.5">
                       <div className="border-l-2 border-slate-200 pl-2">
-                        <p className="text-slate-500 font-medium flex items-center gap-1"><TruckIcon size={11} /> Saída da empresa</p>
+                        <p className="text-slate-500 font-medium flex items-center gap-1"><TruckIcon size={11} /> Separação</p>
                         {item.serial && (
                           <p className={`flex items-center gap-1 mt-0.5 ${saida.serialConfirmado === item.serial ? 'text-emerald-600' : 'text-red-500'}`}>
                             {saida.serialConfirmado === item.serial ? <ShieldCheck size={11} /> : <ShieldAlert size={11} />} SN {saida.serialConfirmado || '—'}
@@ -4741,7 +4749,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         {saida.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
                             {saida.fotos.map((f, i) => (
-                              <MiniaturaFoto key={i} src={f} alt="Foto da saída" className="w-12 h-12 object-cover rounded border border-slate-200" />
+                              <MiniaturaFoto key={i} src={f} alt="Foto da separação" className="w-12 h-12 object-cover rounded border border-slate-200" />
                             ))}
                           </div>
                         )}
@@ -4782,7 +4790,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
   const produto = estoque.find(p => p.id === item.itemId);
   const opcoesSerial = produto && produto.serializado ? (produto.unidades || []).map(u => u.serial) : [];
   const datalistId = `series-${etapa}-${item.itemId}`;
-  const rotulo = etapa === 'saida' ? 'saída da empresa' : 'entrega ao cliente';
+  const rotulo = etapa === 'saida' ? 'separação da mercadoria' : 'entrega ao cliente';
 
   const [enviandoFotos, setEnviandoFotos] = useState(false);
 
@@ -4816,7 +4824,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
     };
     await setExpedicoes([registro, ...expedicoes]);
     setEnviando(false);
-    notify(etapa === 'saida' ? 'Saída registrada' : 'Entrega registrada');
+    notify(etapa === 'saida' ? 'Separação registrada' : 'Entrega registrada');
     onDone();
   }
 
@@ -4826,7 +4834,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
   return (
     <div className="mt-3 bg-slate-50 border border-slate-200 rounded-md p-3 space-y-3">
       {etapa === 'entrega' && item.serial && (
-        <p className="text-xs text-slate-500">Série confirmada na saída da empresa: <span className="font-mono">{serialEtapaAnterior || '—'}</span> — confira novamente no ato da entrega.</p>
+        <p className="text-xs text-slate-500">Série confirmada na separação: <span className="font-mono">{serialEtapaAnterior || '—'}</span> — confira novamente no ato da entrega.</p>
       )}
       {item.serial && (
         <div>
@@ -4844,7 +4852,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
           {serialDivergenteDaVenda ? (
             <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número vendido (SN {item.serial}) — confira antes de confirmar.</p>
           ) : serialDivergenteDaSaida ? (
-            <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número confirmado na saída (SN {serialEtapaAnterior}) — confira antes de confirmar.</p>
+            <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número confirmado na separação (SN {serialEtapaAnterior}) — confira antes de confirmar.</p>
           ) : (
             <p className="text-xs text-emerald-600 flex items-center gap-1 mt-1"><ShieldCheck size={12} /> Número confere.</p>
           )}
