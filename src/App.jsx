@@ -76,6 +76,19 @@ function consumirEstoque(estoqueAtual, carrinho, opcoes = {}) {
   for (const it of carrinho) {
     const idx = novoEstoque.findIndex(i => i.id === it.itemId);
     if (idx === -1) { erros.push(`${it.descricao}: produto não encontrado`); continue; }
+
+    // Pré-venda por ESCOLHA do vendedor: não baixa estoque nem havendo disponível — o
+    // estoque atual continua livre para outros clientes e o item inteiro fica pendente
+    // de entrega (a baixa vem depois, pela aba Vendas, quando a mercadoria chegar).
+    if (it.preVenda) {
+      if (!permitirPendencia) {
+        erros.push(`${it.descricao}: item marcado como pré-venda — a baixa só acontece quando a mercadoria chegar`);
+        continue;
+      }
+      itensResultado.push({ ...it, unidadeId: undefined, serial: undefined, loteConsumos: undefined, quantidadePendente: it.quantidade, custoTotal: 0, precoVendaTotal: it.precoVendaUnitario * it.quantidade });
+      continue;
+    }
+
     let custoTotal = 0;
     let itemFinal = it;
 
@@ -689,9 +702,14 @@ function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, aju
     return acc + Math.max(0, v.totalVenda - comprovado);
   }, 0);
 
+  // Mercadoria a entregar = débito de mercadoria com clientes: itens vendidos (muitas vezes
+  // já pagos) ainda pendentes de entrega, a preço de venda. Informativo — não entra no total.
+  const mercadoriaAEntregar = ativas.reduce((acc, v) =>
+    acc + (v.itens || []).reduce((a, it) => a + (it.quantidadePendente || 0) * (it.precoVendaUnitario || 0), 0), 0);
+
   return {
     valorEstoqueDisponivel, valorEstoqueAguardando, cmvAcumulado, pedidosAcumulado, totalAjustes,
-    saldoReposicao, valoresAReceber,
+    saldoReposicao, valoresAReceber, mercadoriaAEntregar,
     totalImobilizado: valorEstoqueDisponivel + valorEstoqueAguardando + saldoReposicao + valoresAReceber,
   };
 }
@@ -1164,6 +1182,7 @@ function AppInner() {
           valorEstoqueAguardando: arred(ind.valorEstoqueAguardando),
           saldoReposicao: arred(ind.saldoReposicao),
           valoresAReceber: arred(ind.valoresAReceber),
+          mercadoriaAEntregar: arred(ind.mercadoriaAEntregar),
           totalImobilizado: arred(ind.totalImobilizado),
           gravadoEm: agora.toISOString(),
           autor: autorAtual,
@@ -1174,6 +1193,7 @@ function AppInner() {
           existente.valorEstoqueDisponivel === registro.valorEstoqueDisponivel &&
           existente.valorEstoqueAguardando === registro.valorEstoqueAguardando &&
           existente.saldoReposicao === registro.saldoReposicao &&
+          existente.mercadoriaAEntregar === registro.mercadoriaAEntregar &&
           existente.valoresAReceber === registro.valoresAReceber) return;
         const proximos = existente ? indicadores.map(i => (i.id === idDia ? registro : i)) : [...indicadores, registro];
         const r = await saveCollectionDelta('indicadores', indicadores, proximos);
@@ -1721,6 +1741,7 @@ function SelectPesquisavel({ opcoes, value, onChange, placeholder, compacto }) {
 function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, pedidosCompra, recebimentos, vendas }) {
   const [produtoSel, setProdutoSel] = useState('');
   const [depositoSel, setDepositoSel] = useState(depositos.length === 1 ? depositos[0].id : '');
+  const [preVendaSel, setPreVendaSel] = useState(false);
   const [qtdSel, setQtdSel] = useState(1);
   const [precoSel, setPrecoSel] = useState('');
 
@@ -1749,28 +1770,33 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
   }, [produtoSel]);
 
   function addItem() {
-    if (!produtoAtual || !depositoSel) return;
+    if (!produtoAtual || (!depositoSel && !preVendaSel)) return;
     const preco = parseValorBR(precoSel) || 0;
-    const depositoNome = depositos.find(d => d.id === depositoSel)?.nome || '';
+    const depositoNome = preVendaSel ? '' : (depositos.find(d => d.id === depositoSel)?.nome || '');
+    const depositoId = preVendaSel ? '' : depositoSel;
     const qtd = parseInt(qtdSel) || 1;
     if (qtd < 1) { notify('Informe uma quantidade válida'); return; }
-    // Pré-venda: pode adicionar além do estoque. O que faltar vira pendência de entrega na venda.
-    const disp = availableQty(produtoAtual, depositoSel);
-    if (qtd > disp) notify(`${qtd - disp} de ${qtd} sem estoque agora — se virar venda, ficam pendentes de entrega`);
+    if (!preVendaSel) {
+      // Venda normal: pode adicionar além do estoque. O que faltar vira pendência de entrega.
+      const disp = availableQty(produtoAtual, depositoSel);
+      if (qtd > disp) notify(`${qtd - disp} de ${qtd} sem estoque agora — se virar venda, ficam pendentes de entrega`);
+    }
+    const marca = preVendaSel ? { preVenda: true } : {};
     if (produtoAtual.serializado) {
       // A série exata não é escolhida aqui — é atribuída automaticamente (FIFO) ao finalizar,
       // e confirmada de fato depois, na expedição. Uma linha por unidade.
       const novasLinhas = Array.from({ length: qtd }, () => ({
         id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria,
         descricao: descricaoProduto(produtoAtual), quantidade: 1,
-        precoVendaUnitario: preco, depositoId: depositoSel, depositoNome,
+        precoVendaUnitario: preco, depositoId, depositoNome, ...marca,
       }));
       setCarrinho(c => [...c, ...novasLinhas]);
     } else {
-      setCarrinho(c => [...c, { id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria, descricao: descricaoProduto(produtoAtual), quantidade: qtd, precoVendaUnitario: preco, depositoId: depositoSel, depositoNome }]);
+      setCarrinho(c => [...c, { id: uid(), itemId: produtoAtual.id, categoria: produtoAtual.categoria, descricao: descricaoProduto(produtoAtual), quantidade: qtd, precoVendaUnitario: preco, depositoId, depositoNome, ...marca }]);
     }
     setQtdSel(1);
     setProdutoSel(''); setDepositoSel(depositos.length === 1 ? depositos[0].id : '');
+    setPreVendaSel(false);
   }
 
   function removeItem(idx) { setCarrinho(c => c.filter((_, i) => i !== idx)); }
@@ -1804,12 +1830,18 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
           );
         })()}
         {produtoAtual && (
+          <label className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 cursor-pointer">
+            <input type="checkbox" checked={preVendaSel} onChange={e => setPreVendaSel(e.target.checked)} className="mt-0.5" />
+            <span><strong>Pré-venda (encomenda)</strong> — não baixa do estoque agora, mesmo tendo disponível. O que você tem em estoque continua livre para outros clientes; a baixa deste item é feita depois, na aba Vendas, quando a mercadoria chegar.</span>
+          </label>
+        )}
+        {produtoAtual && !preVendaSel && (
           <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o depósito...</option>
             {depositos.map(d => <option key={d.id} value={d.id}>{d.nome} ({availableQty(produtoAtual, d.id)} disp.)</option>)}
           </select>
         )}
-        {produtoAtual && depositoSel && (
+        {produtoAtual && (depositoSel || preVendaSel) && (
           <div className="flex flex-col sm:flex-row gap-2">
             <input type="number" min={1} value={qtdSel} onChange={e => setQtdSel(e.target.value)} placeholder="Qtd" className="sm:w-24 border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input type="text" inputMode="decimal" value={precoSel} onChange={e => setPrecoSel(e.target.value)} placeholder="Preço de venda unit. (ex: 518,42)" className="sm:w-40 border border-slate-200 rounded-md px-2 py-2 text-sm" />
@@ -1825,13 +1857,14 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
             // produto/depósito já ocupam do estoque (espelha a ordem de consumo na venda).
             const prodDaLinha = estoque.find(p => p.id === it.itemId);
             const dispLinha = availableQty(prodDaLinha, it.depositoId);
-            const acumulado = carrinho.slice(0, idx + 1).filter(x => x.itemId === it.itemId && x.depositoId === it.depositoId).reduce((a, x) => a + x.quantidade, 0);
-            const semEstoque = Math.max(0, Math.min(it.quantidade, acumulado - dispLinha));
+            // Linhas de pré-venda por escolha não consomem estoque — ficam fora da conta.
+            const acumulado = carrinho.slice(0, idx + 1).filter(x => !x.preVenda && x.itemId === it.itemId && x.depositoId === it.depositoId).reduce((a, x) => a + x.quantidade, 0);
+            const semEstoque = it.preVenda ? 0 : Math.max(0, Math.min(it.quantidade, acumulado - dispLinha));
             return (
             <div key={idx} className="flex justify-between items-center px-3 py-2 text-sm">
               <div>
                 <p>{it.descricao} {it.serial && <span className="text-xs font-mono text-slate-400">· SN {it.serial}</span>}</p>
-                <p className="text-xs text-slate-400">{it.quantidade}x {currency(it.precoVendaUnitario)} {it.depositoNome && <span className="inline-flex items-center gap-0.5">· <Warehouse size={10} className="inline" /> {it.depositoNome}</span>} {semEstoque > 0 && <span className="text-amber-600 font-medium">· {semEstoque} sem estoque (pré-venda)</span>}</p>
+                <p className="text-xs text-slate-400">{it.quantidade}x {currency(it.precoVendaUnitario)} {it.depositoNome && <span className="inline-flex items-center gap-0.5">· <Warehouse size={10} className="inline" /> {it.depositoNome}</span>} {semEstoque > 0 && <span className="text-amber-600 font-medium">· {semEstoque} sem estoque (pré-venda)</span>}{it.preVenda && <span className="text-amber-600 font-medium">· pré-venda — não baixa do estoque</span>}</p>
               </div>
               <div className="flex items-center gap-2">
                 <span className="font-medium">{currency(it.precoVendaUnitario * it.quantidade)}</span>
@@ -3991,7 +4024,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     const qtdBaixar = Math.min(parseInt(qtd) || 0, item.quantidadePendente || 0);
     if (qtdBaixar < 1 || !depositoId) return;
     const depositoNome = depositos.find(d => d.id === depositoId)?.nome || '';
-    const linha = { ...item, quantidade: qtdBaixar, depositoId, depositoNome, unidadeId: undefined, serial: undefined, loteConsumos: undefined, quantidadePendente: undefined };
+    const linha = { ...item, quantidade: qtdBaixar, depositoId, depositoNome, unidadeId: undefined, serial: undefined, loteConsumos: undefined, quantidadePendente: undefined, preVenda: undefined };
     const { novoEstoque, itensResultado, erros } = consumirEstoque(estoque, [linha]);
     if (erros.length > 0) { notify(erros[0]); return; }
     const consumido = itensResultado[0];
@@ -6902,6 +6935,10 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
           <div className="flex justify-between text-sm">
             <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem comprovante de pagamento)</span></span>
             <span className="font-medium">{currency(balanco.valoresAReceber)}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Mercadoria a entregar <span className="text-slate-400">(pré-vendas pendentes, a preço de venda — não entra no total)</span></span>
+            <span className="font-medium text-amber-700">{currency(balanco.mercadoriaAEntregar || 0)}</span>
           </div>
           <div className="flex justify-between text-sm pt-2 border-t border-slate-200">
             <span className="text-slate-800 font-medium">Total imobilizado</span>
