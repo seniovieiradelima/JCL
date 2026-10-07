@@ -1454,7 +1454,7 @@ function AppInner() {
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
-        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} pedidosCompra={pedidosCompra} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} askConfirm={askConfirm} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
@@ -6622,7 +6622,7 @@ function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
   return sug.sort((a, b) => a.dist - b.dist).slice(0, 4);
 }
 
-function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, pedidosCompra, askConfirm, notify }) {
+function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, setPagamentos, pedidosCompra, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [conta, setConta] = useState('');
   const [textoExtrato, setTextoExtrato] = useState('');
@@ -6631,6 +6631,8 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
   const [vinculandoId, setVinculandoId] = useState(null);
   const [vinculosManuais, setVinculosManuais] = useState([]);
   const [selManual, setSelManual] = useState('');
+  const [lancandoId, setLancandoId] = useState(null);
+  const [categoriaLanc, setCategoriaLanc] = useState(PAGAMENTO_CATEGORIAS_SAIDA[0]);
 
   const aberta = conciliacoes.find(c => c.id === abertaId) || null;
 
@@ -6668,6 +6670,21 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
     if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() }))) return;
     setVinculandoId(null); setVinculosManuais([]); setSelManual('');
   }
+  // Despesa que está no extrato mas nunca foi lançada no sistema: cria o Pagamento
+  // (tipo Saída) já preenchido com os dados do extrato e concilia na mesma hora.
+  async function lancarPagamento(l) {
+    const beneficiario = l.descricao.replace(/Transferência \| Pix|Pagamento|Transferência/gi, '').replace(/\s+/g, ' ').trim();
+    const novo = {
+      id: uid(), tipo: 'Saída', data: new Date(l.data + 'T12:00:00').toISOString(),
+      categoria: categoriaLanc, descricao: `${l.descricao} (lançado pela conciliação — ${aberta.conta})`,
+      beneficiario, valor: l.valor, comprovante: null, criadoEm: new Date().toISOString(), autor: autorAtual,
+    };
+    if (!(await setPagamentos([novo, ...pagamentos]))) return;
+    await conciliar(l, [{ tipo: 'pagamento', refId: novo.id, rotulo: `Pagamento — ${categoriaLanc} · ${beneficiario || l.descricao} (${formatDate(novo.data)})`, valor: l.valor }]);
+    setLancandoId(null);
+    notify(`Pagamento de ${currency(l.valor)} lançado em "${categoriaLanc}" e conciliado`);
+  }
+
   async function ignorar(l) {
     if (!(await askConfirm(`Marcar "${l.descricao}" (${currency(l.valor)}) como fora do sistema? Use para movimentos que não passam pelo SGM (contas pessoais, impostos, tarifas...).`))) return;
     await atualizarLancamento(l.id, { status: 'ignorado', conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() });
@@ -6839,10 +6856,21 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
                         </div>
                       ))}
                       {sugestoes.length === 0 && <p className="text-[11px] text-amber-600">Nenhum lançamento do sistema com esse valor — vincule manualmente ou marque fora do sistema.</p>}
-                      <div className="flex items-center gap-2 text-[11px]">
-                        <button onClick={() => { setVinculandoId(vinculandoId === l.id ? null : l.id); setVinculosManuais([]); setSelManual(''); }} className="text-slate-600 border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-50">Vincular manualmente</button>
+                      <div className="flex items-center gap-2 text-[11px] flex-wrap">
+                        <button onClick={() => { setVinculandoId(vinculandoId === l.id ? null : l.id); setVinculosManuais([]); setSelManual(''); setLancandoId(null); }} className="text-slate-600 border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-50">Vincular manualmente</button>
+                        {l.tipo === 'saida' && <button onClick={() => { setLancandoId(lancandoId === l.id ? null : l.id); setCategoriaLanc(PAGAMENTO_CATEGORIAS_SAIDA[0]); setVinculandoId(null); }} className="text-emerald-700 border border-emerald-300 bg-emerald-50 px-2 py-0.5 rounded hover:bg-emerald-100" title="A despesa está no extrato mas não no sistema: cria o Pagamento já preenchido e concilia">Lançar pagamento</button>}
                         <button onClick={() => ignorar(l)} className="text-slate-400 px-2 py-0.5 rounded hover:bg-slate-50">Fora do sistema</button>
                       </div>
+                      {lancandoId === l.id && (
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-md p-2 mt-1 flex items-center gap-2 flex-wrap text-[11px]">
+                          <span className="text-emerald-800">Lançar <strong>{currency(l.valor)}</strong> de {formatDate(l.data + 'T12:00:00')} na aba Pagamentos como:</span>
+                          <select value={categoriaLanc} onChange={e => setCategoriaLanc(e.target.value)} className="border border-slate-200 rounded px-1.5 py-1 text-[11px]">
+                            {PAGAMENTO_CATEGORIAS_SAIDA.map(c => <option key={c}>{c}</option>)}
+                          </select>
+                          <button onClick={() => lancarPagamento(l)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded">Lançar e conciliar</button>
+                          <button onClick={() => setLancandoId(null)} className="text-slate-400 px-1.5 py-1">cancelar</button>
+                        </div>
+                      )}
                       {vinculandoId === l.id && (
                         <div className="bg-slate-50 border border-slate-200 rounded-md p-2 mt-1">
                           <p className="text-[11px] text-slate-500 mb-1">Um lançamento do extrato pode quitar mais de um registro (ex: uma transferência pagando dois pedidos) — adicione quantos precisar.</p>
