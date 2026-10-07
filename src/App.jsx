@@ -902,6 +902,7 @@ function AppInner() {
   const [propostas, setPropostas] = useState([]);
   const [logomarcas, setLogomarcas] = useState({ integradora: '', distribuidora: '' });
   const [conciliacoes, setConciliacoes] = useState([]);
+  const [categoriasPagamento, setCategoriasPagamento] = useState({ saida: PAGAMENTO_CATEGORIAS_SAIDA, entrada: PAGAMENTO_CATEGORIAS_ENTRADA });
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -1120,6 +1121,13 @@ function AppInner() {
       setIndicadores(ind);
       setPropostas(pr);
       setConciliacoes(cb);
+      const cats = await loadConfig('categoriasPagamento', null);
+      if (cats) {
+        setCategoriasPagamento({
+          saida: Array.isArray(cats.saida) && cats.saida.length ? cats.saida : PAGAMENTO_CATEGORIAS_SAIDA,
+          entrada: Array.isArray(cats.entrada) && cats.entrada.length ? cats.entrada : PAGAMENTO_CATEGORIAS_ENTRADA,
+        });
+      }
       const lgm = await loadConfig('logomarcas', null);
       if (lgm) {
         const norm = { integradora: lgm.integradora || '', distribuidora: lgm.distribuidora || '' };
@@ -1259,6 +1267,12 @@ function AppInner() {
   async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
   async function persistPropostas(next) { return persist('propostas', setPropostas, next, propostas); }
   async function persistConciliacoes(next) { return persist('conciliacoes', setConciliacoes, next, conciliacoes); }
+  async function salvarCategoriasPagamento(next) {
+    const ok = await saveConfig('categoriasPagamento', next);
+    if (!ok) { notify('⚠️ Não foi possível salvar as categorias. Verifique a conexão e tente de novo.'); return false; }
+    setCategoriasPagamento(next);
+    return true;
+  }
   async function salvarLogomarcas(next) {
     const ok = await saveConfig('logomarcas', next);
     if (!ok) { notify('⚠️ Não foi possível salvar a logomarca. Verifique a conexão e tente de novo.'); return false; }
@@ -1452,9 +1466,9 @@ function AppInner() {
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
         )}
-        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
+        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
-        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
@@ -5548,12 +5562,79 @@ function BalancoModule({ balancos, setBalancos, estoque, setEstoque, depositos, 
   );
 }
 
-function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosCompra, recebimentos, askSenha, notify }) {
+// Cadastro das categorias de pagamento (config 'categoriasPagamento'). Renomear ou remover
+// NÃO mexe nos pagamentos antigos — eles guardam o texto da época; muda só as opções novas.
+function CategoriasPagamentoEditor({ categorias, salvar, notify }) {
+  const [aberto, setAberto] = useState(false);
+  const [draftSaida, setDraftSaida] = useState([]);
+  const [draftEntrada, setDraftEntrada] = useState([]);
+  const [salvando, setSalvando] = useState(false);
+
+  function abrir() {
+    setDraftSaida([...categorias.saida]);
+    setDraftEntrada([...categorias.entrada]);
+    setAberto(true);
+  }
+  async function salvarTudo() {
+    const limpa = (arr) => {
+      const vistos = new Set();
+      return arr.map(c => String(c).replace(/\s+/g, ' ').trim()).filter(c => {
+        const k = c.toLowerCase();
+        if (!c || vistos.has(k)) return false;
+        vistos.add(k);
+        return true;
+      });
+    };
+    const saida = limpa(draftSaida);
+    const entrada = limpa(draftEntrada);
+    if (saida.length === 0 || entrada.length === 0) { notify('Cada lista precisa de pelo menos uma categoria'); return; }
+    setSalvando(true);
+    if (await salvar({ saida, entrada })) {
+      setAberto(false);
+      notify('Categorias salvas — valem para os próximos lançamentos; os antigos não mudam');
+    }
+    setSalvando(false);
+  }
+  const edita = (setLista) => (i, v) => setLista(l => l.map((x, j) => (j === i ? v : x)));
+  const remove = (setLista) => (i) => setLista(l => l.filter((_, j) => j !== i));
+
+  if (!aberto) {
+    return <button onClick={abrir} className="text-xs text-slate-500 underline mb-4">Gerenciar categorias</button>;
+  }
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+      <h3 className="text-sm font-medium mb-1">Categorias de pagamento</h3>
+      <p className="text-[11px] text-slate-400 mb-3">Renomear ou remover não altera os lançamentos antigos — eles guardam o nome da época. As mudanças valem para os próximos.</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {[['Saídas (despesas)', draftSaida, setDraftSaida], ['Entradas extras', draftEntrada, setDraftEntrada]].map(([titulo, lista, setLista]) => (
+          <div key={titulo}>
+            <p className="text-xs font-medium text-slate-600 mb-1.5">{titulo}</p>
+            <div className="space-y-1">
+              {lista.map((c, i) => (
+                <div key={i} className="flex items-center gap-1.5">
+                  <input value={c} onChange={e => edita(setLista)(i, e.target.value)} className="flex-1 border border-slate-200 rounded-md px-2 py-1.5 text-xs" />
+                  <button onClick={() => remove(setLista)(i)} className="text-slate-300 hover:text-red-500" title="Remover das opções (lançamentos antigos não mudam)"><X size={14} /></button>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setLista(l => [...l, ''])} className="text-xs text-slate-500 border border-slate-200 px-2 py-1 rounded-md mt-1.5 hover:bg-slate-50">+ Nova categoria</button>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2 mt-4">
+        <button onClick={salvarTudo} disabled={salvando} className="text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-md disabled:opacity-50">{salvando ? 'Salvando...' : 'Salvar categorias'}</button>
+        <button onClick={() => setAberto(false)} className="text-sm text-slate-500 px-3 py-2">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosCompra, recebimentos, categorias, salvarCategorias, askSenha, notify }) {
   const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
   const [showForm, setShowForm] = useState(false);
   const [tipo, setTipo] = useState('Saída');
   const [data, setData] = useState(new Date().toISOString().slice(0, 10));
-  const [categoria, setCategoria] = useState(PAGAMENTO_CATEGORIAS_SAIDA[0]);
+  const [categoria, setCategoria] = useState(categorias.saida[0]);
   const [descricao, setDescricao] = useState('');
   const [beneficiario, setBeneficiario] = useState('');
   const [valor, setValor] = useState('');
@@ -5564,15 +5645,15 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
   const [filtroTipo, setFiltroTipo] = useState('Todos');
   const [ordenacao, setOrdenacao] = useState('recente');
 
-  const categoriasDoTipo = tipo === 'Entrada' ? PAGAMENTO_CATEGORIAS_ENTRADA : PAGAMENTO_CATEGORIAS_SAIDA;
+  const categoriasDoTipo = tipo === 'Entrada' ? categorias.entrada : categorias.saida;
 
   function mudarTipo(novoTipo) {
     setTipo(novoTipo);
-    setCategoria((novoTipo === 'Entrada' ? PAGAMENTO_CATEGORIAS_ENTRADA : PAGAMENTO_CATEGORIAS_SAIDA)[0]);
+    setCategoria((novoTipo === 'Entrada' ? categorias.entrada : categorias.saida)[0]);
   }
 
   function resetForm() {
-    setTipo('Saída'); setCategoria(PAGAMENTO_CATEGORIAS_SAIDA[0]); setData(new Date().toISOString().slice(0, 10));
+    setTipo('Saída'); setCategoria(categorias.saida[0]); setData(new Date().toISOString().slice(0, 10));
     setDescricao(''); setBeneficiario(''); setValor(''); setComprovante(null); setShowForm(false);
   }
 
@@ -5647,7 +5728,8 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
 
   return (
     <div>
-      <p className="text-xs text-slate-400 mb-4">Lançamentos de caixa que não são compra de material pro estoque — tanto saídas (despesas) quanto entradas extras. Usam a margem de contribuição, não o saldo de reposição.</p>
+      <p className="text-xs text-slate-400 mb-1">Lançamentos de caixa que não são compra de material pro estoque — tanto saídas (despesas) quanto entradas extras. Usam a margem de contribuição, não o saldo de reposição.</p>
+      <CategoriasPagamentoEditor categorias={categorias} salvar={salvarCategorias} notify={notify} />
 
       <div className={`rounded-lg p-4 mb-5 border ${resumoMes.saldo < 0 ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
         <p className={`text-xs ${resumoMes.saldo < 0 ? 'text-red-700' : 'text-emerald-700'}`}>Saldo disponível do mês (margem de contribuição + entradas extras - saídas)</p>
@@ -6638,7 +6720,7 @@ function categoriaLembrada(beneficiario, pagamentos) {
   return hit ? hit.categoria : null;
 }
 
-function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, setPagamentos, pedidosCompra, askConfirm, notify }) {
+function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, setPagamentos, pedidosCompra, categoriasSaida, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [conta, setConta] = useState('');
   const [textoExtrato, setTextoExtrato] = useState('');
@@ -6648,7 +6730,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
   const [vinculosManuais, setVinculosManuais] = useState([]);
   const [selManual, setSelManual] = useState('');
   const [lancandoId, setLancandoId] = useState(null);
-  const [categoriaLanc, setCategoriaLanc] = useState(PAGAMENTO_CATEGORIAS_SAIDA[0]);
+  const [categoriaLanc, setCategoriaLanc] = useState(categoriasSaida[0] || '');
   const [categoriaFoiLembrada, setCategoriaFoiLembrada] = useState(false);
 
   const aberta = conciliacoes.find(c => c.id === abertaId) || null;
@@ -6875,14 +6957,14 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
                       {sugestoes.length === 0 && <p className="text-[11px] text-amber-600">Nenhum lançamento do sistema com esse valor — vincule manualmente ou marque fora do sistema.</p>}
                       <div className="flex items-center gap-2 text-[11px] flex-wrap">
                         <button onClick={() => { setVinculandoId(vinculandoId === l.id ? null : l.id); setVinculosManuais([]); setSelManual(''); setLancandoId(null); }} className="text-slate-600 border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-50">Vincular manualmente</button>
-                        {l.tipo === 'saida' && <button onClick={() => { const lembrada = categoriaLembrada(limparBeneficiario(l.descricao), pagamentos); setLancandoId(lancandoId === l.id ? null : l.id); setCategoriaLanc(lembrada || PAGAMENTO_CATEGORIAS_SAIDA[0]); setCategoriaFoiLembrada(!!lembrada); setVinculandoId(null); }} className="text-emerald-700 border border-emerald-300 bg-emerald-50 px-2 py-0.5 rounded hover:bg-emerald-100" title="A despesa está no extrato mas não no sistema: cria o Pagamento já preenchido e concilia">Lançar pagamento</button>}
+                        {l.tipo === 'saida' && <button onClick={() => { const memorizada = categoriaLembrada(limparBeneficiario(l.descricao), pagamentos); const lembrada = memorizada && categoriasSaida.includes(memorizada) ? memorizada : null; setLancandoId(lancandoId === l.id ? null : l.id); setCategoriaLanc(lembrada || categoriasSaida[0] || ''); setCategoriaFoiLembrada(!!lembrada); setVinculandoId(null); }} className="text-emerald-700 border border-emerald-300 bg-emerald-50 px-2 py-0.5 rounded hover:bg-emerald-100" title="A despesa está no extrato mas não no sistema: cria o Pagamento já preenchido e concilia">Lançar pagamento</button>}
                         <button onClick={() => ignorar(l)} className="text-slate-400 px-2 py-0.5 rounded hover:bg-slate-50">Fora do sistema</button>
                       </div>
                       {lancandoId === l.id && (
                         <div className="bg-emerald-50 border border-emerald-200 rounded-md p-2 mt-1 flex items-center gap-2 flex-wrap text-[11px]">
                           <span className="text-emerald-800">Lançar <strong>{currency(l.valor)}</strong> de {formatDate(l.data + 'T12:00:00')} na aba Pagamentos como:</span>
                           <select value={categoriaLanc} onChange={e => { setCategoriaLanc(e.target.value); setCategoriaFoiLembrada(false); }} className="border border-slate-200 rounded px-1.5 py-1 text-[11px]">
-                            {PAGAMENTO_CATEGORIAS_SAIDA.map(c => <option key={c}>{c}</option>)}
+                            {categoriasSaida.map(c => <option key={c}>{c}</option>)}
                           </select>
                           {categoriaFoiLembrada && <span className="text-emerald-700">✓ lembrada dos lançamentos anteriores deste recebedor</span>}
                           <button onClick={() => lancarPagamento(l)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded">Lançar e conciliar</button>
