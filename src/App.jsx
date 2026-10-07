@@ -7,7 +7,7 @@ import LoginScreen from './LoginScreen';
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
 const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao', 'logomarcas'];
-const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'pagamentos', 'financeiro'];
+const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'pagamentos', 'conciliacao', 'financeiro'];
 const PAGAMENTO_CATEGORIAS_SAIDA = [
   'Salários e encargos', 'Pró-labore / retirada de sócio', 'Aluguel', 'Energia elétrica', 'Água',
   'Internet / Telefone', 'Combustível', 'Manutenção de veículo', 'Contador / Consultoria',
@@ -901,6 +901,7 @@ function AppInner() {
   const [indicadores, setIndicadores] = useState([]);
   const [propostas, setPropostas] = useState([]);
   const [logomarcas, setLogomarcas] = useState({ integradora: '', distribuidora: '' });
+  const [conciliacoes, setConciliacoes] = useState([]);
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -930,7 +931,7 @@ function AppInner() {
     const dados = {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
-      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores, propostas,
+      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores, propostas, conciliacoes,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -977,6 +978,7 @@ function AppInner() {
         ['conferências', () => persistConferencias(dados.conferencias || [])],
         ['indicadores', () => persistIndicadores(dados.indicadores || [])],
         ['propostas', () => persistPropostas(dados.propostas || [])],
+        ['conciliações', () => persistConciliacoes(dados.conciliacoes || [])],
       ];
       for (const [nome, gravar] of etapas) {
         if (!(await gravar())) {
@@ -1003,7 +1005,7 @@ function AppInner() {
     (async () => {
       try {
       await migrarDadosAntigosSeNecessario();
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr, cb] = await Promise.all([
         loadCollection('estoque', []),
         loadCollection('clientes', []),
         loadCollection('fornecedores', []),
@@ -1022,6 +1024,7 @@ function AppInner() {
         loadCollection('conferencias', []),
         loadCollection('indicadores', []),
         loadCollection('propostas', []),
+        loadCollection('conciliacoes', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1116,6 +1119,7 @@ function AppInner() {
       setConferencias(cf);
       setIndicadores(ind);
       setPropostas(pr);
+      setConciliacoes(cb);
       const lgm = await loadConfig('logomarcas', null);
       if (lgm) {
         const norm = { integradora: lgm.integradora || '', distribuidora: lgm.distribuidora || '' };
@@ -1254,6 +1258,7 @@ function AppInner() {
   async function persistConferencias(next) { return persist('conferencias', setConferencias, next, conferencias); }
   async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
   async function persistPropostas(next) { return persist('propostas', setPropostas, next, propostas); }
+  async function persistConciliacoes(next) { return persist('conciliacoes', setConciliacoes, next, conciliacoes); }
   async function salvarLogomarcas(next) {
     const ok = await saveConfig('logomarcas', next);
     if (!ok) { notify('⚠️ Não foi possível salvar a logomarca. Verifique a conexão e tente de novo.'); return false; }
@@ -1345,6 +1350,7 @@ function AppInner() {
                 <SubTabButton icon={ClipboardList} label="Conferência" active={tab === 'conferencia'} onClick={() => setTab('conferencia')} />
                 <SubTabButton icon={Scale} label="Balanço de estoque" active={tab === 'balanco'} onClick={() => setTab('balanco')} />
                 <SubTabButton icon={HandCoins} label="Pagamentos" active={tab === 'pagamentos'} onClick={() => setTab('pagamentos')} />
+                <SubTabButton icon={ArrowRightCircle} label="Conciliação" active={tab === 'conciliacao'} onClick={() => setTab('conciliacao')} />
                 <SubTabButton icon={LineChart} label="Financeiro" active={tab === 'financeiro'} onClick={() => setTab('financeiro')} />
               </nav>
             </div>
@@ -1448,6 +1454,7 @@ function AppInner() {
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
+        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} pedidosCompra={pedidosCompra} askConfirm={askConfirm} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
@@ -6533,6 +6540,338 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- CONCILIAÇÃO BANCÁRIA (conferência de saídas do extrato) ---------------- */
+
+// Lê o texto do extrato da Stone copiado do PDF: cada lançamento é
+// "dd/mm/aa Tipo Descrição ± R$ valor R$ saldo Contraparte".
+function parseExtratoStone(texto) {
+  const lanc = [];
+  const blocos = String(texto || '').split(/(?=\d{2}\/\d{2}\/\d{2}(?!\d)\s)/);
+  for (const b of blocos) {
+    const m = b.match(/^(\d{2})\/(\d{2})\/(\d{2})(?!\d)\s+([\s\S]*?)([+-])\s*R\$\s*([\d.,]+)\s+R\$\s*([\d.,]+)([\s\S]*)$/);
+    if (!m) continue;
+    const [, dd, mm, aa, cabeca, sinal, valorTxt, saldoTxt, cauda] = m;
+    const num = (t) => parseFloat(String(t).replace(/\./g, '').replace(',', '.')) || 0;
+    const descricao = cabeca.replace(/^(Entrada|Saída)\s*/i, '').replace(/\s+/g, ' ').trim();
+    // O rodapé/cabeçalho de página do PDF pode grudar no fim do bloco — corta fora.
+    const contraparte = cauda.split(/Extrato de conta corrente/i)[0].replace(/\s+/g, ' ').trim();
+    lanc.push({
+      id: uid(),
+      data: `20${aa}-${mm}-${dd}`,
+      tipo: sinal === '+' ? 'entrada' : 'saida',
+      descricao, valor: num(valorTxt), saldo: num(saldoTxt), contraparte,
+      status: 'pendente', vinculos: [],
+    });
+  }
+  // O extrato vem do mais novo para o mais antigo — guardamos em ordem cronológica.
+  return lanc.reverse();
+}
+
+// Lê um arquivo OFX (padrão de exportação dos bancos) — cobre as outras contas.
+function parseExtratoOFX(texto) {
+  const lanc = [];
+  const blocos = String(texto || '').split(/<STMTTRN>/i).slice(1);
+  for (const b of blocos) {
+    const campo = (tag) => { const m = b.match(new RegExp('<' + tag + '>([^<\\r\\n]*)', 'i')); return m ? m[1].trim() : ''; };
+    const amt = parseFloat(String(campo('TRNAMT')).replace(',', '.'));
+    const dt = campo('DTPOSTED');
+    if (!amt || dt.length < 8) continue;
+    lanc.push({
+      id: uid(),
+      data: `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`,
+      tipo: amt > 0 ? 'entrada' : 'saida',
+      descricao: [campo('NAME'), campo('MEMO')].filter(Boolean).join(' — '),
+      valor: Math.abs(amt), saldo: null, contraparte: '',
+      status: 'pendente', vinculos: [],
+    });
+  }
+  return lanc.sort((a, b) => a.data.localeCompare(b.data));
+}
+
+// Sugestões para um lançamento: mesmo valor (ao centavo), ordenadas pela proximidade de
+// data. Saída casa com Pagamentos e Pedidos de compra; entrada, com comprovantes de venda.
+function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
+  const sug = [];
+  const dEx = new Date(l.data + 'T12:00:00').getTime();
+  const dias = (iso) => iso ? Math.abs(new Date(iso).getTime() - dEx) / 86400000 : 999;
+  const bate = (v) => Math.abs((v || 0) - l.valor) < 0.01;
+  if (l.tipo === 'saida') {
+    for (const p of (pagamentos || [])) {
+      if (p.anulado || p.tipo !== 'Saída') continue;
+      if (bate(p.valor)) sug.push({ tipo: 'pagamento', refId: p.id, rotulo: `Pagamento — ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} (${formatDate(p.data)})`, valor: p.valor, dist: dias(p.data) });
+    }
+    for (const pc of (pedidosCompra || [])) {
+      if (pc.cancelado || pc.anulado) continue;
+      if (bate(pc.valorTotal)) sug.push({ tipo: 'pedido', refId: pc.id, rotulo: `Pedido ${pc.numeroPedidoFornecedor} — ${pc.fornecedorNome} (${formatDate(pc.data)})`, valor: pc.valorTotal, dist: dias(pc.data) });
+    }
+  } else {
+    for (const v of (vendas || [])) {
+      if (v.anulado) continue;
+      for (const c of (v.comprovantes || [])) {
+        if (bate(c.valor)) sug.push({ tipo: 'venda', refId: v.id, rotulo: `Venda ${v.clienteNome} — comprovante ${currency(c.valor || 0)}${c.formaRecebimentoNome ? ' · ' + c.formaRecebimentoNome : ''}`, valor: c.valor, dist: dias(c.data || v.data) });
+      }
+      if ((v.comprovantes || []).length === 0 && bate(v.totalVenda)) {
+        sug.push({ tipo: 'venda', refId: v.id, rotulo: `Venda ${v.clienteNome} — total ${currency(v.totalVenda)} (sem comprovante anexado)`, valor: v.totalVenda, dist: dias(v.data) });
+      }
+    }
+  }
+  return sug.sort((a, b) => a.dist - b.dist).slice(0, 4);
+}
+
+function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, pedidosCompra, askConfirm, notify }) {
+  const [showForm, setShowForm] = useState(false);
+  const [conta, setConta] = useState('');
+  const [textoExtrato, setTextoExtrato] = useState('');
+  const [abertaId, setAbertaId] = useState(null);
+  const [filtro, setFiltro] = useState('pendente');
+  const [vinculandoId, setVinculandoId] = useState(null);
+  const [vinculosManuais, setVinculosManuais] = useState([]);
+  const [selManual, setSelManual] = useState('');
+
+  const aberta = conciliacoes.find(c => c.id === abertaId) || null;
+
+  async function importar() {
+    if (!conta.trim()) { notify('Dê um nome à conta (ex: Stone JCL)'); return; }
+    const txt = textoExtrato.trim();
+    if (!txt) { notify('Cole o texto do extrato: abra o PDF, selecione tudo (Ctrl+A), copie e cole aqui — ou use o botão para carregar um arquivo OFX'); return; }
+    const lanc = /<OFX|<STMTTRN/i.test(txt) ? parseExtratoOFX(txt) : parseExtratoStone(txt);
+    if (lanc.length === 0) { notify('⚠️ Não reconheci nenhum lançamento no texto colado. Confira se copiou o extrato inteiro (PDF da Stone ou arquivo OFX).'); return; }
+    const registro = {
+      id: uid(), conta: conta.trim(), criadaEm: new Date().toISOString(), autor: autorAtual,
+      periodo: `${formatDate(lanc[0].data + 'T12:00:00')} a ${formatDate(lanc[lanc.length - 1].data + 'T12:00:00')}`,
+      lancamentos: lanc,
+    };
+    if (!(await setConciliacoes([registro, ...conciliacoes]))) return;
+    notify(`Extrato importado: ${lanc.length} lançamento(s) de ${registro.periodo}`);
+    setShowForm(false); setTextoExtrato(''); setAbertaId(registro.id); setFiltro('pendente');
+  }
+
+  async function lerArquivo(e) {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    setTextoExtrato(await f.text());
+    notify('Arquivo carregado — confira o nome da conta e clique em Importar');
+  }
+
+  async function atualizarLancamento(lid, mudanca) {
+    const next = conciliacoes.map(c => c.id !== aberta.id ? c : {
+      ...c, lancamentos: c.lancamentos.map(l => (l.id === lid ? { ...l, ...mudanca } : l)),
+    });
+    return setConciliacoes(next);
+  }
+  async function conciliar(l, vinculos) {
+    if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() }))) return;
+    setVinculandoId(null); setVinculosManuais([]); setSelManual('');
+  }
+  async function ignorar(l) {
+    if (!(await askConfirm(`Marcar "${l.descricao}" (${currency(l.valor)}) como fora do sistema? Use para movimentos que não passam pelo SGM (contas pessoais, impostos, tarifas...).`))) return;
+    await atualizarLancamento(l.id, { status: 'ignorado', conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() });
+  }
+  async function desfazer(l) {
+    await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined });
+  }
+  async function apagarConciliacao(c) {
+    if (!(await askConfirm(`Apagar a conciliação de ${c.conta} (${c.periodo})? O trabalho de conferência dela será perdido — o extrato pode ser importado de novo depois.`))) return;
+    if (!(await setConciliacoes(conciliacoes.filter(x => x.id !== c.id)))) return;
+    if (abertaId === c.id) setAbertaId(null);
+    notify('Conciliação apagada');
+  }
+
+  // Opções do vínculo manual (saídas: pagamentos e pedidos; entradas: vendas)
+  const opcoesManuais = useMemo(() => {
+    const ops = [];
+    for (const p of (pagamentos || [])) {
+      if (p.anulado || p.tipo !== 'Saída') continue;
+      ops.push({ value: `pagamento:${p.id}`, label: `Pagamento · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor)} (${formatDate(p.data)})` });
+    }
+    for (const pc of (pedidosCompra || [])) {
+      if (pc.cancelado || pc.anulado) continue;
+      ops.push({ value: `pedido:${pc.id}`, label: `Pedido ${pc.numeroPedidoFornecedor} · ${pc.fornecedorNome} — ${currency(pc.valorTotal)} (${formatDate(pc.data)})` });
+    }
+    for (const v of (vendas || [])) {
+      if (v.anulado) continue;
+      ops.push({ value: `venda:${v.id}`, label: `Venda · ${v.clienteNome} — ${currency(v.totalVenda)} (${formatDate(v.data)})` });
+    }
+    return ops;
+  }, [pagamentos, pedidosCompra, vendas]);
+
+  function adicionarVinculoManual() {
+    const [tipo, refId] = String(selManual).split(':');
+    const op = opcoesManuais.find(o => o.value === selManual);
+    if (!op) { notify('Escolha o lançamento do sistema para vincular'); return; }
+    if (vinculosManuais.some(x => x.refId === refId)) { notify('Esse lançamento já está na lista de vínculos'); return; }
+    const mVal = op.label.match(/—\s*(R\$\s*[\d.,]+)/);
+    setVinculosManuais(vs => [...vs, { tipo, refId, rotulo: op.label, valor: parseValorBR((mVal ? mVal[1] : '0').replace('R$', '')) || 0 }]);
+    setSelManual('');
+  }
+
+  const resumo = useMemo(() => {
+    if (!aberta) return null;
+    const ls = aberta.lancamentos;
+    const por = (st) => ls.filter(l => l.status === st);
+    return {
+      total: ls.length,
+      pendentes: por('pendente').length,
+      conciliados: por('conciliado').length,
+      ignorados: por('ignorado').length,
+      valorPendente: por('pendente').reduce((a, l) => a + l.valor, 0),
+    };
+  }, [aberta]);
+
+  const listaFiltrada = useMemo(() => {
+    if (!aberta) return [];
+    return aberta.lancamentos.filter(l => (filtro === 'todos' ? true : l.status === filtro));
+  }, [aberta, filtro]);
+
+  const ESTILO_STATUS = {
+    pendente: 'bg-amber-100 text-amber-700',
+    conciliado: 'bg-emerald-100 text-emerald-700',
+    ignorado: 'bg-slate-200 text-slate-500',
+  };
+  const ROTULO_STATUS = { pendente: 'Pendente', conciliado: 'Conciliado', ignorado: 'Fora do sistema' };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">Conciliação bancária</h2>
+          <p className="text-xs text-slate-400">Confira o extrato da conta lançamento a lançamento contra o que está no sistema (pagamentos, pedidos de compra e recebimentos de vendas). O que não bater, você confirma manualmente.</p>
+        </div>
+        {!showForm && <button onClick={() => setShowForm(true)} className="flex items-center gap-1 text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-md shrink-0"><Plus size={16} /> Importar extrato</button>}
+      </div>
+
+      {showForm && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
+          <h3 className="text-sm font-medium mb-2">Importar extrato</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="text-xs text-slate-500 mb-0.5 block">Conta (para identificar — são várias)</label>
+              <input value={conta} onChange={e => setConta(e.target.value)} placeholder="Ex: Stone JCL" className="border border-slate-200 rounded-md px-2 py-2 text-sm w-full" />
+            </div>
+            <div className="flex items-end">
+              <label className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2.5 rounded-md cursor-pointer">
+                Carregar arquivo OFX/TXT
+                <input type="file" accept=".ofx,.txt,.OFX" className="hidden" onChange={lerArquivo} />
+              </label>
+            </div>
+          </div>
+          <label className="text-xs text-slate-500 mb-0.5 block">Texto do extrato (PDF da Stone: abra, selecione tudo, copie e cole aqui)</label>
+          <textarea value={textoExtrato} onChange={e => setTextoExtrato(e.target.value)} rows={6} placeholder={'30/09/26 Saída\nFULANO DE TAL\nTransferência | Pix\n- R$ 100,00 R$ 61.415,59 BANCO...'} className="border border-slate-200 rounded-md px-2 py-2 text-xs w-full font-mono" />
+          <div className="flex gap-2 mt-3">
+            <button onClick={importar} className="text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-md">Importar</button>
+            <button onClick={() => { setShowForm(false); setTextoExtrato(''); }} className="text-sm text-slate-500 px-3 py-2">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {conciliacoes.length === 0 && !showForm && <p className="text-sm text-slate-400">Nenhum extrato importado ainda. Clique em "Importar extrato" para começar.</p>}
+
+      {conciliacoes.length > 0 && (
+        <div className="flex gap-2 mb-4 flex-wrap">
+          {conciliacoes.map(c => {
+            const pend = c.lancamentos.filter(l => l.status === 'pendente').length;
+            return (
+              <button key={c.id} onClick={() => { setAbertaId(c.id); setVinculandoId(null); }} className={`text-xs px-3 py-2 rounded-md border text-left ${abertaId === c.id ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 text-slate-600'}`}>
+                <span className="font-medium">{c.conta}</span> · {c.periodo}
+                <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${pend > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{pend > 0 ? `${pend} pendentes` : 'completa'}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {aberta && resumo && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+            <div className="text-xs text-slate-500">
+              <span className="font-medium text-slate-700">{aberta.conta}</span> · {aberta.periodo} · {resumo.total} lançamento(s)
+              <span className="ml-2 text-amber-700">{resumo.pendentes} pendente(s) ({currency(resumo.valorPendente)})</span>
+              <span className="ml-2 text-emerald-700">{resumo.conciliados} conciliado(s)</span>
+              <span className="ml-2 text-slate-400">{resumo.ignorados} fora do sistema</span>
+            </div>
+            <button onClick={() => apagarConciliacao(aberta)} className="text-xs text-red-500 hover:bg-red-50 px-2 py-1 rounded-md">Apagar conciliação</button>
+          </div>
+          <div className="flex gap-2 mb-3 flex-wrap">
+            {[['pendente', 'Pendentes'], ['conciliado', 'Conciliados'], ['ignorado', 'Fora do sistema'], ['todos', 'Todos']].map(([v, l]) => (
+              <button key={v} onClick={() => setFiltro(v)} className={`text-xs px-3 py-1.5 rounded-full border ${filtro === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+            ))}
+          </div>
+
+          {listaFiltrada.length === 0 && <p className="text-sm text-slate-400 text-center py-6">{filtro === 'pendente' ? 'Nada pendente — conciliação em dia.' : 'Nenhum lançamento neste filtro.'}</p>}
+          <div className="divide-y divide-slate-100">
+            {listaFiltrada.map(l => {
+              const sugestoes = l.status === 'pendente' ? sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) : [];
+              const somaVinculos = (l.vinculos || []).reduce((a, x) => a + (x.valor || 0), 0);
+              return (
+                <div key={l.id} className="py-2.5">
+                  <div className="flex justify-between items-start gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm text-slate-700">{l.descricao || '(sem descrição)'}</p>
+                      <p className="text-[11px] text-slate-400">{formatDate(l.data + 'T12:00:00')}{l.contraparte ? ` · ${l.contraparte}` : ''}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className={`text-sm font-semibold ${l.tipo === 'saida' ? 'text-rose-600' : 'text-emerald-700'}`}>{l.tipo === 'saida' ? '−' : '+'}{currency(l.valor)}</p>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${ESTILO_STATUS[l.status]}`}>{ROTULO_STATUS[l.status]}</span>
+                    </div>
+                  </div>
+
+                  {l.status === 'conciliado' && (l.vinculos || []).length > 0 && (
+                    <div className="mt-1 text-[11px] text-emerald-700">
+                      {l.vinculos.map((x, i) => <p key={i}>↳ {x.rotulo}</p>)}
+                      {Math.abs(somaVinculos - l.valor) > 0.01 && <p className="text-amber-600">valores não batem exatamente ({currency(somaVinculos)} no sistema) — confirmado manualmente</p>}
+                    </div>
+                  )}
+                  {l.status !== 'pendente' && (
+                    <button onClick={() => desfazer(l)} className="text-[11px] text-slate-400 underline mt-1">desfazer</button>
+                  )}
+
+                  {l.status === 'pendente' && (
+                    <div className="mt-1.5 space-y-1">
+                      {sugestoes.map((sg, i) => (
+                        <div key={i} className="flex items-center gap-2 text-[11px]">
+                          <button onClick={() => conciliar(l, [sg])} className="shrink-0 bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-0.5 rounded">Conciliar</button>
+                          <span className="text-slate-500 truncate">{sg.rotulo}</span>
+                        </div>
+                      ))}
+                      {sugestoes.length === 0 && <p className="text-[11px] text-amber-600">Nenhum lançamento do sistema com esse valor — vincule manualmente ou marque fora do sistema.</p>}
+                      <div className="flex items-center gap-2 text-[11px]">
+                        <button onClick={() => { setVinculandoId(vinculandoId === l.id ? null : l.id); setVinculosManuais([]); setSelManual(''); }} className="text-slate-600 border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-50">Vincular manualmente</button>
+                        <button onClick={() => ignorar(l)} className="text-slate-400 px-2 py-0.5 rounded hover:bg-slate-50">Fora do sistema</button>
+                      </div>
+                      {vinculandoId === l.id && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-md p-2 mt-1">
+                          <p className="text-[11px] text-slate-500 mb-1">Um lançamento do extrato pode quitar mais de um registro (ex: uma transferência pagando dois pedidos) — adicione quantos precisar.</p>
+                          {vinculosManuais.length > 0 && (
+                            <div className="mb-1 space-y-0.5">
+                              {vinculosManuais.map((x, i) => (
+                                <div key={i} className="flex items-center justify-between text-[11px] bg-white border border-slate-100 rounded px-1.5 py-1">
+                                  <span className="truncate">{x.rotulo}</span>
+                                  <button onClick={() => setVinculosManuais(vs => vs.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500 ml-2"><X size={12} /></button>
+                                </div>
+                              ))}
+                              <p className="text-[11px] text-slate-500 text-right">soma: <span className={Math.abs(vinculosManuais.reduce((a, x) => a + x.valor, 0) - l.valor) < 0.01 ? 'text-emerald-700 font-medium' : 'text-amber-600 font-medium'}>{currency(vinculosManuais.reduce((a, x) => a + x.valor, 0))}</span> / extrato {currency(l.valor)}</p>
+                            </div>
+                          )}
+                          <div className="flex gap-2 items-center">
+                            <div className="flex-1 min-w-0"><SelectPesquisavel opcoes={opcoesManuais} value={selManual} onChange={setSelManual} placeholder="Buscar pagamento, pedido ou venda..." compacto /></div>
+                            <button onClick={adicionarVinculoManual} className="text-[11px] bg-slate-200 hover:bg-slate-300 text-slate-700 px-2 py-1.5 rounded">+ Adicionar</button>
+                            <button onClick={() => conciliar(l, vinculosManuais)} disabled={vinculosManuais.length === 0} className="text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1.5 rounded disabled:opacity-30">Concluir vínculo</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
