@@ -6622,6 +6622,22 @@ function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
   return sug.sort((a, b) => a.dist - b.dist).slice(0, 4);
 }
 
+// Nome do recebedor a partir da descrição do extrato (tira "Transferência | Pix" etc.)
+function limparBeneficiario(descricao) {
+  return String(descricao || '').replace(/Transferência \| Pix|Pagamento|Transferência/gi, '').replace(/\s+/g, ' ').trim();
+}
+// Categoria usada da última vez para este recebedor (pelo histórico de Pagamentos):
+// quem já foi classificado uma vez não precisa ser classificado de novo.
+function categoriaLembrada(beneficiario, pagamentos) {
+  const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const alvo = norm(beneficiario);
+  if (!alvo) return null;
+  const hit = (pagamentos || [])
+    .filter(p => !p.anulado && p.tipo === 'Saída' && p.categoria && norm(p.beneficiario) === alvo)
+    .sort((a, b) => new Date(b.data) - new Date(a.data))[0];
+  return hit ? hit.categoria : null;
+}
+
 function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, setPagamentos, pedidosCompra, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [conta, setConta] = useState('');
@@ -6633,6 +6649,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
   const [selManual, setSelManual] = useState('');
   const [lancandoId, setLancandoId] = useState(null);
   const [categoriaLanc, setCategoriaLanc] = useState(PAGAMENTO_CATEGORIAS_SAIDA[0]);
+  const [categoriaFoiLembrada, setCategoriaFoiLembrada] = useState(false);
 
   const aberta = conciliacoes.find(c => c.id === abertaId) || null;
 
@@ -6673,7 +6690,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
   // Despesa que está no extrato mas nunca foi lançada no sistema: cria o Pagamento
   // (tipo Saída) já preenchido com os dados do extrato e concilia na mesma hora.
   async function lancarPagamento(l) {
-    const beneficiario = l.descricao.replace(/Transferência \| Pix|Pagamento|Transferência/gi, '').replace(/\s+/g, ' ').trim();
+    const beneficiario = limparBeneficiario(l.descricao);
     const novo = {
       id: uid(), tipo: 'Saída', data: new Date(l.data + 'T12:00:00').toISOString(),
       categoria: categoriaLanc, descricao: `${l.descricao} (lançado pela conciliação — ${aberta.conta})`,
@@ -6858,15 +6875,16 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
                       {sugestoes.length === 0 && <p className="text-[11px] text-amber-600">Nenhum lançamento do sistema com esse valor — vincule manualmente ou marque fora do sistema.</p>}
                       <div className="flex items-center gap-2 text-[11px] flex-wrap">
                         <button onClick={() => { setVinculandoId(vinculandoId === l.id ? null : l.id); setVinculosManuais([]); setSelManual(''); setLancandoId(null); }} className="text-slate-600 border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-50">Vincular manualmente</button>
-                        {l.tipo === 'saida' && <button onClick={() => { setLancandoId(lancandoId === l.id ? null : l.id); setCategoriaLanc(PAGAMENTO_CATEGORIAS_SAIDA[0]); setVinculandoId(null); }} className="text-emerald-700 border border-emerald-300 bg-emerald-50 px-2 py-0.5 rounded hover:bg-emerald-100" title="A despesa está no extrato mas não no sistema: cria o Pagamento já preenchido e concilia">Lançar pagamento</button>}
+                        {l.tipo === 'saida' && <button onClick={() => { const lembrada = categoriaLembrada(limparBeneficiario(l.descricao), pagamentos); setLancandoId(lancandoId === l.id ? null : l.id); setCategoriaLanc(lembrada || PAGAMENTO_CATEGORIAS_SAIDA[0]); setCategoriaFoiLembrada(!!lembrada); setVinculandoId(null); }} className="text-emerald-700 border border-emerald-300 bg-emerald-50 px-2 py-0.5 rounded hover:bg-emerald-100" title="A despesa está no extrato mas não no sistema: cria o Pagamento já preenchido e concilia">Lançar pagamento</button>}
                         <button onClick={() => ignorar(l)} className="text-slate-400 px-2 py-0.5 rounded hover:bg-slate-50">Fora do sistema</button>
                       </div>
                       {lancandoId === l.id && (
                         <div className="bg-emerald-50 border border-emerald-200 rounded-md p-2 mt-1 flex items-center gap-2 flex-wrap text-[11px]">
                           <span className="text-emerald-800">Lançar <strong>{currency(l.valor)}</strong> de {formatDate(l.data + 'T12:00:00')} na aba Pagamentos como:</span>
-                          <select value={categoriaLanc} onChange={e => setCategoriaLanc(e.target.value)} className="border border-slate-200 rounded px-1.5 py-1 text-[11px]">
+                          <select value={categoriaLanc} onChange={e => { setCategoriaLanc(e.target.value); setCategoriaFoiLembrada(false); }} className="border border-slate-200 rounded px-1.5 py-1 text-[11px]">
                             {PAGAMENTO_CATEGORIAS_SAIDA.map(c => <option key={c}>{c}</option>)}
                           </select>
+                          {categoriaFoiLembrada && <span className="text-emerald-700">✓ lembrada dos lançamentos anteriores deste recebedor</span>}
                           <button onClick={() => lancarPagamento(l)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded">Lançar e conciliar</button>
                           <button onClick={() => setLancandoId(null)} className="text-slate-400 px-1.5 py-1">cancelar</button>
                         </div>
