@@ -1480,7 +1480,7 @@ function AppInner() {
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} setVendas={persistVendas} estoque={estoque} setEstoque={persistEstoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} askSenha={askSenha} notify={notify} />
         )}
-        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
+        {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} conciliacoes={conciliacoes} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
@@ -5827,7 +5827,32 @@ function CategoriasPagamentoEditor({ categorias, salvar, notify }) {
   );
 }
 
-function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosCompra, recebimentos, categorias, salvarCategorias, askSenha, notify }) {
+// Possíveis pagamentos em duplicidade: mesmo dia, mesmo valor e mesmo beneficiário
+// (ou descrição, quando não há beneficiário). É lista de REVISÃO — pares idênticos
+// legítimos existem (ex.: duas taxas iguais no mesmo dia), então a decisão é humana.
+// Cada item diz se está vinculado em alguma conciliação (esse deve FICAR) e se veio
+// do botão "Lançar pagamento" do extrato.
+function gruposPagamentosSuspeitos(pagamentos, conciliacoes) {
+  const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const vinculados = new Set();
+  for (const c of (conciliacoes || [])) {
+    for (const l of (c.lancamentos || [])) {
+      for (const x of (l.vinculos || [])) if (x.tipo === 'pagamento') vinculados.add(x.refId);
+    }
+  }
+  const grupos = new Map();
+  for (const p of (pagamentos || [])) {
+    if (p.anulado || p.tipo !== 'Saída') continue;
+    const quem = norm(p.beneficiario) || norm(p.descricao);
+    const k = `${String(p.data).slice(0, 10)}|${(p.valor || 0).toFixed(2)}|${quem}`;
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push({ ...p, vinculadoNaConciliacao: vinculados.has(p.id), veioDaConciliacao: /lançado pela conciliação/i.test(p.descricao || '') || !!p.viaPagamentoDireto });
+  }
+  return [...grupos.values()].filter(g => g.length >= 2)
+    .sort((a, b) => new Date(b[0].data) - new Date(a[0].data));
+}
+
+function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosCompra, recebimentos, conciliacoes, categorias, salvarCategorias, askSenha, notify }) {
   const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
   const [showForm, setShowForm] = useState(false);
   const [tipo, setTipo] = useState('Saída');
@@ -5928,6 +5953,40 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     <div>
       <p className="text-xs text-slate-400 mb-1">Lançamentos de caixa que não são compra de material pro estoque — tanto saídas (despesas) quanto entradas extras. Usam a margem de contribuição, não o saldo de reposição.</p>
       <CategoriasPagamentoEditor categorias={categorias} salvar={salvarCategorias} notify={notify} />
+      {(() => {
+        const grupos = gruposPagamentosSuspeitos(pagamentos, conciliacoes);
+        if (grupos.length === 0) return null;
+        return (
+          <details className="bg-amber-50 border border-amber-200 rounded-lg mb-4">
+            <summary className="cursor-pointer select-none p-3 text-sm">
+              <span className="font-medium text-amber-800">Possíveis pagamentos em duplicidade</span>
+              <span className="text-amber-700"> — {grupos.length} grupo(s) com mesmo dia, valor e recebedor</span>
+            </summary>
+            <div className="border-t border-amber-100 p-3">
+              <p className="text-[11px] text-amber-700 mb-2">Lista de REVISÃO: pares idênticos podem ser legítimos (duas taxas iguais no mesmo dia). A cópia vinculada na conciliação deve ficar — apague a outra, se for duplicata mesmo. Apagar marca como anulado (senha de aprovação) e preserva o histórico.</p>
+              <div className="space-y-2 max-h-96 overflow-auto">
+                {grupos.map((g, gi) => (
+                  <div key={gi} className="bg-white border border-amber-100 rounded-md p-2">
+                    <p className="text-xs font-medium text-slate-700 mb-1">{formatDate(g[0].data)} · {currency(g[0].valor)} · {g[0].beneficiario || g[0].descricao}</p>
+                    <div className="space-y-1">
+                      {g.map(p => (
+                        <div key={p.id} className="flex items-center justify-between gap-2 text-[11px] bg-slate-50 border border-slate-100 rounded px-2 py-1.5">
+                          <span className="min-w-0 truncate">
+                            {p.categoria}{p.descricao ? ` · ${p.descricao}` : ''} · lançado {p.criadoEm ? formatDate(p.criadoEm) : '—'}{p.autor ? ` por ${p.autor}` : ''}
+                            {p.vinculadoNaConciliacao && <span className="ml-1 px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">vinculado na conciliação — deve ficar</span>}
+                            {p.veioDaConciliacao && !p.vinculadoNaConciliacao && <span className="ml-1 px-1 py-0.5 rounded bg-sky-100 text-sky-700">veio da conciliação</span>}
+                          </span>
+                          <button onClick={() => apagarPagamento(p)} className="shrink-0 text-[11px] text-red-600 border border-red-200 px-2 py-0.5 rounded hover:bg-red-50">Apagar este</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </details>
+        );
+      })()}
 
       <div className={`rounded-lg p-4 mb-5 border ${resumoMes.saldo < 0 ? 'bg-red-50 border-red-200' : 'bg-emerald-50 border-emerald-200'}`}>
         <p className={`text-xs ${resumoMes.saldo < 0 ? 'text-red-700' : 'text-emerald-700'}`}>Saldo disponível do mês (margem de contribuição + entradas extras - saídas)</p>
