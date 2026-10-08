@@ -6906,6 +6906,67 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     notify(`Pagamento de ${currency(l.valor)} lançado em "${categoriaLanc}" e conciliado`);
   }
 
+  async function conciliarAutomaticos() {
+    if (bloqueado()) return;
+    const pendentes = listaFiltrada.filter(l => l.status === 'pendente');
+    // Valor que se repete entre os pendentes fica TODO para o manual: com dois Pix de
+    // R$ 5.000 de clientes diferentes, o automático não tem como saber qual é qual.
+    const vezesPorValor = new Map();
+    pendentes.forEach(l => { const k = `${l.tipo}:${l.valor.toFixed(2)}`; vezesPorValor.set(k, (vezesPorValor.get(k) || 0) + 1); });
+    const usados = new Set();
+    const acoes = [];
+    for (const l of pendentes) {
+      if (vezesPorValor.get(`${l.tipo}:${l.valor.toFixed(2)}`) > 1) continue;
+      const sug = sugerirVinculos(l, { vendas, pagamentos, pedidosCompra });
+      if (sug.length !== 1) continue;
+      const chave = `${sug[0].tipo}:${sug[0].compId || sug[0].refId}`;
+      if (usados.has(chave)) continue;   // um registro do sistema fecha só UM lançamento do extrato
+      usados.add(chave);
+      acoes.push([l, sug[0]]);
+    }
+    if (acoes.length === 0) { notify('Nenhum lançamento pendente com correspondência única — os restantes pedem vínculo manual.'); return; }
+    const confirmaveis = acoes.filter(([l, sg]) => l.tipo === 'entrada' && sg.compId).length;
+    if (!(await askConfirm(
+      `Conciliar automaticamente ${acoes.length} lançamento(s) com correspondência ÚNICA de valor no sistema?` +
+      (confirmaveis ? ` ${confirmaveis} comprovante(s) de venda serão CONFIRMADOS junto (prova do extrato).` : '') +
+      ' Dá para desfazer um a um depois.'
+    ))) return;
+
+    // Confirma os comprovantes das entradas numa gravação só
+    const porVenda = new Map();
+    for (const [l, sg] of acoes) {
+      if (l.tipo !== 'entrada' || sg.tipo !== 'venda' || !sg.compId) continue;
+      if (!porVenda.has(sg.refId)) porVenda.set(sg.refId, new Set());
+      porVenda.get(sg.refId).add(sg.compId);
+    }
+    if (porVenda.size > 0) {
+      const nextVendas = vendas.map(v => {
+        const comps = porVenda.get(v.id);
+        if (!comps) return v;
+        const comprovantes = (v.comprovantes || []).map(c => comps.has(c.id)
+          ? { ...c, confirmado: true, confirmadoPor: autorAtual, confirmadoEm: new Date().toISOString(), confirmadoVia: `conciliação ${aberta?.conta || ''}`.trim() }
+          : c);
+        const totalComprovado = comprovantes.filter(comprovanteConfirmado).reduce((a, c) => a + (c.valor || 0), 0);
+        const quitado = totalComprovado >= v.totalVenda - 0.01;
+        return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
+      });
+      if (!(await setVendas(nextVendas))) return;
+    }
+
+    const porLancamento = new Map(acoes.map(([l, sg]) => [l.id, sg]));
+    const next = conciliacoes.map(c => c.id !== aberta.id ? c : {
+      ...c,
+      lancamentos: c.lancamentos.map(l => porLancamento.has(l.id)
+        ? { ...l, status: 'conciliado', vinculos: [porLancamento.get(l.id)], conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString(), automatico: true }
+        : l),
+    });
+    if (!(await setConciliacoes(next))) {
+      if (porVenda.size > 0) notify('⚠️ Os recebimentos foram confirmados, mas o extrato NÃO ficou marcado. Recarregue (F5) e rode de novo — confirmação não se repete.');
+      return;
+    }
+    notify(`${acoes.length} lançamento(s) conciliados automaticamente${confirmaveis ? ` — ${confirmaveis} recebimento(s) confirmados` : ''}. Os sem correspondência única continuam pendentes para o vínculo manual.`);
+  }
+
   async function ignorar(l) {
     if (bloqueado()) return;
     if (!(await askConfirm(`Marcar "${l.descricao}" (${currency(l.valor)}) como fora do sistema? Use para movimentos que não passam pelo SGM (contas pessoais, impostos, tarifas...).`))) return;
@@ -7037,7 +7098,10 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
               <span className="ml-2 text-emerald-700">{resumo.conciliados} conciliado(s)</span>
               <span className="ml-2 text-slate-400">{resumo.ignorados} fora do sistema</span>
             </div>
-            <button onClick={() => apagarConciliacao(aberta)} className="text-xs text-red-500 hover:bg-red-50 px-2 py-1 rounded-md">Apagar conciliação</button>
+            <div className="flex gap-2">
+              <button onClick={conciliarAutomaticos} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-md" title="Concilia tudo que tem correspondência única e exata de valor no sistema — respeitando os filtros ativos; o resto fica para o vínculo manual">Conciliar automáticos</button>
+              <button onClick={() => apagarConciliacao(aberta)} className="text-xs text-red-500 hover:bg-red-50 px-2 py-1 rounded-md">Apagar conciliação</button>
+            </div>
           </div>
           <div className="flex gap-2 mb-3 flex-wrap">
             {[['pendente', 'Pendentes'], ['conciliado', 'Conciliados'], ['ignorado', 'Fora do sistema'], ['todos', 'Todos']].map(([v, l]) => (
