@@ -35,7 +35,11 @@ function descricaoProduto(p) {
 // Aceita valor digitado com vírgula (padrão BR) ou ponto como separador decimal
 function parseValorBR(v) {
   if (v === null || v === undefined || v === '') return NaN;
-  return parseFloat(String(v).trim().replace(',', '.'));
+  // Formato brasileiro: com vírgula, os pontos são separador de milhar ("5.500,00" = 5500);
+  // sem vírgula, o ponto é decimal ("1500.42"). Aceita "R$" e espaços colados no valor.
+  let t = String(v).trim().replace(/[R$\s\u00A0]/gi, '');
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  return parseFloat(t);
 }
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('pt-BR');
@@ -7179,15 +7183,15 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     const ops = [];
     for (const p of (pagamentos || [])) {
       if (p.anulado || p.tipo !== 'Saída') continue;
-      ops.push({ value: `pagamento:${p.id}`, label: `Pagamento · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor)} (${formatDate(p.data)})` });
+      ops.push({ value: `pagamento:${p.id}`, valor: p.valor || 0, label: `Pagamento · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor)} (${formatDate(p.data)})` });
     }
     for (const pc of (pedidosCompra || [])) {
       if (pc.cancelado || pc.anulado) continue;
-      ops.push({ value: `pedido:${pc.id}`, label: `Pedido ${pc.numeroPedidoFornecedor} · ${pc.fornecedorNome} — ${currency(pc.valorTotal)} (${formatDate(pc.data)})` });
+      ops.push({ value: `pedido:${pc.id}`, valor: pc.valorTotal || 0, label: `Pedido ${pc.numeroPedidoFornecedor} · ${pc.fornecedorNome} — ${currency(pc.valorTotal)} (${formatDate(pc.data)})` });
     }
     for (const v of (vendas || [])) {
       if (v.anulado) continue;
-      ops.push({ value: `venda:${v.id}`, label: `Venda · ${v.clienteNome} — ${currency(v.totalVenda)} (${formatDate(v.data)})` });
+      ops.push({ value: `venda:${v.id}`, valor: v.totalVenda || 0, label: `Venda · ${v.clienteNome} — ${currency(v.totalVenda)} (${formatDate(v.data)})` });
     }
     return ops;
   }, [pagamentos, pedidosCompra, vendas]);
@@ -7197,8 +7201,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     const op = opcoesManuais.find(o => o.value === selManual);
     if (!op) { notify('Escolha o lançamento do sistema para vincular'); return; }
     if (vinculosManuais.some(x => x.refId === refId)) { notify('Esse lançamento já está na lista de vínculos'); return; }
-    const mVal = op.label.match(/—\s*(R\$\s*[\d.,]+)/);
-    setVinculosManuais(vs => [...vs, { tipo, refId, rotulo: op.label, valor: parseValorBR((mVal ? mVal[1] : '0').replace('R$', '')) || 0 }]);
+    setVinculosManuais(vs => [...vs, { tipo, refId, rotulo: op.label, valor: op.valor || 0 }]);
     setSelManual('');
   }
 
@@ -7275,12 +7278,14 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     if (!aberta) return null;
     const ls = aberta.lancamentos;
     const por = (st) => ls.filter(l => l.status === st);
+    const pend = por('pendente');
     return {
       total: ls.length,
-      pendentes: por('pendente').length,
+      pendentes: pend.length,
       conciliados: por('conciliado').length,
       ignorados: por('ignorado').length,
-      valorPendente: por('pendente').reduce((a, l) => a + l.valor, 0),
+      valorPendenteEntradas: pend.filter(l => l.tipo === 'entrada').reduce((a, l) => a + l.valor, 0),
+      valorPendenteSaidas: pend.filter(l => l.tipo === 'saida').reduce((a, l) => a + l.valor, 0),
     };
   }, [aberta]);
 
@@ -7426,7 +7431,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
           <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
             <div className="text-xs text-slate-500">
               <span className="font-medium text-slate-700">{aberta.conta}</span> · {aberta.periodo} · {resumo.total} lançamento(s)
-              <span className="ml-2 text-amber-700">{resumo.pendentes} pendente(s) ({currency(resumo.valorPendente)})</span>
+              <span className="ml-2 text-amber-700">{resumo.pendentes} pendente(s) — entradas {currency(resumo.valorPendenteEntradas)} · saídas {currency(resumo.valorPendenteSaidas)}</span>
               <span className="ml-2 text-emerald-700">{resumo.conciliados} conciliado(s)</span>
               <span className="ml-2 text-slate-400">{resumo.ignorados} fora do sistema</span>
             </div>
