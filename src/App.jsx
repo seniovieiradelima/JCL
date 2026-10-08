@@ -6821,6 +6821,8 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
   const [vinculosManuais, setVinculosManuais] = useState([]);
   const [selManual, setSelManual] = useState('');
   const [lancandoId, setLancandoId] = useState(null);
+  const [verifId, setVerifId] = useState(null);
+  const [verifTexto, setVerifTexto] = useState('');
   const [categoriaLanc, setCategoriaLanc] = useState(categoriasSaida[0] || '');
   const [categoriaFoiLembrada, setCategoriaFoiLembrada] = useState(false);
 
@@ -7029,43 +7031,56 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     }
     let totalR = 0, cobertosR = 0;
     const recebSemProva = [];
+    const recebVerificados = [];
     for (const v of vendas) {
       if (v.anulado) continue;
       for (const comp of (v.comprovantes || [])) {
         totalR++;
         if (comIds.has(comp.id) || vendasVinculadas.has(v.id) || comp.foraExtrato || comp.pagamentoDireto) cobertosR++;
         else recebSemProva.push({ v, comp });
+        if (comp.foraExtrato) recebVerificados.push({ v, comp });
       }
     }
     recebSemProva.sort((a, b) => new Date(a.comp.data || a.v.data) - new Date(b.comp.data || b.v.data));
     let totalP = 0, cobertosP = 0;
     const pagSemProva = [];
+    const pagVerificados = [];
     for (const p of (pagamentos || [])) {
       if (p.anulado || p.tipo !== 'Saída') continue;
       totalP++;
       if (pagIds.has(p.id) || p.foraExtrato || p.viaPagamentoDireto) cobertosP++;
       else pagSemProva.push(p);
+      if (p.foraExtrato) pagVerificados.push(p);
     }
     pagSemProva.sort((a, b) => new Date(a.data) - new Date(b.data));
-    return { totalR, cobertosR, recebSemProva, totalP, cobertosP, pagSemProva };
+    return { totalR, cobertosR, recebSemProva, recebVerificados, totalP, cobertosP, pagSemProva, pagVerificados };
   }, [conciliacoes, vendas, pagamentos]);
 
-  async function marcarForaExtrato(venda, comp) {
-    if (bloqueado()) return;
-    if (!(await askConfirm(`Marcar o recebimento de ${currency(comp.valor || 0)} de ${venda.clienteNome} como FORA do extrato (dinheiro, pagamento direto etc.)? Ele sai da lista de pendências da conciliação.`))) return;
+  // Inspeção manual: o recebimento não está em extrato nenhum (cartão antigo, mercadoria,
+  // espécie...) — o dono vai atrás da história e registra a OCORRÊNCIA por escrito.
+  // Sem história, não verifica.
+  async function marcarForaExtrato(venda, comp, historia) {
+    if (bloqueado()) return false;
+    if (!String(historia || '').trim()) { notify('Escreva a história do recebimento (ex: "cartão na maquininha antiga", "recebido em mercadoria — 4 placas usadas")'); return false; }
     const next = vendas.map(v => v.id !== venda.id ? v : {
       ...v,
-      comprovantes: (v.comprovantes || []).map(c => c.id === comp.id ? { ...c, foraExtrato: true, foraExtratoPor: autorAtual, foraExtratoEm: new Date().toISOString() } : c),
+      comprovantes: (v.comprovantes || []).map(c => c.id === comp.id
+        ? { ...c, foraExtrato: true, verificacao: String(historia).trim(), foraExtratoPor: autorAtual, foraExtratoEm: new Date().toISOString() }
+        : c),
     });
-    if (!(await setVendas(next))) return;
-    notify('Recebimento marcado como fora do extrato');
+    if (!(await setVendas(next))) return false;
+    notify('Verificação registrada — recebimento inspecionado');
+    return true;
   }
-  async function marcarPagamentoForaExtrato(p) {
-    if (bloqueado()) return;
-    if (!(await askConfirm(`Marcar o pagamento de ${currency(p.valor || 0)} (${[p.categoria, p.beneficiario].filter(Boolean).join(' · ')}) como FORA do extrato (espécie, outra conta etc.)?`))) return;
-    const next = pagamentos.map(x => x.id === p.id ? { ...x, foraExtrato: true, foraExtratoPor: autorAtual, foraExtratoEm: new Date().toISOString() } : x);
-    if (!(await setPagamentos(next))) return;
-    notify('Pagamento marcado como fora do extrato');
+  async function marcarPagamentoForaExtrato(p, historia) {
+    if (bloqueado()) return false;
+    if (!String(historia || '').trim()) { notify('Escreva a história do pagamento (ex: "pago em espécie no balcão")'); return false; }
+    const next = pagamentos.map(x => x.id === p.id
+      ? { ...x, foraExtrato: true, verificacao: String(historia).trim(), foraExtratoPor: autorAtual, foraExtratoEm: new Date().toISOString() }
+      : x);
+    if (!(await setPagamentos(next))) return false;
+    notify('Verificação registrada — pagamento inspecionado');
+    return true;
   }
 
   const resumo = useMemo(() => {
@@ -7148,35 +7163,70 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
       {conciliacoes.length > 0 && (
         <div className="space-y-2 mb-4">
           {[
-            ['Cobertura dos recebimentos', cobertura.cobertosR, cobertura.totalR, cobertura.recebSemProva.map(({ v, comp }) => ({
-              id: comp.id,
-              texto: `${formatDate(comp.data || v.data)} · ${v.clienteNome} — ${currency(comp.valor || 0)}${comp.formaRecebimentoNome ? ' · ' + comp.formaRecebimentoNome : ''}${comp.confirmado === false ? ' · aguardando confirmação' : ''}`,
-              acao: () => marcarForaExtrato(v, comp),
-            })), 'Comprovantes de vendas ativas sem vínculo em nenhum extrato (pagamentos diretos a terceiros não entram — nunca passam pela conta).'],
-            ['Verificação dos pagamentos', cobertura.cobertosP, cobertura.totalP, cobertura.pagSemProva.map(p => ({
-              id: p.id,
-              texto: `${formatDate(p.data)} · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor || 0)}`,
-              acao: () => marcarPagamentoForaExtrato(p),
-            })), 'Pagamentos (saídas) lançados no sistema sem vínculo em nenhum extrato.'],
-          ].map(([titulo, cobertos, total, pendencias, dica]) => (
+            ['Inspeção dos recebimentos', cobertura.cobertosR, cobertura.totalR,
+              cobertura.recebSemProva.map(({ v, comp }) => ({
+                id: comp.id,
+                texto: `${formatDate(comp.data || v.data)} · ${v.clienteNome} — ${currency(comp.valor || 0)}${comp.formaRecebimentoNome ? ' · ' + comp.formaRecebimentoNome : ''}${comp.confirmado === false ? ' · aguardando confirmação' : ''}`,
+                confirmar: (txt) => marcarForaExtrato(v, comp, txt),
+              })),
+              cobertura.recebVerificados.map(({ v, comp }) => ({
+                id: comp.id,
+                texto: `${formatDate(comp.data || v.data)} · ${v.clienteNome} — ${currency(comp.valor || 0)}`,
+                historia: comp.verificacao, por: comp.foraExtratoPor, em: comp.foraExtratoEm,
+              })),
+              'Recebimentos de vendas ativas (inclusive antigas e quitadas) sem vínculo em nenhum extrato — dinheiro em espécie, cartão de outra máquina, mercadoria em troca... Vá atrás da história de cada um e registre a verificação.'],
+            ['Inspeção dos pagamentos', cobertura.cobertosP, cobertura.totalP,
+              cobertura.pagSemProva.map(p => ({
+                id: p.id,
+                texto: `${formatDate(p.data)} · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor || 0)}`,
+                confirmar: (txt) => marcarPagamentoForaExtrato(p, txt),
+              })),
+              cobertura.pagVerificados.map(p => ({
+                id: p.id,
+                texto: `${formatDate(p.data)} · ${[p.categoria, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor || 0)}`,
+                historia: p.verificacao, por: p.foraExtratoPor, em: p.foraExtratoEm,
+              })),
+              'Pagamentos (saídas) lançados no sistema sem vínculo em nenhum extrato.'],
+          ].map(([titulo, cobertos, total, pendencias, verificados, dica]) => (
             <details key={titulo} className="bg-white border border-slate-200 rounded-lg">
               <summary className="cursor-pointer select-none p-3 text-sm">
                 <span className="font-medium">{titulo}</span>{' '}
                 <span className={pendencias.length === 0 ? 'text-emerald-700' : 'text-amber-700'}>
-                  — {cobertos} de {total} com prova no extrato{pendencias.length > 0 ? ` · ${pendencias.length} sem prova` : ' · completa ✓'}
+                  — {cobertos} de {total} com prova ou verificação{pendencias.length > 0 ? ` · ${pendencias.length} a inspecionar` : ' · completa ✓'}
                 </span>
               </summary>
               <div className="border-t border-slate-100 p-3">
-                <p className="text-[11px] text-slate-400 mb-2">{dica} Concilie pelo extrato (acima) ou marque como fora do extrato.</p>
-                {pendencias.length === 0 && <p className="text-sm text-emerald-700">Tudo com prova no extrato ou marcado como fora dele.</p>}
+                <p className="text-[11px] text-slate-400 mb-2">{dica}</p>
+                {pendencias.length === 0 && <p className="text-sm text-emerald-700 mb-2">Nada a inspecionar — tudo com prova no extrato ou verificação registrada.</p>}
                 <div className="max-h-72 overflow-auto space-y-1">
                   {pendencias.map(item => (
-                    <div key={item.id} className="flex items-center justify-between gap-2 text-xs bg-slate-50 border border-slate-100 rounded-md px-2 py-1.5">
-                      <span className="min-w-0 truncate">{item.texto}</span>
-                      <button onClick={item.acao} className="shrink-0 text-[11px] text-slate-500 border border-slate-300 px-2 py-0.5 rounded hover:bg-white">Fora do extrato</button>
+                    <div key={item.id} className="bg-slate-50 border border-slate-100 rounded-md px-2 py-1.5">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="min-w-0 truncate">{item.texto}</span>
+                        <button onClick={() => { setVerifId(verifId === item.id ? null : item.id); setVerifTexto(''); }} className="shrink-0 text-[11px] text-amber-700 border border-amber-300 bg-amber-50 px-2 py-0.5 rounded hover:bg-amber-100">Registrar verificação</button>
+                      </div>
+                      {verifId === item.id && (
+                        <div className="mt-1.5 flex flex-col sm:flex-row gap-1.5">
+                          <input value={verifTexto} onChange={e => setVerifTexto(e.target.value)} placeholder='A história: "recebido em dinheiro, conferido com o caixa do dia", "cartão na maquininha antiga", "recebido em mercadoria"...' className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-[11px]" />
+                          <button onClick={async () => { if (await item.confirmar(verifTexto)) { setVerifId(null); setVerifTexto(''); } }} disabled={!verifTexto.trim()} className="text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1.5 rounded disabled:opacity-30 shrink-0">Confirmar verificação</button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
+                {verificados.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="text-[11px] text-slate-500 cursor-pointer select-none">Ver verificados manualmente ({verificados.length})</summary>
+                    <div className="mt-1 max-h-56 overflow-auto space-y-1">
+                      {verificados.map(item => (
+                        <div key={item.id} className="text-[11px] bg-white border border-slate-100 rounded px-2 py-1.5">
+                          <p className="text-slate-600">{item.texto}</p>
+                          <p className="text-emerald-700">“{item.historia || 'sem história registrada'}” <span className="text-slate-400">— {item.por || '—'}, {formatDate(item.em)}</span></p>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </div>
             </details>
           ))}
