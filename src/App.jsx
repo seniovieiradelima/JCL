@@ -1475,7 +1475,7 @@ function AppInner() {
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
-        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
@@ -6784,7 +6784,7 @@ function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
     for (const v of (vendas || [])) {
       if (v.anulado) continue;
       for (const c of (v.comprovantes || [])) {
-        if (bate(c.valor)) sug.push({ tipo: 'venda', refId: v.id, rotulo: `Venda ${v.clienteNome} — comprovante ${currency(c.valor || 0)}${c.formaRecebimentoNome ? ' · ' + c.formaRecebimentoNome : ''}`, valor: c.valor, dist: dias(c.data || v.data) });
+        if (bate(c.valor)) sug.push({ tipo: 'venda', refId: v.id, compId: c.id, rotulo: `Venda ${v.clienteNome} — comprovante ${currency(c.valor || 0)}${c.formaRecebimentoNome ? ' · ' + c.formaRecebimentoNome : ''}${c.confirmado === false ? ' · aguardando confirmação (conciliar CONFIRMA)' : ''}`, valor: c.valor, dist: dias(c.data || v.data) });
       }
       if ((v.comprovantes || []).length === 0 && bate(v.totalVenda)) {
         sug.push({ tipo: 'venda', refId: v.id, rotulo: `Venda ${v.clienteNome} — total ${currency(v.totalVenda)} (sem comprovante anexado)`, valor: v.totalVenda, dist: dias(v.data) });
@@ -6810,12 +6810,13 @@ function categoriaLembrada(beneficiario, pagamentos) {
   return hit ? hit.categoria : null;
 }
 
-function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, setPagamentos, pedidosCompra, categoriasSaida, askConfirm, notify }) {
+function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, pagamentos, setPagamentos, pedidosCompra, categoriasSaida, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [conta, setConta] = useState('');
   const [textoExtrato, setTextoExtrato] = useState('');
   const [abertaId, setAbertaId] = useState(null);
   const [filtro, setFiltro] = useState('pendente');
+  const [filtroTipo, setFiltroTipo] = useState('ambos');
   const [vinculandoId, setVinculandoId] = useState(null);
   const [vinculosManuais, setVinculosManuais] = useState([]);
   const [selManual, setSelManual] = useState('');
@@ -6864,7 +6865,29 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
   }
   async function conciliar(l, vinculos) {
     if (bloqueado()) return;
-    if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() }))) return;
+    // Entrada do extrato vinculada a comprovante(s) de venda: o extrato é a prova bancária,
+    // então conciliar também CONFIRMA o recebimento — um ato só, como o dono pediu.
+    const confirmacoes = l.tipo === 'entrada' ? vinculos.filter(x => x.tipo === 'venda' && x.compId) : [];
+    if (confirmacoes.length > 0) {
+      const porVenda = new Map();
+      confirmacoes.forEach(x => { if (!porVenda.has(x.refId)) porVenda.set(x.refId, new Set()); porVenda.get(x.refId).add(x.compId); });
+      const next = vendas.map(v => {
+        const comps = porVenda.get(v.id);
+        if (!comps) return v;
+        const comprovantes = (v.comprovantes || []).map(c => comps.has(c.id)
+          ? { ...c, confirmado: true, confirmadoPor: autorAtual, confirmadoEm: new Date().toISOString(), confirmadoVia: `conciliação ${aberta?.conta || ''}`.trim() }
+          : c);
+        const totalComprovado = comprovantes.filter(comprovanteConfirmado).reduce((a, c) => a + (c.valor || 0), 0);
+        const quitado = totalComprovado >= v.totalVenda - 0.01;
+        return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
+      });
+      if (!(await setVendas(next))) return;
+    }
+    if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() }))) {
+      if (confirmacoes.length > 0) notify('⚠️ O recebimento foi confirmado, mas o lançamento do extrato NÃO ficou marcado como conciliado. Recarregue (F5) e concilie de novo — a confirmação não se repete.');
+      return;
+    }
+    if (confirmacoes.length > 0) notify('Conciliado — recebimento confirmado pela prova do extrato');
     setVinculandoId(null); setVinculosManuais([]); setSelManual('');
   }
   // Despesa que está no extrato mas nunca foi lançada no sistema: cria o Pagamento
@@ -6943,8 +6966,10 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
 
   const listaFiltrada = useMemo(() => {
     if (!aberta) return [];
-    return aberta.lancamentos.filter(l => (filtro === 'todos' ? true : l.status === filtro));
-  }, [aberta, filtro]);
+    return aberta.lancamentos
+      .filter(l => (filtro === 'todos' ? true : l.status === filtro))
+      .filter(l => (filtroTipo === 'ambos' ? true : l.tipo === filtroTipo));
+  }, [aberta, filtro, filtroTipo]);
 
   const ESTILO_STATUS = {
     pendente: 'bg-amber-100 text-amber-700',
@@ -7017,6 +7042,10 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
           <div className="flex gap-2 mb-3 flex-wrap">
             {[['pendente', 'Pendentes'], ['conciliado', 'Conciliados'], ['ignorado', 'Fora do sistema'], ['todos', 'Todos']].map(([v, l]) => (
               <button key={v} onClick={() => setFiltro(v)} className={`text-xs px-3 py-1.5 rounded-full border ${filtro === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+            ))}
+            <span className="w-px bg-slate-200 mx-1" />
+            {[['entrada', 'Só recebimentos'], ['saida', 'Só saídas'], ['ambos', 'Entradas e saídas']].map(([v, l]) => (
+              <button key={v} onClick={() => setFiltroTipo(v)} className={`text-xs px-3 py-1.5 rounded-full border ${filtroTipo === v ? 'bg-emerald-700 text-white border-emerald-700' : 'border-slate-200 text-slate-500'}`}>{l}</button>
             ))}
           </div>
 
