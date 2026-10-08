@@ -1472,7 +1472,7 @@ function AppInner() {
           <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} setClientes={persistClientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
         )}
         {tab === 'expedicao' && (
-          <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
+          <ExpedicaoModule vendas={vendas} setVendas={persistVendas} estoque={estoque} setEstoque={persistEstoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} askSenha={askSenha} notify={notify} />
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
@@ -4680,7 +4680,7 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
 }
 
 /* ---------------- EXPEDIÇÃO (confirmação de entrega com fotos e nº de série) ---------------- */
-function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify }) {
+function ExpedicaoModule({ vendas, setVendas, estoque, setEstoque, expedicoes, setExpedicoes, askSenha, notify }) {
   const regPorChave = useMemo(() => {
     const m = new Map();
     for (const ex of expedicoes) { if (!ex.anulado) m.set(`${ex.chave}|${ex.etapa}`, ex); }
@@ -4811,8 +4811,12 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         vendaId={g.venda.id}
                         item={item}
                         estoque={estoque}
+                        setEstoque={setEstoque}
+                        vendas={vendas}
+                        setVendas={setVendas}
                         expedicoes={expedicoes}
                         setExpedicoes={setExpedicoes}
+                        askSenha={askSenha}
                         notify={notify}
                         onDone={() => setFormAtivo(null)}
                         onCancel={() => setFormAtivo(null)}
@@ -4876,8 +4880,12 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
                         vendaId={g.venda.id}
                         item={item}
                         estoque={estoque}
+                        setEstoque={setEstoque}
+                        vendas={vendas}
+                        setVendas={setVendas}
                         expedicoes={expedicoes}
                         setExpedicoes={setExpedicoes}
+                        askSenha={askSenha}
                         notify={notify}
                         serialEtapaAnterior={saida.serialConfirmado}
                         onDone={() => setFormAtivo(null)}
@@ -4963,7 +4971,7 @@ function ExpedicaoModule({ vendas, estoque, expedicoes, setExpedicoes, notify })
   );
 }
 
-function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpedicoes, notify, serialEtapaAnterior, onDone, onCancel }) {
+function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, setEstoque, vendas, setVendas, expedicoes, setExpedicoes, askSenha, notify, serialEtapaAnterior, onDone, onCancel }) {
   const [serialConfirmado, setSerialConfirmado] = useState(item.serial || '');
   const [fotos, setFotos] = useState([]);
   const [enviando, setEnviando] = useState(false);
@@ -4995,17 +5003,74 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
 
   async function confirmar() {
     if (fotos.length === 0) { notify(`Anexe pelo menos uma foto da ${rotulo}`); return; }
-    if (item.serial && !serialConfirmado) { notify('Confirme o número de série do inversor'); return; }
+    const serialDigitado = String(serialConfirmado || '').trim();
+    if (item.serial && !serialDigitado) { notify('Confirme o número de série do inversor'); return; }
+
+    // SÉRIE DIVERGENTE: entregar um número diferente do vendido exige SENHA e TROCA REAL —
+    // a unidade em mãos vira Vendida nesta venda e a antiga volta a Disponível. Antes, o
+    // sistema só avisava e aceitava: o estoque ficava mentindo dos dois lados.
+    let serialFinal = item.serial;
+    let trocaSerial = null;
+    if (item.serial && serialDigitado !== item.serial) {
+      const unidadeNova = (produto?.unidades || []).find(u => u.serial === serialDigitado);
+      if (!unidadeNova) {
+        notify(`⚠️ O SN ${serialDigitado} não existe no estoque deste produto — confira a etiqueta (pode ser erro de digitação).`);
+        return;
+      }
+      if (unidadeNova.status !== 'Disponível') {
+        notify(`⚠️ O SN ${serialDigitado} está "${unidadeNova.status}" no estoque — pertence a outra venda ou foi extraviado. Resolva isso antes de registrar a ${rotulo}.`);
+        return;
+      }
+      const ok = await askSenha(
+        `A série em mãos (SN ${serialDigitado}) é DIFERENTE da vendida (SN ${item.serial}). Confirmar a TROCA REAL? A unidade ${serialDigitado} vira Vendida nesta venda, a ${item.serial} volta a Disponível no estoque, e o custo da venda acompanha a unidade entregue.`,
+        { label: 'Trocar número de série', destrutivo: false }
+      );
+      if (!ok) return;
+      setEnviando(true);
+      const custoDe = (u) => (u && u.custoCompra > 0 ? u.custoCompra : (produto.custoReferencia || 0));
+      const unidadeAntiga = (produto.unidades || []).find(u => u.id === item.unidadeId);
+      const novoEstoque = estoque.map(p => p.id !== produto.id ? p : {
+        ...p,
+        unidades: p.unidades.map(u => {
+          if (u.id === unidadeNova.id) return { ...u, status: 'Vendido' };
+          if (unidadeAntiga && u.id === unidadeAntiga.id && u.status === 'Vendido') return { ...u, status: 'Disponível' };
+          return u;
+        }),
+      });
+      if (!(await setEstoque(novoEstoque))) { setEnviando(false); return; }
+      if (!unidadeAntiga || unidadeAntiga.status !== 'Vendido') {
+        notify(`A unidade antiga (SN ${item.serial}) não estava mais como Vendida no estoque — ela NÃO foi devolvida; confira a situação dela.`);
+      }
+      const diferencaCusto = custoDe(unidadeNova) - custoDe(unidadeAntiga);
+      const nextVendas = vendas.map(v => {
+        if (v.id !== vendaId) return v;
+        const itens = v.itens.map(it => it.id === item.id
+          ? { ...it, unidadeId: unidadeNova.id, serial: serialDigitado, custoTotal: Math.max(0, (it.custoTotal || 0) + diferencaCusto) }
+          : it);
+        return { ...v, itens, totalCusto: itens.reduce((a, i2) => a + (i2.custoTotal || 0), 0) };
+      });
+      if (!(await setVendas(nextVendas))) {
+        setEnviando(false);
+        notify('⚠️ O estoque foi trocado, mas a venda NÃO foi atualizada. Recarregue (F5) e confira a série do item antes de registrar a etapa de novo.');
+        return;
+      }
+      serialFinal = serialDigitado;
+      trocaSerial = { de: item.serial, para: serialDigitado };
+    }
+
     setEnviando(true);
     const registro = {
       id: uid(), etapa, chave: chaveItemVenda(vendaId, item), vendaId, descricao: item.descricao,
-      serialEsperado: item.serial || null, serialConfirmado: item.serial ? serialConfirmado : null,
+      serialEsperado: serialFinal || null, serialConfirmado: item.serial ? serialDigitado : null,
+      ...(trocaSerial ? { trocaSerial } : {}),
       fotos, data: new Date().toISOString(),
       autor: autorAtual,
     };
     await setExpedicoes([registro, ...expedicoes]);
     setEnviando(false);
-    notify(etapa === 'saida' ? 'Separação registrada' : 'Entrega registrada');
+    notify(trocaSerial
+      ? `${etapa === 'saida' ? 'Separação registrada' : 'Entrega registrada'} — série trocada: SN ${trocaSerial.para} no lugar de SN ${trocaSerial.de}`
+      : (etapa === 'saida' ? 'Separação registrada' : 'Entrega registrada'));
     onDone();
   }
 
@@ -5031,9 +5096,9 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, expedicoes, setExpe
             {opcoesSerial.map(s => <option key={s} value={s} />)}
           </datalist>
           {serialDivergenteDaVenda ? (
-            <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número vendido (SN {item.serial}) — confira antes de confirmar.</p>
+            <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número vendido (SN {item.serial}) — ao confirmar, será feita a TROCA REAL no estoque e na venda (senha de aprovação).</p>
           ) : serialDivergenteDaSaida ? (
-            <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número confirmado na separação (SN {serialEtapaAnterior}) — confira antes de confirmar.</p>
+            <p className="text-xs text-red-500 flex items-center gap-1 mt-1"><ShieldAlert size={12} /> Divergente do número confirmado na separação (SN {serialEtapaAnterior}) — ao confirmar, será feita a TROCA REAL (senha de aprovação).</p>
           ) : (
             <p className="text-xs text-emerald-600 flex items-center gap-1 mt-1"><ShieldCheck size={12} /> Número confere.</p>
           )}
