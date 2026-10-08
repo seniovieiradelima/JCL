@@ -6946,6 +6946,7 @@ function parseExtratoOFX(texto) {
     if (!amt || dt.length < 8) continue;
     lanc.push({
       id: uid(),
+      fitid: campo('FITID') || undefined,
       data: `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`,
       tipo: amt > 0 ? 'entrada' : 'saida',
       descricao: [campo('NAME'), campo('MEMO')].filter(Boolean).join(' — '),
@@ -7002,6 +7003,84 @@ function categoriaLembrada(beneficiario, pagamentos) {
   return hit ? hit.categoria : null;
 }
 
+// Remove do extrato NOVO os lançamentos que já existem em alguma conciliação — evita
+// conferir (ou lançar) a mesma transação duas vezes quando os períodos se sobrepõem.
+// Identificação: FITID do banco (OFX) quando os dois lados têm; senão, data+tipo+valor+
+// descrição normalizada, respeitando multiplicidade (dois Pix iguais no dia = dois).
+function removerLancamentosRepetidos(novos, conciliacoes) {
+  const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const chaveDe = (l) => `${l.data}|${l.tipo}|${(l.valor || 0).toFixed(2)}|${norm(l.descricao)}`;
+  const porFitid = new Map();
+  const porChave = new Map();
+  for (const c of (conciliacoes || [])) {
+    for (const l of (c.lancamentos || [])) {
+      if (l.fitid) porFitid.set(l.fitid, l);
+      const k = chaveDe(l);
+      if (!porChave.has(k)) porChave.set(k, []);
+      porChave.get(k).push(l);
+    }
+  }
+  const mantidos = [];
+  const removidos = { conciliado: 0, ignorado: 0, pendente: 0 };
+  const consumo = new Map();
+  for (const l of novos) {
+    let existente = null;
+    if (l.fitid && porFitid.has(l.fitid)) existente = porFitid.get(l.fitid);
+    else {
+      const k = chaveDe(l);
+      const lista = porChave.get(k) || [];
+      const usados = consumo.get(k) || 0;
+      if (usados < lista.length) { existente = lista[usados]; consumo.set(k, usados + 1); }
+    }
+    if (existente) removidos[existente.status === 'conciliado' ? 'conciliado' : existente.status === 'ignorado' ? 'ignorado' : 'pendente']++;
+    else mantidos.push(l);
+  }
+  return { mantidos, removidos, totalRemovido: removidos.conciliado + removidos.ignorado + removidos.pendente };
+}
+
+// Duplicidade que JÁ entrou (extratos sobrepostos importados antes da proteção): agrupa
+// todos os lançamentos pela chave frouxa; dentro de cada grupo, o número REAL de
+// transações é o máximo de ocorrências numa única conciliação (duas iguais no MESMO
+// extrato são duas transações de verdade). Para cada "vaga" real, fica a cópia com
+// trabalho feito (conciliado > fora do sistema > pendente; empate: a mais antiga).
+function calcularRepetidosEntreExtratos(conciliacoes) {
+  const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const chaveDe = (l) => `${l.data}|${l.tipo}|${(l.valor || 0).toFixed(2)}|${norm(l.descricao)}`;
+  const ordenadas = (conciliacoes || []).slice().sort((a, b) => new Date(a.criadaEm || 0) - new Date(b.criadaEm || 0));
+  const grupos = new Map();
+  ordenadas.forEach((c, idxConc) => {
+    for (const l of (c.lancamentos || [])) {
+      const k = chaveDe(l);
+      if (!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k).push({ concId: c.id, idxConc, lanc: l });
+    }
+  });
+  const peso = (st) => (st === 'conciliado' ? 2 : st === 'ignorado' ? 1 : 0);
+  const removerIds = new Set();
+  const porStatus = { conciliado: 0, ignorado: 0, pendente: 0 };
+  for (const refs of grupos.values()) {
+    const porConc = new Map();
+    for (const r of refs) {
+      if (!porConc.has(r.concId)) porConc.set(r.concId, []);
+      porConc.get(r.concId).push(r);
+    }
+    if (porConc.size < 2) continue;                       // só há duplicidade ENTRE extratos
+    const reais = Math.max(...[...porConc.values()].map(a => a.length));
+    // vagas: para cada posição i, concorre a i-ésima ocorrência de cada conciliação
+    for (let i = 0; i < reais; i++) {
+      const candidatas = [...porConc.values()].map(a => a[i]).filter(Boolean);
+      if (candidatas.length <= 1) continue;
+      candidatas.sort((a, b) => (peso(b.lanc.status) - peso(a.lanc.status)) || (a.idxConc - b.idxConc));
+      for (const perdedora of candidatas.slice(1)) {
+        removerIds.add(perdedora.lanc.id);
+        const st = perdedora.lanc.status === 'conciliado' ? 'conciliado' : perdedora.lanc.status === 'ignorado' ? 'ignorado' : 'pendente';
+        porStatus[st]++;
+      }
+    }
+  }
+  return { removerIds, porStatus, total: removerIds.size };
+}
+
 function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, pagamentos, setPagamentos, pedidosCompra, categoriasSaida, askConfirm, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [conta, setConta] = useState('');
@@ -7031,15 +7110,24 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     if (!conta.trim()) { notify('Dê um nome à conta (ex: Stone JCL)'); return; }
     const txt = textoExtrato.trim();
     if (!txt) { notify('Cole o texto do extrato: abra o PDF, selecione tudo (Ctrl+A), copie e cole aqui — ou use o botão para carregar um arquivo OFX'); return; }
-    const lanc = /<OFX|<STMTTRN/i.test(txt) ? parseExtratoOFX(txt) : parseExtratoStone(txt);
-    if (lanc.length === 0) { notify('⚠️ Não reconheci nenhum lançamento no texto colado. Confira se copiou o extrato inteiro (PDF da Stone ou arquivo OFX).'); return; }
+    const lidos = /<OFX|<STMTTRN/i.test(txt) ? parseExtratoOFX(txt) : parseExtratoStone(txt);
+    if (lidos.length === 0) { notify('⚠️ Não reconheci nenhum lançamento no texto colado. Confira se copiou o extrato inteiro (PDF da Stone ou arquivo OFX).'); return; }
+    // Sobreposição com extratos já importados: o que já foi conciliado, lançado ou marcado
+    // fora do sistema (ou ainda está pendente em outro extrato) sai do novo.
+    const { mantidos: lanc, removidos, totalRemovido } = removerLancamentosRepetidos(lidos, conciliacoes);
+    if (lanc.length === 0) {
+      notify(`⚠️ Nada importado: os ${lidos.length} lançamento(s) deste extrato já estão em conciliações anteriores (${removidos.conciliado} conciliado(s), ${removidos.ignorado} fora do sistema, ${removidos.pendente} ainda pendente(s) lá).`);
+      return;
+    }
     const registro = {
       id: uid(), conta: conta.trim(), criadaEm: new Date().toISOString(), autor: autorAtual,
       periodo: `${formatDate(lanc[0].data + 'T12:00:00')} a ${formatDate(lanc[lanc.length - 1].data + 'T12:00:00')}`,
       lancamentos: lanc,
     };
     if (!(await setConciliacoes([registro, ...conciliacoes]))) return;
-    notify(`Extrato importado: ${lanc.length} lançamento(s) de ${registro.periodo}`);
+    notify(totalRemovido > 0
+      ? `Extrato importado: ${lanc.length} lançamento(s) novos. ${totalRemovido} repetido(s) removidos — ${removidos.conciliado} já conciliado(s), ${removidos.ignorado} fora do sistema, ${removidos.pendente} pendente(s) no extrato anterior.`
+      : `Extrato importado: ${lanc.length} lançamento(s) de ${registro.periodo}`);
     setShowForm(false); setTextoExtrato(''); setAbertaId(registro.id); setFiltro('pendente');
   }
 
@@ -7170,6 +7258,22 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     if (bloqueado()) return;
     await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined });
   }
+  async function limparRepetidos() {
+    if (bloqueado()) return;
+    const { removerIds, porStatus, total } = calcularRepetidosEntreExtratos(conciliacoes);
+    if (total === 0) { notify('Nenhum lançamento repetido entre os extratos importados.'); return; }
+    if (!(await askConfirm(
+      `Encontrei ${total} lançamento(s) repetidos entre extratos sobrepostos (${porStatus.pendente} pendente(s), ${porStatus.conciliado} conciliado(s) em dobro, ${porStatus.ignorado} fora do sistema em dobro). Remover as cópias? A versão com trabalho feito é sempre preservada.`
+    ))) return;
+    const next = conciliacoes
+      .map(c => ({ ...c, lancamentos: c.lancamentos.filter(l => !removerIds.has(l.id)) }))
+      .filter(c => c.lancamentos.length > 0);
+    const apagadas = conciliacoes.length - next.length;
+    if (!(await setConciliacoes(next))) return;
+    if (abertaId && !next.some(c => c.id === abertaId)) setAbertaId(null);
+    notify(`${total} repetido(s) removidos${apagadas > 0 ? ` e ${apagadas} extrato(s) que ficaram vazios foram apagados` : ''}.`);
+  }
+
   async function apagarConciliacao(c) {
     if (bloqueado()) return;
     if (!(await askConfirm(`Apagar a conciliação de ${c.conta} (${c.periodo})? O trabalho de conferência dela será perdido — o extrato pode ser importado de novo depois.`))) return;
@@ -7310,7 +7414,12 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
           <h2 className="text-lg font-semibold">Conciliação bancária</h2>
           <p className="text-xs text-slate-400">Confira o extrato da conta lançamento a lançamento contra o que está no sistema (pagamentos, pedidos de compra e recebimentos de vendas). O que não bater, você confirma manualmente.</p>
         </div>
-        {!showForm && <button onClick={() => setShowForm(true)} className="flex items-center gap-1 text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-md shrink-0"><Plus size={16} /> Importar extrato</button>}
+        {!showForm && (
+          <div className="flex gap-2 shrink-0">
+            {conciliacoes.length > 1 && <button onClick={limparRepetidos} className="text-xs text-slate-600 border border-slate-300 px-2.5 py-2 rounded-md hover:bg-slate-50" title="Remove lançamentos que entraram em dobro por extratos sobrepostos — a cópia com trabalho feito fica">Limpar repetidos</button>}
+            <button onClick={() => setShowForm(true)} className="flex items-center gap-1 text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-md"><Plus size={16} /> Importar extrato</button>
+          </div>
+        )}
       </div>
 
       {showForm && (
