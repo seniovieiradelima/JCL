@@ -7012,6 +7012,62 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     setSelManual('');
   }
 
+  // O outro lado do espelho: o que está no SISTEMA e ainda não tem prova em nenhum
+  // extrato. "Conciliar tudo" = estas listas chegarem a zero (ou "fora do extrato").
+  const cobertura = useMemo(() => {
+    const comIds = new Set();
+    const vendasVinculadas = new Set();
+    const pagIds = new Set();
+    for (const c of conciliacoes) {
+      for (const l of (c.lancamentos || [])) {
+        for (const x of (l.vinculos || [])) {
+          if (x.compId) comIds.add(x.compId);
+          else if (x.tipo === 'venda') vendasVinculadas.add(x.refId);
+          if (x.tipo === 'pagamento') pagIds.add(x.refId);
+        }
+      }
+    }
+    let totalR = 0, cobertosR = 0;
+    const recebSemProva = [];
+    for (const v of vendas) {
+      if (v.anulado) continue;
+      for (const comp of (v.comprovantes || [])) {
+        totalR++;
+        if (comIds.has(comp.id) || vendasVinculadas.has(v.id) || comp.foraExtrato || comp.pagamentoDireto) cobertosR++;
+        else recebSemProva.push({ v, comp });
+      }
+    }
+    recebSemProva.sort((a, b) => new Date(a.comp.data || a.v.data) - new Date(b.comp.data || b.v.data));
+    let totalP = 0, cobertosP = 0;
+    const pagSemProva = [];
+    for (const p of (pagamentos || [])) {
+      if (p.anulado || p.tipo !== 'Saída') continue;
+      totalP++;
+      if (pagIds.has(p.id) || p.foraExtrato || p.viaPagamentoDireto) cobertosP++;
+      else pagSemProva.push(p);
+    }
+    pagSemProva.sort((a, b) => new Date(a.data) - new Date(b.data));
+    return { totalR, cobertosR, recebSemProva, totalP, cobertosP, pagSemProva };
+  }, [conciliacoes, vendas, pagamentos]);
+
+  async function marcarForaExtrato(venda, comp) {
+    if (bloqueado()) return;
+    if (!(await askConfirm(`Marcar o recebimento de ${currency(comp.valor || 0)} de ${venda.clienteNome} como FORA do extrato (dinheiro, pagamento direto etc.)? Ele sai da lista de pendências da conciliação.`))) return;
+    const next = vendas.map(v => v.id !== venda.id ? v : {
+      ...v,
+      comprovantes: (v.comprovantes || []).map(c => c.id === comp.id ? { ...c, foraExtrato: true, foraExtratoPor: autorAtual, foraExtratoEm: new Date().toISOString() } : c),
+    });
+    if (!(await setVendas(next))) return;
+    notify('Recebimento marcado como fora do extrato');
+  }
+  async function marcarPagamentoForaExtrato(p) {
+    if (bloqueado()) return;
+    if (!(await askConfirm(`Marcar o pagamento de ${currency(p.valor || 0)} (${[p.categoria, p.beneficiario].filter(Boolean).join(' · ')}) como FORA do extrato (espécie, outra conta etc.)?`))) return;
+    const next = pagamentos.map(x => x.id === p.id ? { ...x, foraExtrato: true, foraExtratoPor: autorAtual, foraExtratoEm: new Date().toISOString() } : x);
+    if (!(await setPagamentos(next))) return;
+    notify('Pagamento marcado como fora do extrato');
+  }
+
   const resumo = useMemo(() => {
     if (!aberta) return null;
     const ls = aberta.lancamentos;
@@ -7086,6 +7142,44 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
               </button>
             );
           })}
+        </div>
+      )}
+
+      {conciliacoes.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {[
+            ['Cobertura dos recebimentos', cobertura.cobertosR, cobertura.totalR, cobertura.recebSemProva.map(({ v, comp }) => ({
+              id: comp.id,
+              texto: `${formatDate(comp.data || v.data)} · ${v.clienteNome} — ${currency(comp.valor || 0)}${comp.formaRecebimentoNome ? ' · ' + comp.formaRecebimentoNome : ''}${comp.confirmado === false ? ' · aguardando confirmação' : ''}`,
+              acao: () => marcarForaExtrato(v, comp),
+            })), 'Comprovantes de vendas ativas sem vínculo em nenhum extrato (pagamentos diretos a terceiros não entram — nunca passam pela conta).'],
+            ['Verificação dos pagamentos', cobertura.cobertosP, cobertura.totalP, cobertura.pagSemProva.map(p => ({
+              id: p.id,
+              texto: `${formatDate(p.data)} · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor || 0)}`,
+              acao: () => marcarPagamentoForaExtrato(p),
+            })), 'Pagamentos (saídas) lançados no sistema sem vínculo em nenhum extrato.'],
+          ].map(([titulo, cobertos, total, pendencias, dica]) => (
+            <details key={titulo} className="bg-white border border-slate-200 rounded-lg">
+              <summary className="cursor-pointer select-none p-3 text-sm">
+                <span className="font-medium">{titulo}</span>{' '}
+                <span className={pendencias.length === 0 ? 'text-emerald-700' : 'text-amber-700'}>
+                  — {cobertos} de {total} com prova no extrato{pendencias.length > 0 ? ` · ${pendencias.length} sem prova` : ' · completa ✓'}
+                </span>
+              </summary>
+              <div className="border-t border-slate-100 p-3">
+                <p className="text-[11px] text-slate-400 mb-2">{dica} Concilie pelo extrato (acima) ou marque como fora do extrato.</p>
+                {pendencias.length === 0 && <p className="text-sm text-emerald-700">Tudo com prova no extrato ou marcado como fora dele.</p>}
+                <div className="max-h-72 overflow-auto space-y-1">
+                  {pendencias.map(item => (
+                    <div key={item.id} className="flex items-center justify-between gap-2 text-xs bg-slate-50 border border-slate-100 rounded-md px-2 py-1.5">
+                      <span className="min-w-0 truncate">{item.texto}</span>
+                      <button onClick={item.acao} className="shrink-0 text-[11px] text-slate-500 border border-slate-300 px-2 py-0.5 rounded hover:bg-white">Fora do extrato</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </details>
+          ))}
         </div>
       )}
 
