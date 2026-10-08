@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { LayoutDashboard, Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
+import { LayoutDashboard, Landmark, Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
 import { loadCollection, saveCollectionDelta, saveCollectionFull, loadConfig, saveConfig, migrarDadosAntigosSeNecessario } from './lib/storage';
 import { supabase } from './lib/supabaseClient';
 import LoginScreen from './LoginScreen';
@@ -18,6 +18,7 @@ const PAGAMENTO_CATEGORIAS_ENTRADA = [
 ];
 const SETOR_VENDAS_TABS = ['orcamentos', 'vendas', 'expedicao'];
 const INTEGRADORA_TABS = ['propostas'];
+const FISCAL_TABS = ['fiscal'];
 
 
 function uid() {
@@ -911,6 +912,7 @@ function AppInner() {
   const [propostas, setPropostas] = useState([]);
   const [logomarcas, setLogomarcas] = useState({ integradora: '', distribuidora: '' });
   const [conciliacoes, setConciliacoes] = useState([]);
+  const [notasFiscais, setNotasFiscais] = useState([]);
   const [categoriasPagamento, setCategoriasPagamento] = useState({ saida: PAGAMENTO_CATEGORIAS_SAIDA, entrada: PAGAMENTO_CATEGORIAS_ENTRADA });
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
@@ -941,7 +943,7 @@ function AppInner() {
     const dados = {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
-      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores, propostas, conciliacoes,
+      formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores, propostas, conciliacoes, notasFiscais,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -989,6 +991,7 @@ function AppInner() {
         ['indicadores', () => persistIndicadores(dados.indicadores || [])],
         ['propostas', () => persistPropostas(dados.propostas || [])],
         ['conciliações', () => persistConciliacoes(dados.conciliacoes || [])],
+        ['notas fiscais', () => persistNotasFiscais(dados.notasFiscais || [])],
       ];
       for (const [nome, gravar] of etapas) {
         if (!(await gravar())) {
@@ -1015,7 +1018,7 @@ function AppInner() {
     (async () => {
       try {
       await migrarDadosAntigosSeNecessario();
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr, cb] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr, cb, nf] = await Promise.all([
         loadCollection('estoque', []),
         loadCollection('clientes', []),
         loadCollection('fornecedores', []),
@@ -1035,6 +1038,7 @@ function AppInner() {
         loadCollection('indicadores', []),
         loadCollection('propostas', []),
         loadCollection('conciliacoes', []),
+        loadCollection('notasFiscais', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1130,6 +1134,7 @@ function AppInner() {
       setIndicadores(ind);
       setPropostas(pr);
       setConciliacoes(cb);
+      setNotasFiscais(nf);
       const cats = await loadConfig('categoriasPagamento', null);
       if (cats) {
         setCategoriasPagamento({
@@ -1278,6 +1283,7 @@ function AppInner() {
   async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
   async function persistPropostas(next) { return persist('propostas', setPropostas, next, propostas); }
   async function persistConciliacoes(next) { return persist('conciliacoes', setConciliacoes, next, conciliacoes); }
+  async function persistNotasFiscais(next) { return persist('notasFiscais', setNotasFiscais, next, notasFiscais); }
   async function salvarCategoriasPagamento(next) {
     const ok = await saveConfig('categoriasPagamento', next);
     if (!ok) { notify('⚠️ Não foi possível salvar as categorias. Verifique a conexão e tente de novo.'); return false; }
@@ -1349,6 +1355,7 @@ function AppInner() {
             <TabButton icon={ShoppingBag} label="Setor de Compras" active={COMPRAS_TABS.includes(tab)} onClick={() => setTab(COMPRAS_TABS.includes(tab) ? tab : 'pedidos')} />
             <TabButton icon={HandCoins} label="Setor de Vendas" active={SETOR_VENDAS_TABS.includes(tab)} onClick={() => setTab(SETOR_VENDAS_TABS.includes(tab) ? tab : 'orcamentos')} />
             <TabButton icon={FileText} label="Integradora" active={INTEGRADORA_TABS.includes(tab)} onClick={() => setTab(INTEGRADORA_TABS.includes(tab) ? tab : 'propostas')} />
+            <TabButton icon={Landmark} label="Fiscal" active={FISCAL_TABS.includes(tab)} onClick={() => setTab('fiscal')} />
           </nav>
         </div>
         {CADASTRO_TABS.includes(tab) && (
@@ -1483,6 +1490,7 @@ function AppInner() {
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} conciliacoes={conciliacoes} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
+        {tab === 'fiscal' && <FiscalModule notasFiscais={notasFiscais} setNotasFiscais={persistNotasFiscais} askSenha={askSenha} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
@@ -1931,6 +1939,258 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
 }
 
 /* ---------------- ESTOQUE (catálogo + visão de saldo/custo) ---------------- */
+
+/* ---------------- CONTROLE FISCAL (notas fiscais de entrada e saída) ---------------- */
+
+// CNPJ da empresa — decide se a nota é de ENTRADA (compra: a JCL é a destinatária)
+// ou de SAÍDA (venda: a JCL é a emitente).
+const CNPJ_EMPRESA = '61700790000102';
+
+// Lê o XML de uma NF-e (modelo 55). O arquivo é gerado por máquina e assinado — os campos
+// vêm sempre nas mesmas tags, então a leitura por tag dentro de cada bloco é segura.
+function parseNFeXML(texto) {
+  const t = String(texto || '');
+  const bloco = (fonte, tag) => { const m = fonte.match(new RegExp('<' + tag + '[\\s>][\\s\\S]*?</' + tag + '>')); return m ? m[0] : ''; };
+  const campo = (fonte, tag) => { const m = fonte.match(new RegExp('<' + tag + '>([^<]*)</' + tag + '>')); return m ? m[1].trim() : ''; };
+  const num = (fonte, tag) => parseFloat(campo(fonte, tag)) || 0;
+
+  const inf = bloco(t, 'infNFe');
+  if (!inf) return null;
+  const ide = bloco(inf, 'ide');
+  const emit = bloco(inf, 'emit');
+  const dest = bloco(inf, 'dest');
+  const totais = bloco(bloco(inf, 'total'), 'ICMSTot');
+  const chave = (t.match(/Id="NFe(\d{44})"/) || [])[1] || campo(bloco(t, 'protNFe'), 'chNFe') || '';
+
+  const cnpjEmit = campo(emit, 'CNPJ');
+  const cnpjDest = campo(dest, 'CNPJ');
+  const tipo = cnpjEmit === CNPJ_EMPRESA ? 'saida' : 'entrada';
+
+  const itens = [];
+  const dets = t.match(/<det nItem[\s\S]*?<\/det>/g) || [];
+  for (const d of dets) {
+    const prod = bloco(d, 'prod');
+    itens.push({
+      descricao: campo(prod, 'xProd'),
+      ncm: campo(prod, 'NCM'),
+      cfop: campo(prod, 'CFOP'),
+      unidade: campo(prod, 'uCom'),
+      quantidade: num(prod, 'qCom'),
+      valorUnit: num(prod, 'vUnCom'),
+      valorTotal: num(prod, 'vProd'),
+      desconto: num(prod, 'vDesc'),
+    });
+  }
+
+  return {
+    chave,
+    tipo,
+    numero: campo(ide, 'nNF'),
+    serie: campo(ide, 'serie'),
+    natOp: campo(ide, 'natOp'),
+    emitidaEm: campo(ide, 'dhEmi'),
+    emitente: { cnpj: cnpjEmit, nome: campo(emit, 'xNome') },
+    destinatario: { cnpj: cnpjDest, nome: campo(dest, 'xNome') },
+    valorProdutos: num(totais, 'vProd'),
+    valorDesconto: num(totais, 'vDesc'),
+    valorFrete: num(totais, 'vFrete'),
+    valorNota: num(totais, 'vNF'),
+    impostos: {
+      icms: num(totais, 'vICMS'),
+      ipi: num(totais, 'vIPI'),
+      pis: num(totais, 'vPIS'),
+      cofins: num(totais, 'vCOFINS'),
+    },
+    itens,
+  };
+}
+
+function FiscalModule({ notasFiscais, setNotasFiscais, askSenha, notify }) {
+  const [expanded, setExpanded] = useState({});
+  const [filtroTipo, setFiltroTipo] = useState('todas');
+  const [mesSel, setMesSel] = useState(new Date().toISOString().slice(0, 7));
+  const [importando, setImportando] = useState(false);
+  const [enviandoPdfId, setEnviandoPdfId] = useState(null);
+
+  async function importarXMLs(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setImportando(true);
+    const chavesExistentes = new Set(notasFiscais.map(n => n.chave));
+    const novas = [];
+    let repetidas = 0, invalidas = 0;
+    for (const f of files) {
+      try {
+        const nota = parseNFeXML(await f.text());
+        if (!nota || !nota.chave) { invalidas++; continue; }
+        if (chavesExistentes.has(nota.chave)) { repetidas++; continue; }
+        chavesExistentes.add(nota.chave);
+        novas.push({ id: uid(), ...nota, categoria: 'Material', importadaEm: new Date().toISOString(), autor: autorAtual });
+      } catch (err) { console.error(err); invalidas++; }
+    }
+    if (novas.length > 0 && !(await setNotasFiscais([...novas, ...notasFiscais]))) { setImportando(false); return; }
+    setImportando(false);
+    notify(novas.length > 0
+      ? `${novas.length} nota(s) importada(s)${repetidas ? ` · ${repetidas} já existiam (mesma chave)` : ''}${invalidas ? ` · ${invalidas} arquivo(s) não reconhecidos` : ''}`
+      : `Nenhuma nota nova${repetidas ? ` — ${repetidas} já existiam` : ''}${invalidas ? ` · ${invalidas} não reconhecidas` : ''}`);
+  }
+
+  async function anexarPdf(nota, e) {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    setEnviandoPdfId(nota.id);
+    try {
+      const url = await arquivoParaStorage(f, 'fiscal');
+      if (await setNotasFiscais(notasFiscais.map(n => n.id === nota.id ? { ...n, pdfUrl: url } : n))) notify('PDF anexado à nota');
+    } catch (err) { console.error(err); notify('⚠️ Não foi possível enviar o PDF. Verifique a conexão.'); }
+    setEnviandoPdfId(null);
+  }
+
+  async function mudarCategoria(nota, categoria) {
+    await setNotasFiscais(notasFiscais.map(n => n.id === nota.id ? { ...n, categoria } : n));
+  }
+
+  async function apagarNota(nota) {
+    if (!(await askSenha(`Apagar a NF ${nota.numero} de ${nota.tipo === 'entrada' ? nota.emitente.nome : nota.destinatario.nome} (${currency(nota.valorNota)})? Essa exclusão é definitiva.`))) return;
+    if (!(await setNotasFiscais(notasFiscais.filter(n => n.id !== nota.id)))) return;
+    notify('Nota removida');
+  }
+
+  const meses = useMemo(() => {
+    const set = new Set(notasFiscais.map(n => String(n.emitidaEm).slice(0, 7)).filter(Boolean));
+    set.add(new Date().toISOString().slice(0, 7));
+    return [...set].sort().reverse();
+  }, [notasFiscais]);
+
+  const resumo = useMemo(() => {
+    const doMes = notasFiscais.filter(n => String(n.emitidaEm).slice(0, 7) === mesSel);
+    const soma = (lista, f) => lista.reduce((a, n) => a + (f(n) || 0), 0);
+    const entradas = doMes.filter(n => n.tipo === 'entrada');
+    const saidas = doMes.filter(n => n.tipo === 'saida');
+    return {
+      entradas: { n: entradas.length, valor: soma(entradas, x => x.valorNota), pis: soma(entradas, x => x.impostos?.pis), cofins: soma(entradas, x => x.impostos?.cofins), icms: soma(entradas, x => x.impostos?.icms) },
+      saidas: { n: saidas.length, valor: soma(saidas, x => x.valorNota), pis: soma(saidas, x => x.impostos?.pis), cofins: soma(saidas, x => x.impostos?.cofins), icms: soma(saidas, x => x.impostos?.icms) },
+    };
+  }, [notasFiscais, mesSel]);
+
+  const lista = useMemo(() => notasFiscais
+    .filter(n => String(n.emitidaEm).slice(0, 7) === mesSel)
+    .filter(n => filtroTipo === 'todas' || n.tipo === filtroTipo)
+    .sort((a, b) => new Date(b.emitidaEm) - new Date(a.emitidaEm)),
+  [notasFiscais, mesSel, filtroTipo]);
+
+  const saldoPis = resumo.saidas.pis - resumo.entradas.pis;
+  const saldoCofins = resumo.saidas.cofins - resumo.entradas.cofins;
+  const resultadoBruto = resumo.saidas.valor - resumo.entradas.valor;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <h2 className="text-lg font-semibold">Controle fiscal</h2>
+          <p className="text-xs text-slate-400">Notas fiscais de entrada (compras) e de saída (vendas), lidas do XML. Lucro real: toda despesa precisa de nota registrada.</p>
+        </div>
+        <label className={`flex items-center gap-1 text-sm px-3 py-2 rounded-md shrink-0 cursor-pointer ${importando ? 'bg-slate-200 text-slate-400' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}>
+          {importando ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} {importando ? 'Importando...' : 'Importar XML (pode vários)'}
+          <input type="file" accept=".xml,.XML,text/xml" multiple className="hidden" disabled={importando} onChange={importarXMLs} />
+        </label>
+      </div>
+
+      <div className="flex gap-2 mb-3 flex-wrap items-center">
+        <select value={mesSel} onChange={e => setMesSel(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm">
+          {meses.map(m => <option key={m} value={m}>{m.slice(5)}/{m.slice(0, 4)}</option>)}
+        </select>
+        {[['todas', 'Todas'], ['entrada', 'Entradas (compras)'], ['saida', 'Saídas (vendas)']].map(([v, l]) => (
+          <button key={v} onClick={() => setFiltroTipo(v)} className={`text-xs px-3 py-1.5 rounded-full border ${filtroTipo === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <p className="text-xs text-slate-500 mb-1">Entradas do mês (compras)</p>
+          <p className="text-xl font-semibold">{currency(resumo.entradas.valor)}</p>
+          <p className="text-[11px] text-slate-400 mt-1">{resumo.entradas.n} nota(s) · créditos: PIS {currency(resumo.entradas.pis)} · COFINS {currency(resumo.entradas.cofins)} · ICMS {currency(resumo.entradas.icms)}</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <p className="text-xs text-slate-500 mb-1">Saídas do mês (vendas com NF)</p>
+          <p className="text-xl font-semibold">{currency(resumo.saidas.valor)}</p>
+          <p className="text-[11px] text-slate-400 mt-1">{resumo.saidas.n} nota(s) · débitos: PIS {currency(resumo.saidas.pis)} · COFINS {currency(resumo.saidas.cofins)} · ICMS {currency(resumo.saidas.icms)}</p>
+        </div>
+        <div className={`border rounded-lg p-4 ${resultadoBruto > 10000 ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'}`}>
+          <p className="text-xs text-slate-500 mb-1">Saídas − entradas do mês</p>
+          <p className={`text-xl font-semibold ${resultadoBruto > 10000 ? 'text-amber-700' : ''}`}>{currency(resultadoBruto)}</p>
+          <p className="text-[11px] mt-1 text-slate-400">PIS a pagar: <span className="font-medium">{currency(Math.max(0, saldoPis))}</span> · COFINS a pagar: <span className="font-medium">{currency(Math.max(0, saldoCofins))}</span>{resultadoBruto > 10000 ? ' · acima da meta de R$ 10 mil' : ''}</p>
+          <p className="text-[10px] text-slate-400 mt-1">Créditos somam o PIS/COFINS destacado nas entradas — confirme com o contador quais compras geram crédito no lucro real.</p>
+        </div>
+      </div>
+
+      {lista.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhuma nota neste mês{filtroTipo !== 'todas' ? ' com esse filtro' : ''} — importe os XMLs das NF-e.</p>}
+      <div className="space-y-2">
+        {lista.map(n => (
+          <div key={n.id} className="bg-white border border-slate-200 rounded-lg">
+            <div className="flex justify-between items-center p-3 cursor-pointer gap-2" onClick={() => setExpanded(x => ({ ...x, [n.id]: !x[n.id] }))}>
+              <div className="flex items-center gap-2 min-w-0">
+                <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[n.id] ? 'rotate-90' : ''}`} />
+                <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${n.tipo === 'entrada' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>{n.tipo === 'entrada' ? 'Entrada' : 'Saída'}</span>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">NF {n.numero} · {n.tipo === 'entrada' ? n.emitente.nome : n.destinatario.nome}</p>
+                  <p className="text-xs text-slate-400">{formatDate(n.emitidaEm)} · {n.natOp}{n.pdfUrl ? ' · PDF anexado' : ''}</p>
+                </div>
+              </div>
+              <span className="font-medium text-sm shrink-0">{currency(n.valorNota)}</span>
+            </div>
+            {expanded[n.id] && (
+              <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 text-xs space-y-2">
+                <p className="text-slate-500">Chave: <span className="font-mono text-[10px]">{n.chave}</span></p>
+                <p className="text-slate-500">{n.tipo === 'entrada' ? 'Fornecedor' : 'Cliente'}: {n.tipo === 'entrada' ? `${n.emitente.nome} (${n.emitente.cnpj})` : `${n.destinatario.nome} (${n.destinatario.cnpj})`}</p>
+                <div className="bg-white border border-slate-200 rounded-md overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead><tr className="text-slate-400 text-left border-b border-slate-100">
+                      <th className="py-1 px-2 font-normal">Item</th><th className="py-1 px-2 font-normal">NCM</th><th className="py-1 px-2 font-normal">CFOP</th>
+                      <th className="py-1 px-2 font-normal text-right">Qtd</th><th className="py-1 px-2 font-normal text-right">Unit.</th><th className="py-1 px-2 font-normal text-right">Total</th>
+                    </tr></thead>
+                    <tbody>
+                      {(n.itens || []).map((it, i) => (
+                        <tr key={i} className="border-t border-slate-50">
+                          <td className="py-1 px-2">{it.descricao}</td>
+                          <td className="py-1 px-2 font-mono">{it.ncm}</td>
+                          <td className="py-1 px-2 font-mono">{it.cfop}</td>
+                          <td className="py-1 px-2 text-right">{it.quantidade}</td>
+                          <td className="py-1 px-2 text-right">{currency(it.valorUnit)}</td>
+                          <td className="py-1 px-2 text-right">{currency(it.valorTotal)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-slate-500">
+                  Produtos {currency(n.valorProdutos)}{n.valorDesconto > 0 ? ` · desconto ${currency(n.valorDesconto)}` : ''}{n.valorFrete > 0 ? ` · frete ${currency(n.valorFrete)}` : ''} · <span className="font-medium text-slate-700">Nota {currency(n.valorNota)}</span>
+                  {' '}· ICMS {currency(n.impostos?.icms || 0)} · PIS {currency(n.impostos?.pis || 0)} · COFINS {currency(n.impostos?.cofins || 0)}{(n.impostos?.ipi || 0) > 0 ? ` · IPI ${currency(n.impostos.ipi)}` : ''}
+                </p>
+                <div className="flex gap-2 items-center flex-wrap pt-1">
+                  <label className="text-[11px] text-slate-500">Categoria:
+                    <select value={n.categoria || 'Material'} onChange={e => mudarCategoria(n, e.target.value)} className="ml-1 border border-slate-200 rounded px-1.5 py-1 text-[11px]">
+                      {['Material', 'Serviço', 'Uso e consumo', 'Imobilizado', 'Outro'].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </label>
+                  {n.pdfUrl
+                    ? <a href={n.pdfUrl} target="_blank" rel="noreferrer" className="text-[11px] bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md">Abrir PDF (DANFE)</a>
+                    : <label className={`text-[11px] px-2.5 py-1.5 rounded-md cursor-pointer ${enviandoPdfId === n.id ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'}`}>
+                        {enviandoPdfId === n.id ? 'Enviando...' : 'Anexar PDF (DANFE)'}
+                        <input type="file" accept=".pdf,application/pdf" className="hidden" disabled={enviandoPdfId === n.id} onChange={e => anexarPdf(n, e)} />
+                      </label>}
+                  <button onClick={() => apagarNota(n)} className="text-[11px] text-red-500 hover:bg-red-50 px-2.5 py-1.5 rounded-md">Apagar nota</button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ---- Logomarcas dos documentos ----
 // Duas marcas, dois papéis: a da INTEGRADORA sai nas propostas de sistema instalado
