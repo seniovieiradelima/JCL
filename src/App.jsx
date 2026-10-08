@@ -556,6 +556,10 @@ async function baixarDocumento(dadosDocumento, nomeBase, formato) {
   }
 }
 
+// Comprovante de recebimento confirmado pela senha de aprovação (ou antigo, de antes da
+// conferência existir — esses continuam valendo para não distorcer os indicadores).
+const comprovanteConfirmado = (c) => c && c.confirmado !== false;
+
 // Chave de um item dentro de uma venda (para saber o que já foi expedido)
 function chaveItemVenda(vendaId, item) {
   return `${vendaId}:${item.id || item.unidadeId || `${item.itemId}-${item.descricao}`}`;
@@ -696,9 +700,10 @@ function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, aju
     }
   }
 
-  // A receber = o que falta comprovar de cada venda ativa (pagamento parcial conta a parte que falta).
+  // A receber = o que falta de recebimento CONFIRMADO em cada venda ativa. Comprovante
+  // anexado mas não confirmado continua contando como "a receber" até a senha confirmar.
   const valoresAReceber = ativas.reduce((acc, v) => {
-    const comprovado = (v.comprovantes || []).reduce((a, c) => a + (c.valor || 0), 0);
+    const comprovado = (v.comprovantes || []).filter(comprovanteConfirmado).reduce((a, c) => a + (c.valor || 0), 0);
     return acc + Math.max(0, v.totalVenda - comprovado);
   }, 0);
 
@@ -1461,7 +1466,7 @@ function AppInner() {
           />
         )}
         {tab === 'vendas' && (
-          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} setClientes={persistClientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} pedidosCompra={pedidosCompra} recebimentos={recebimentos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
+          <VendasModule vendas={vendas} setVendas={persistVendas} clientes={clientes} setClientes={persistClientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} orcamentos={orcamentos} setOrcamentos={persistOrcamentos} formasRecebimento={formasRecebimento} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />
         )}
         {tab === 'expedicao' && (
           <ExpedicaoModule vendas={vendas} estoque={estoque} expedicoes={expedicoes} setExpedicoes={persistExpedicoes} notify={notify} />
@@ -1470,7 +1475,7 @@ function AppInner() {
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toasts.length > 0 && (
@@ -3926,7 +3931,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
 
 /* ---------------- VENDAS (com baixa FIFO de custo) ---------------- */
 
-function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
+function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEstoque, depositos, orcamentos, setOrcamentos, formasRecebimento, expedicoes, setExpedicoes, pedidosCompra, recebimentos, pagamentos, setPagamentos, categoriasSaida, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [clienteId, setClienteId] = useState('');
   const [carrinho, setCarrinho] = useState([]);
@@ -3959,6 +3964,8 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     let lista = vendas.filter(v => v.clienteNome.toLowerCase().includes(busca.toLowerCase()));
     if (filtroComprovante === 'Com') lista = lista.filter(v => (v.comprovantes || []).length > 0);
     if (filtroComprovante === 'Sem') lista = lista.filter(v => !(v.comprovantes || []).length);
+    if (filtroComprovante === 'AConfirmar') lista = lista.filter(v => (v.comprovantes || []).some(c => c.confirmado === false));
+    if (filtroComprovante === 'Direto') lista = lista.filter(v => (v.comprovantes || []).some(c => c.pagamentoDireto));
     if (filtroAnulado === 'Ativas') lista = lista.filter(v => !v.anulado);
     if (filtroAnulado === 'Anuladas') lista = lista.filter(v => v.anulado);
     return lista.slice().sort((a, b) => {
@@ -4168,7 +4175,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     }, `recibo-venda-${(venda.clienteNome || 'cliente').replace(/\s+/g, '-').toLowerCase()}`, formato);
   }
 
-  async function anexarComprovante(vendaId, file, formaId, formaNome, valor) {
+  async function anexarComprovante(vendaId, file, formaId, formaNome, valor, terceiro) {
     if (!file) return;
     const isImage = file.type.startsWith('image/');
     let dataUrl;
@@ -4179,17 +4186,55 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
       notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
       return;
     }
-    const comprovante = { id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(), formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0, autor: autorAtual };
+    const comprovante = {
+      id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(),
+      formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0,
+      autor: autorAtual, confirmado: false,
+      ...(terceiro ? { pagamentoDireto: true, terceiroNome: terceiro.nome, terceiroCategoria: terceiro.categoria } : {}),
+    };
     const next = vendas.map(v => {
       if (v.id !== vendaId) return v;
       const comprovantes = [...(v.comprovantes || []), comprovante];
-      const totalComprovado = comprovantes.reduce((acc, c) => acc + (c.valor || 0), 0);
+      const totalComprovado = comprovantes.filter(comprovanteConfirmado).reduce((acc, c) => acc + (c.valor || 0), 0);
       const quitado = totalComprovado >= v.totalVenda - 0.01;
       return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
     });
     await setVendas(next);
-    const vendaAtualizada = next.find(v => v.id === vendaId);
-    notify(vendaAtualizada?.quitado ? 'Comprovante anexado — venda quitada!' : 'Comprovante de pagamento anexado');
+    notify('Comprovante anexado — aguardando confirmação do recebimento (senha de aprovação)');
+  }
+
+  // Confirmar recebimento: SÓ a senha de aprovação confirma. A conciliação bancária
+  // também confirma (lá o extrato é a prova), pedindo a mesma senha uma vez.
+  async function confirmarComprovante(venda, comp) {
+    const ok = await askSenha(
+      `Confirmar o recebimento de ${currency(comp.valor || 0)} da venda de ${venda.clienteNome}? Somente a senha de aprovação confirma recebimentos.`,
+      { label: 'Confirmar recebimento', destrutivo: false }
+    );
+    if (!ok) return;
+    const next = vendas.map(v => {
+      if (v.id !== venda.id) return v;
+      const comprovantes = (v.comprovantes || []).map(c => c.id === comp.id ? { ...c, confirmado: true, confirmadoPor: autorAtual, confirmadoEm: new Date().toISOString() } : c);
+      const totalComprovado = comprovantes.filter(comprovanteConfirmado).reduce((acc, c) => acc + (c.valor || 0), 0);
+      const quitado = totalComprovado >= v.totalVenda - 0.01;
+      return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
+    });
+    if (!(await setVendas(next))) return;
+    if (comp.pagamentoDireto) {
+      const pg = {
+        id: uid(), tipo: 'Saída', data: comp.data || new Date().toISOString(),
+        categoria: comp.terceiroCategoria || 'Outros',
+        descricao: `Pagamento direto pelo cliente ${venda.clienteNome} (recebimento da venda)`,
+        beneficiario: comp.terceiroNome || '', valor: comp.valor || 0, comprovante: null,
+        criadoEm: new Date().toISOString(), autor: autorAtual, viaPagamentoDireto: true,
+      };
+      if (!(await setPagamentos([pg, ...pagamentos]))) {
+        notify('⚠️ Recebimento confirmado, mas a despesa do pagamento direto NÃO foi lançada — lance manualmente na aba Pagamentos.');
+        return;
+      }
+      notify(`Recebimento confirmado — despesa de ${currency(comp.valor || 0)} lançada em "${pg.categoria}" (pago direto a ${comp.terceiroNome})`);
+      return;
+    }
+    notify('Recebimento confirmado');
   }
 
   async function removerComprovante(vendaId, comprovanteId) {
@@ -4197,7 +4242,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     const next = vendas.map(v => {
       if (v.id !== vendaId) return v;
       const comprovantes = (v.comprovantes || []).filter(c => c.id !== comprovanteId);
-      const totalComprovado = comprovantes.reduce((acc, c) => acc + (c.valor || 0), 0);
+      const totalComprovado = comprovantes.filter(comprovanteConfirmado).reduce((acc, c) => acc + (c.valor || 0), 0);
       const quitado = totalComprovado >= v.totalVenda - 0.01;
       return { ...v, comprovantes, quitado, quitadoEm: quitado ? v.quitadoEm : null };
     });
@@ -4257,7 +4302,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
       <FiltroBar
         busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por cliente..."
         filtroValue={filtroComprovante} setFiltro={setFiltroComprovante}
-        filtroOptions={[{ value: 'Todos', label: 'Todas as vendas' }, { value: 'Com', label: 'Com comprovante' }, { value: 'Sem', label: 'Sem comprovante' }]}
+        filtroOptions={[{ value: 'Todos', label: 'Todas as vendas' }, { value: 'AConfirmar', label: 'Recebimento a confirmar' }, { value: 'Direto', label: 'Pagamento direto a terceiro' }, { value: 'Com', label: 'Com comprovante' }, { value: 'Sem', label: 'Sem comprovante' }]}
         ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
         ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
       />
@@ -4286,9 +4331,11 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
               </div>
               <span className="font-medium text-sm shrink-0 flex items-center gap-1.5">
                 {(() => {
-                  const totalComprovado = (v.comprovantes || []).reduce((acc, c) => acc + (c.valor || 0), 0);
-                  if (v.quitado || totalComprovado >= v.totalVenda - 0.01) return <CheckCircle2 size={13} className="text-emerald-500" title="Quitado" />;
-                  if (totalComprovado > 0) return <FileText size={13} className="text-amber-500" title="Pagamento parcial" />;
+                  const confirmados = (v.comprovantes || []).filter(comprovanteConfirmado).reduce((acc, c) => acc + (c.valor || 0), 0);
+                  const aguardando = (v.comprovantes || []).some(c => c.confirmado === false);
+                  if (confirmados >= v.totalVenda - 0.01) return <CheckCircle2 size={13} className="text-emerald-500" title="Quitado (recebimentos confirmados)" />;
+                  if (aguardando) return <ShieldAlert size={13} className="text-amber-500" title="Comprovante aguardando confirmação de recebimento" />;
+                  if (confirmados > 0) return <FileText size={13} className="text-amber-500" title="Pagamento parcial" />;
                   return <FileText size={13} className="text-slate-300" title="Sem comprovante" />;
                 })()}
                 {currency(v.totalVenda)}
@@ -4333,12 +4380,16 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
                           )}
                           {c.formaRecebimentoNome && <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={c.formaRecebimentoNome}>{c.formaRecebimentoNome}</p>}
                           {c.valor > 0 && <p className="text-[9px] text-emerald-600 text-center leading-tight">{currency(c.valor)}</p>}
+                          {c.pagamentoDireto && <p className="text-[9px] text-sky-700 text-center leading-tight truncate" title={`Pago direto a ${c.terceiroNome} — vira despesa (${c.terceiroCategoria}) ao confirmar`}>→ {c.terceiroNome}</p>}
+                          {c.confirmado === false
+                            ? <button onClick={() => confirmarComprovante(v, c)} className="w-full text-[9px] bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 rounded px-0.5 py-0.5 mt-0.5 leading-tight" title="Aguardando confirmação — somente a senha de aprovação confirma">Confirmar recebim.</button>
+                            : c.confirmado === true && <p className="text-[9px] text-emerald-700 text-center leading-tight" title={`Confirmado por ${c.confirmadoPor || '—'} em ${formatDate(c.confirmadoEm)}`}>✓ confirmado</p>}
                           <button onClick={() => removerComprovante(v.id, c.id)} className="absolute -top-1.5 -right-1.5 bg-slate-900 text-white rounded-full w-4 h-4 flex items-center justify-center"><X size={10} /></button>
                         </div>
                       ))}
                     </div>
                   )}
-                  <ComprovanteUploader vendaId={v.id} formasRecebimento={formasRecebimento} valorTotalVenda={v.totalVenda} valorJaAnexado={(v.comprovantes || []).reduce((acc, c) => acc + (c.valor || 0), 0)} onAnexar={anexarComprovante} notify={notify} />
+                  <ComprovanteUploader vendaId={v.id} formasRecebimento={formasRecebimento} valorTotalVenda={v.totalVenda} valorJaAnexado={(v.comprovantes || []).reduce((acc, c) => acc + (c.valor || 0), 0)} categoriasSaida={categoriasSaida} onAnexar={anexarComprovante} notify={notify} />
                 </div>
                 <div className="flex gap-2 pt-2 mt-2 border-t border-slate-200">
                   <span className="text-[11px] text-slate-400 self-center">Gerar recibo:</span>
@@ -4442,7 +4493,10 @@ function BaixaPendenteForm({ item, estoque, depositos, onBaixa }) {
 
 /* ---------------- UPLOAD DE COMPROVANTE (com forma de recebimento) ---------------- */
 
-function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valorJaAnexado, onAnexar, notify }) {
+function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valorJaAnexado, categoriasSaida, onAnexar, notify }) {
+  const [terceiroAtivo, setTerceiroAtivo] = useState(false);
+  const [terceiroNome, setTerceiroNome] = useState('');
+  const [terceiroCategoria, setTerceiroCategoria] = useState((categoriasSaida || [])[0] || 'Outros');
   const [formaId, setFormaId] = useState('');
   const [valorUnico, setValorUnico] = useState('');
   const [qtdMultipla, setQtdMultipla] = useState('');
@@ -4476,6 +4530,7 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
 
   function resetar() {
     setFormaId(''); setValorUnico(''); setQtdMultipla(''); setSlots(null);
+    setTerceiroAtivo(false); setTerceiroNome('');
   }
 
   const somaSlots = (slots || []).reduce((acc, s) => acc + (parseValorBR(s.valor) || 0), 0);
@@ -4538,14 +4593,34 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
                     const valor = parseValorBR(valorUnico);
                     if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago antes de anexar'); return; }
                     if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
+                    if (terceiroAtivo && !terceiroNome.trim()) { notify('Informe quem recebeu o pagamento direto'); return; }
                     setEnviandoAnexo(true);
-                    try { await onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor); } finally { setEnviandoAnexo(false); }
+                    try {
+                      await onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor,
+                        terceiroAtivo ? { nome: terceiroNome.trim(), categoria: terceiroCategoria } : null);
+                    } finally { setEnviandoAnexo(false); }
                     resetar();
                   }} />
                 </label>
               </>
             ) : null}
           </div>
+          {formaSelecionada && !formaSelecionada.multipla && (
+            <div className="mt-1.5">
+              <label className="flex items-start gap-1.5 text-[11px] text-slate-500 cursor-pointer">
+                <input type="checkbox" checked={terceiroAtivo} onChange={e => setTerceiroAtivo(e.target.checked)} className="mt-0.5" />
+                <span>Cliente pagou <strong>direto a um terceiro</strong> (o dinheiro não entra na conta — ao confirmar, vira despesa lançada em Pagamentos)</span>
+              </label>
+              {terceiroAtivo && (
+                <div className="flex flex-col sm:flex-row gap-2 mt-1.5">
+                  <input value={terceiroNome} onChange={e => setTerceiroNome(e.target.value)} placeholder="Quem recebeu (ex: fornecedor, prestador...)" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs flex-1" />
+                  <select value={terceiroCategoria} onChange={e => setTerceiroCategoria(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
+                    {(categoriasSaida || ['Outros']).map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -5599,7 +5674,7 @@ function CategoriasPagamentoEditor({ categorias, salvar, notify }) {
   const remove = (setLista) => (i) => setLista(l => l.filter((_, j) => j !== i));
 
   if (!aberto) {
-    return <button onClick={abrir} className="text-xs text-slate-500 underline mb-4">Gerenciar categorias</button>;
+    return <button onClick={abrir} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md mb-4"><Pencil size={11} /> Gerenciar categorias</button>;
   }
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
@@ -7170,7 +7245,7 @@ function GraficoImobilizado({ indicadores }) {
   );
 }
 
-function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, setPagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
   // Custo estimado das pendências por venda: calculado UMA vez (a auditoria achou a mesma
   // conta cara refeita 5 vezes por render, uma delas por linha da lista).
   const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
@@ -7180,6 +7255,40 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
     return m;
   }, [vendasTodas, custoUnitEstimadoMapa]);
   const estimadoDe = (v) => estimadoPorVenda.get(v.id) || 0;
+
+  // Confirmar recebimento a partir do Financeiro — mesma regra de todo lugar:
+  // SOMENTE a senha de aprovação confirma.
+  async function confirmarRecebimentoFin(venda, comp) {
+    const ok = await askSenha(
+      `Confirmar o recebimento de ${currency(comp.valor || 0)} da venda de ${venda.clienteNome}? Somente a senha de aprovação confirma recebimentos.`,
+      { label: 'Confirmar recebimento', destrutivo: false }
+    );
+    if (!ok) return;
+    const next = vendasTodas.map(v => {
+      if (v.id !== venda.id) return v;
+      const comprovantes = (v.comprovantes || []).map(c => c.id === comp.id ? { ...c, confirmado: true, confirmadoPor: autorAtual, confirmadoEm: new Date().toISOString() } : c);
+      const totalComprovado = comprovantes.filter(comprovanteConfirmado).reduce((acc, c) => acc + (c.valor || 0), 0);
+      const quitado = totalComprovado >= v.totalVenda - 0.01;
+      return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
+    });
+    if (!(await setVendas(next))) return;
+    if (comp.pagamentoDireto) {
+      const pg = {
+        id: uid(), tipo: 'Saída', data: comp.data || new Date().toISOString(),
+        categoria: comp.terceiroCategoria || 'Outros',
+        descricao: `Pagamento direto pelo cliente ${venda.clienteNome} (recebimento da venda)`,
+        beneficiario: comp.terceiroNome || '', valor: comp.valor || 0, comprovante: null,
+        criadoEm: new Date().toISOString(), autor: autorAtual, viaPagamentoDireto: true,
+      };
+      if (!(await setPagamentos([pg, ...pagamentos]))) {
+        notify('⚠️ Recebimento confirmado, mas a despesa do pagamento direto NÃO foi lançada — lance manualmente na aba Pagamentos.');
+        return;
+      }
+      notify(`Recebimento confirmado — despesa de ${currency(comp.valor || 0)} lançada em "${pg.categoria}" (pago direto a ${comp.terceiroNome})`);
+      return;
+    }
+    notify('Recebimento confirmado');
+  }
 
   // Correção de custo de venda fechada (protegida pela senha de aprovação):
   // altera só o lado financeiro — estoque, expedição e valor cobrado não mudam.
@@ -7383,6 +7492,30 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
         </div>
       </div>
 
+      {(() => {
+        const pendentes = [];
+        for (const v of vendasTodas) {
+          if (v.anulado) continue;
+          for (const c of (v.comprovantes || [])) if (c.confirmado === false) pendentes.push({ v, c });
+        }
+        if (pendentes.length === 0) return null;
+        const soma = pendentes.reduce((a, x) => a + (x.c.valor || 0), 0);
+        return (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-5">
+            <h3 className="text-sm font-medium text-amber-800 mb-1">Recebimentos aguardando confirmação</h3>
+            <p className="text-[11px] text-amber-700 mb-2">{pendentes.length} comprovante(s) somando {currency(soma)} — só entram nos indicadores depois de confirmados (senha de aprovação). A conciliação bancária também confirma.</p>
+            <div className="space-y-1">
+              {pendentes.map(({ v, c }) => (
+                <div key={c.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
+                  <span className="min-w-0 truncate">{v.clienteNome} — <span className="font-medium">{currency(c.valor || 0)}</span>{c.formaRecebimentoNome ? ` · ${c.formaRecebimentoNome}` : ''}{c.pagamentoDireto ? ` · pago direto a ${c.terceiroNome}` : ''} · anexado em {formatDate(c.data)}{c.autor ? ` por ${c.autor}` : ''}</span>
+                  <button onClick={() => confirmarRecebimentoFin(v, c)} className="shrink-0 text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
         <h3 className="text-sm font-medium mb-1">Balanço da distribuidora</h3>
         <p className="text-[11px] text-slate-400 mb-3">Retrato do momento atual (não muda com o filtro de período abaixo)</p>
@@ -7400,7 +7533,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
             <span className="font-medium">{currency(saldoReposicao.saldo)}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem comprovante de pagamento)</span></span>
+            <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem recebimento confirmado)</span></span>
             <span className="font-medium">{currency(balanco.valoresAReceber)}</span>
           </div>
           <div className="flex justify-between text-sm">
