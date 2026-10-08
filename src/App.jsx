@@ -1477,7 +1477,7 @@ function AppInner() {
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
-        {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} notify={notify} askConfirm={askConfirm} />}
+        {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
       </main>
 
@@ -6348,7 +6348,8 @@ async function baixarProposta(p, formato) {
   }
 }
 
-function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm }) {
+function PropostasModule({ propostas, setPropostas, estoque, clientes, setClientes, vendas, setVendas, notify, askConfirm }) {
+  const statusDe = (p) => p.status || 'aberta';
   const [showForm, setShowForm] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [clienteNome, setClienteNome] = useState('');
@@ -6368,6 +6369,7 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
   const [entrada, setEntrada] = useState('');
   const [mostrarParams, setMostrarParams] = useState(false);
   const [expanded, setExpanded] = useState({});
+  const [filtroStatus, setFiltroStatus] = useState('todas');
 
   const num = (x) => parseFloat(String(x ?? '').replace(',', '.')) || 0;
 
@@ -6478,6 +6480,68 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
     setEntrada(p.entrada ? String(p.entrada).replace('.', ',') : '');
     setShowForm(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function mudarStatusProposta(p, status) {
+    const next = propostas.map(x => x.id === p.id ? { ...x, status, statusEm: new Date().toISOString(), statusPor: autorAtual } : x);
+    if (!(await setPropostas(next))) return;
+    notify(status === 'perdida' ? 'Proposta marcada como perdida' : 'Proposta reaberta');
+  }
+
+  // Proposta aceita vira VENDA da distribuidora: itens (placa, inversor e adicionais, aos
+  // preços da distribuidora) entram como PRÉ-VENDA — nada baixa do estoque agora; a baixa
+  // é o "Dar baixa" normal da aba Vendas, item a item, quando a mercadoria for separada.
+  // Kits paramétricos (cabo/MC4, estrutura) não são produtos do estoque e ficam de fora.
+  async function gerarVendaDaProposta(p) {
+    if (p.vendaId && (vendas || []).some(v => v.id === p.vendaId && !v.anulado)) {
+      notify('Esta proposta já virou venda — está na aba Vendas do Setor de Vendas.');
+      return;
+    }
+    const itensBrutos = [
+      p.placa && { produtoId: p.placa.produtoId, descricao: p.placa.descricao, quantidade: p.placa.quantidade, precoUnit: p.placa.precoUnit },
+      p.inversor && { produtoId: p.inversor.produtoId, descricao: p.inversor.descricao, quantidade: p.inversor.quantidade, precoUnit: p.inversor.precoUnit },
+      ...(p.adicionais || []),
+    ].filter(x => x && x.produtoId && x.quantidade > 0);
+    if (itensBrutos.length === 0) { notify('A proposta não tem itens ligados a produtos do estoque.'); return; }
+    const temKits = (p.kits?.dc?.quantidade || 0) > 0 || (p.kits?.estrutura?.quantidade || 0) > 0;
+    if (!(await askConfirm(
+      `Aceitar a proposta e gerar a venda da distribuidora para ${p.clienteNome}? Os itens entram como PRÉ-VENDA (nada baixa do estoque agora — a baixa é feita na aba Vendas quando separar).${temKits ? ' Os kits de cabo/MC4 e estrutura NÃO entram na venda (não são produtos do estoque) — lance manualmente se a distribuidora for fornecer.' : ''}`
+    ))) return;
+
+    // Cliente da distribuidora: reaproveita pelo nome ou cria na hora
+    let cliente = (clientes || []).find(c => String(c.nome || '').trim().toLowerCase() === String(p.clienteNome || '').trim().toLowerCase());
+    let clienteCriado = false;
+    if (!cliente) {
+      cliente = { id: uid(), nome: String(p.clienteNome || '').trim(), documento: '', telefone: p.clienteContato || '', email: '', endereco: '', cidade: '', uc: '', observacoes: 'Criado pela proposta da integradora', autor: autorAtual };
+      if (!(await setClientes([...clientes, cliente]))) return;
+      clienteCriado = true;
+    }
+
+    const carrinho = itensBrutos.map(x => {
+      const prod = estoque.find(e => e.id === x.produtoId);
+      return {
+        id: uid(), itemId: x.produtoId, categoria: prod?.categoria || '',
+        descricao: x.descricao || (prod ? descricaoProduto(prod) : ''),
+        quantidade: x.quantidade, precoVendaUnitario: x.precoUnit || prod?.precoVenda || 0,
+        depositoId: '', depositoNome: '', preVenda: true,
+      };
+    });
+    const { itensResultado, totalCusto, erros } = consumirEstoque(estoque, carrinho, { permitirPendencia: true });
+    if (erros.length > 0) { notify('⚠️ ' + erros[0]); return; }
+    const total = itensResultado.reduce((a, i) => a + i.precoVendaTotal, 0);
+    const venda = {
+      id: uid(), clienteId: cliente.id, clienteNome: cliente.nome, data: new Date().toISOString(),
+      itens: itensResultado, totalVenda: total, totalCusto,
+      observacoes: `Gerada da proposta da integradora de ${formatDate(p.data)} (${(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp). Itens em pré-venda — dar baixa ao separar.`,
+      origemPropostaId: p.id, autor: autorAtual,
+    };
+    if (!(await setVendas([venda, ...vendas]))) return;
+    const nextP = propostas.map(x => x.id === p.id ? { ...x, status: 'aceita', statusEm: new Date().toISOString(), statusPor: autorAtual, vendaId: venda.id } : x);
+    if (!(await setPropostas(nextP))) {
+      notify('⚠️ A venda foi criada, mas a proposta NÃO ficou marcada como aceita. Recarregue (F5) e confira antes de gerar de novo.');
+      return;
+    }
+    notify(`Venda de ${currency(total)} gerada para ${cliente.nome}${clienteCriado ? ' (cliente criado no cadastro)' : ''} — itens em pré-venda, baixa na aba Vendas`);
   }
 
   async function apagarProposta(p) {
@@ -6696,16 +6760,24 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
         </div>
       )}
 
-      <h3 className="text-sm font-medium text-slate-500 mb-2">Propostas salvas</h3>
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <h3 className="text-sm font-medium text-slate-500">Propostas salvas</h3>
+        {[['todas', 'Todas'], ['aberta', 'Abertas'], ['aceita', 'Aceitas'], ['perdida', 'Perdidas']].map(([v, l]) => (
+          <button key={v} onClick={() => setFiltroStatus(v)} className={`text-xs px-2.5 py-1 rounded-full border ${filtroStatus === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+        ))}
+      </div>
       {listaOrdenada.length === 0 && <p className="text-sm text-slate-400">Nenhuma proposta ainda. Clique em "Nova proposta" para montar a primeira.</p>}
       <div className="space-y-2">
-        {listaOrdenada.map(p => (
+        {listaOrdenada.filter(p => filtroStatus === 'todas' || statusDe(p) === filtroStatus).map(p => (
           <div key={p.id} className="bg-white border border-slate-200 rounded-lg">
             <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpanded(x => ({ ...x, [p.id]: !x[p.id] }))}>
               <div className="flex items-center gap-2 min-w-0">
                 <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[p.id] ? 'rotate-90' : ''}`} />
                 <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{p.clienteNome}</p>
+                  <p className="text-sm font-medium truncate flex items-center gap-1.5">{p.clienteNome}
+                    {statusDe(p) === 'aceita' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">Aceita{p.vendaId ? ' · venda gerada' : ''}</span>}
+                    {statusDe(p) === 'perdida' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-500 shrink-0">Perdida</span>}
+                  </p>
                   <p className="text-xs text-slate-400">{formatDate(p.data)} · {(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · {p.placa?.quantidade}x placa + {p.inversor?.quantidade}x inversor</p>
                 </div>
               </div>
@@ -6736,6 +6808,18 @@ function PropostasModule({ propostas, setPropostas, estoque, notify, askConfirm 
                   </div>
                 )}
                 <div className="flex gap-2 pt-1 flex-wrap">
+                  {statusDe(p) === 'aberta' && (
+                    <>
+                      <button onClick={() => gerarVendaDaProposta(p)} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-md font-medium">✓ Aceitar e gerar venda</button>
+                      <button onClick={() => mudarStatusProposta(p, 'perdida')} className="text-xs text-slate-500 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Marcar perdida</button>
+                    </>
+                  )}
+                  {statusDe(p) === 'perdida' && (
+                    <button onClick={() => mudarStatusProposta(p, 'aberta')} className="text-xs text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Reabrir proposta</button>
+                  )}
+                  {statusDe(p) === 'aceita' && !p.vendaId && (
+                    <button onClick={() => gerarVendaDaProposta(p)} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-md">Gerar venda</button>
+                  )}
                   <button onClick={() => baixarProposta(p, 'pdf')} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-2.5 py-1.5 rounded-md">Baixar PDF</button>
                   <button onClick={() => baixarProposta(p, 'jpg')} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-2.5 py-1.5 rounded-md">Baixar JPG</button>
                   <button onClick={() => baixarCustosInstalacao(p)} className="text-xs bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 px-2.5 py-1.5 rounded-md">JPG interno (resumo + custos)</button>
