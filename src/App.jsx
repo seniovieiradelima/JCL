@@ -1339,7 +1339,7 @@ function AppInner() {
               </button>
             </div>
           </div>
-          <nav className="flex gap-1 mt-3 -mb-3 overflow-x-auto">
+          <nav className="flex gap-1 mt-3 -mb-3 flex-wrap sm:flex-nowrap sm:overflow-x-auto">
             <TabButton icon={Database} label="Cadastros" active={CADASTRO_TABS.includes(tab)} onClick={() => setTab(CADASTRO_TABS.includes(tab) ? tab : 'estoque')} />
             <TabButton icon={ShoppingBag} label="Setor de Compras" active={COMPRAS_TABS.includes(tab)} onClick={() => setTab(COMPRAS_TABS.includes(tab) ? tab : 'pedidos')} />
             <TabButton icon={HandCoins} label="Setor de Vendas" active={SETOR_VENDAS_TABS.includes(tab)} onClick={() => setTab(SETOR_VENDAS_TABS.includes(tab) ? tab : 'orcamentos')} />
@@ -1349,7 +1349,7 @@ function AppInner() {
         {CADASTRO_TABS.includes(tab) && (
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
-              <nav className="flex gap-1 overflow-x-auto">
+              <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
                 <SubTabButton icon={Package} label="Estoque" active={tab === 'estoque'} onClick={() => setTab('estoque')} />
                 <SubTabButton icon={Warehouse} label="Depósitos" active={tab === 'depositos'} onClick={() => setTab('depositos')} />
                 <SubTabButton icon={Building2} label="Fornecedores" active={tab === 'fornecedores'} onClick={() => setTab('fornecedores')} />
@@ -1364,7 +1364,7 @@ function AppInner() {
         {COMPRAS_TABS.includes(tab) && (
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
-              <nav className="flex gap-1 overflow-x-auto">
+              <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
                 <SubTabButton icon={ArrowLeftRight} label="Transferências" active={tab === 'transferencias'} onClick={() => setTab('transferencias')} />
                 <SubTabButton icon={ClipboardList} label="Pedidos de compra" active={tab === 'pedidos'} onClick={() => setTab('pedidos')} />
                 <SubTabButton icon={TruckIcon} label="Recebimento" active={tab === 'recebimento'} onClick={() => setTab('recebimento')} />
@@ -1380,7 +1380,7 @@ function AppInner() {
         {SETOR_VENDAS_TABS.includes(tab) && (
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
-              <nav className="flex gap-1 overflow-x-auto">
+              <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
                 <SubTabButton icon={ClipboardCheck} label="Orçamentos" active={tab === 'orcamentos'} onClick={() => setTab('orcamentos')} />
                 <SubTabButton icon={ShoppingCart} label="Vendas" active={tab === 'vendas'} onClick={() => setTab('vendas')} />
                 <SubTabButton icon={PackageCheck} label="Expedição" active={tab === 'expedicao'} onClick={() => setTab('expedicao')} />
@@ -1391,7 +1391,7 @@ function AppInner() {
         {INTEGRADORA_TABS.includes(tab) && (
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
-              <nav className="flex gap-1 overflow-x-auto">
+              <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
                 <SubTabButton icon={FileText} label="Propostas" active={tab === 'propostas'} onClick={() => setTab('propostas')} />
               </nav>
             </div>
@@ -1429,6 +1429,7 @@ function AppInner() {
             recebimentos={recebimentos} setRecebimentos={persistRecebimentos}
             estoque={estoque} setEstoque={persistEstoque}
             depositos={depositos}
+            vendas={vendas}
             askSenha={askSenha}
             notify={notify}
           />
@@ -2030,14 +2031,36 @@ function movimentosDoProduto(item, { vendas, recebimentos, pedidosCompra, transf
       if (it.itemId !== item.id) continue;
       const pendente = it.quantidadePendente || 0;
       const saiu = it.quantidade - pendente;
-      if (saiu > 0) {
+      const baixas = it.baixas || [];
+      const emprestimos = it.emprestimos || [];
+      const somaBaixas = baixas.reduce((a, b) => a + (b.quantidade || 0), 0);
+      const somaEmprestimos = emprestimos.reduce((a, e) => a + (e.quantidade || 0), 0);
+      // O que saiu NO DIA DA VENDA = consumo atual − baixas posteriores + o que foi emprestado de volta
+      const saiuNaVenda = saiu - somaBaixas + somaEmprestimos;
+      if (saiuNaVenda > 0) {
         rows.push({
-          data: v.data, tipo: 'saida', qtd: saiu,
+          data: v.data, tipo: 'saida', qtd: saiuNaVenda,
           titulo: `Saída — venda para ${v.clienteNome}${v.anulado ? ' (venda anulada depois)' : ''}`,
           detalhe: [it.serial ? `SN ${it.serial}` : '', pendente > 0 ? `${pendente} un. ainda aguardando chegada (não saiu do estoque)` : ''].filter(Boolean).join(' · '),
           deposito: it.depositoNome || '',
         });
-      } else if (pendente > 0 && !v.anulado) {
+      }
+      for (const b of baixas) {
+        rows.push({
+          data: b.em, tipo: 'saida', qtd: b.quantidade,
+          titulo: `Saída — baixa de pendência (venda para ${v.clienteNome})`,
+          detalhe: '', deposito: b.depositoNome || '',
+        });
+      }
+      for (const e of emprestimos) {
+        rows.push({
+          data: e.em, tipo: 'estorno', qtd: e.quantidade,
+          titulo: `Devolução — item convertido em pré-venda (venda de ${v.clienteNome})`,
+          detalhe: 'Mercadoria voltou ao estoque; a venda aguarda nova chegada',
+          deposito: it.depositoNome || '',
+        });
+      }
+      if (saiu <= 0 && saiuNaVenda <= 0 && baixas.length === 0 && pendente > 0 && !v.anulado) {
         rows.push({
           data: v.data, tipo: 'reserva', qtd: pendente,
           titulo: `Reserva — pré-venda para ${v.clienteNome}`,
@@ -3225,7 +3248,7 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
 
 /* ---------------- RECEBIMENTO (entrada item a item, com foto e nº de série) ---------------- */
 
-function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, askSenha, notify }) {
+function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, vendas, askSenha, notify }) {
   const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
   const recebidoDe = (pedidoId, itemId) => recebidoPorItem.get(`${pedidoId}|${itemId}`) || 0;
   const [busca, setBusca] = useState('');
@@ -3356,6 +3379,7 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                         recebimentos={recebimentos}
                         setRecebimentos={setRecebimentos}
                         depositos={depositos}
+                        vendas={vendas}
                         notify={notify}
                         onDone={() => setFormItem(null)}
                         onCancel={() => setFormItem(null)}
@@ -3417,7 +3441,12 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
   );
 }
 
-function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebimentos, setRecebimentos, depositos, notify, onDone, onCancel }) {
+function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebimentos, setRecebimentos, depositos, vendas, notify, onDone, onCancel }) {
+  // Chegou mercadoria que pré-vendas esperam? Avisa na hora — a baixa é na aba Vendas.
+  function avisarPendencias() {
+    const aguardando = qtdReservadaPreVenda(vendas, item.produtoId);
+    if (aguardando > 0) notify(`${aguardando} un. deste produto aguardam baixa em pré-vendas — aba Vendas, filtro "Entrega pendente"`);
+  }
   const [serial, setSerial] = useState('');
   const [foto, setFoto] = useState(null);
   const [qtdInput, setQtdInput] = useState(pendente);
@@ -3473,6 +3502,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     }
     setEnviando(false);
     notify(`Unidade SN ${serialLimpo} recebida em ${depositoNome}`);
+    avisarPendencias();
     if (pendente - 1 <= 0) { onDone(); } else { setSerial(''); setFoto(null); }
   }
 
@@ -3499,6 +3529,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     }
     setEnviando(false);
     notify('Entrada registrada no estoque');
+    avisarPendencias();
     onDone();
   }
 
@@ -3981,6 +4012,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     if (filtroComprovante === 'Direto') lista = lista.filter(v => (v.comprovantes || []).some(c => c.pagamentoDireto));
     if (filtroAnulado === 'Ativas') lista = lista.filter(v => !v.anulado);
     if (filtroAnulado === 'Anuladas') lista = lista.filter(v => v.anulado);
+    if (filtroAnulado === 'Pendentes') lista = lista.filter(v => !v.anulado && (v.itens || []).some(it => (it.quantidadePendente || 0) > 0));
     return lista.slice().sort((a, b) => {
       switch (ordenacao) {
         case 'recente': return new Date(b.data) - new Date(a.data);
@@ -4079,6 +4111,9 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
         const atualizado = { ...it, quantidadePendente: pendente, custoTotal: (it.custoTotal || 0) + consumido.custoTotal, depositoId, depositoNome };
         if (consumido.unidadeId) { atualizado.unidadeId = consumido.unidadeId; atualizado.serial = consumido.serial; }
         if (consumido.loteConsumos) atualizado.loteConsumos = [...(it.loteConsumos || []), ...consumido.loteConsumos];
+        // Data própria da baixa: o extrato de movimentações mostra a saída no dia em que
+        // a mercadoria realmente saiu, não no dia da venda.
+        atualizado.baixas = [...(it.baixas || []), { em: new Date().toISOString(), quantidade: qtdBaixar, depositoId, depositoNome, autor: autorAtual }];
         return atualizado;
       });
       const totalCusto = itens.reduce((acc, i2) => acc + (i2.custoTotal || 0), 0);
@@ -4151,6 +4186,8 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
           ...it,
           quantidadePendente: (it.quantidadePendente || 0) + qtdEmprestar,
           custoTotal: Math.max(0, (it.custoTotal || 0) - devolucao.custoDevolvido),
+          // Data própria do empréstimo: vira linha de devolução no extrato de movimentações.
+          emprestimos: [...(it.emprestimos || []), { em: new Date().toISOString(), quantidade: qtdEmprestar, autor: autorAtual }],
         };
         if (it.unidadeId) { atualizado.unidadeId = undefined; atualizado.serial = undefined; }
         else atualizado.loteConsumos = devolucao.novosConsumos;
@@ -4320,7 +4357,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
         ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
       />
       <div className="flex gap-2 mb-3 -mt-1">
-        {[['Todas', 'Todas'], ['Ativas', 'Só ativas'], ['Anuladas', 'Só anuladas']].map(([v, l]) => (
+        {[['Todas', 'Todas'], ['Ativas', 'Só ativas'], ['Anuladas', 'Só anuladas'], ['Pendentes', 'Entrega pendente']].map(([v, l]) => (
           <button key={v} onClick={() => setFiltroAnulado(v)} className={`text-xs px-3 py-1 rounded-full border ${filtroAnulado === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
         ))}
       </div>
