@@ -1133,6 +1133,8 @@ function AppInner() {
           entrada: Array.isArray(cats.entrada) && cats.entrada.length ? cats.entrada : PAGAMENTO_CATEGORIAS_ENTRADA,
         });
       }
+      const confs = await loadConfig('confirmadores', null);
+      if (confs && Array.isArray(confs.emails) && confs.emails.length) confirmadoresAtual = confs.emails;
       const lgm = await loadConfig('logomarcas', null);
       if (lgm) {
         const norm = { integradora: lgm.integradora || '', distribuidora: lgm.distribuidora || '' };
@@ -1642,6 +1644,17 @@ function MiniaturaFoto({ src, alt, className }) {
 
 // E-mail de quem está logado — carimbado como autor nos lançamentos e nas anulações.
 let autorAtual = '';
+
+// Regra do dono: "somente meu usuário confirma recebimento de valores e conciliação".
+// REGISTRAR (lançar pagamento, anexar comprovante) continua livre para todos; o que é
+// restrito é CONFIRMAR recebimento e mexer na conciliação bancária. A lista vem da
+// config 'confirmadores' (padrão: o dono) — checagem pelo e-mail do login; o reforço
+// no banco (RLS por papel) virá com o projeto de níveis de usuários.
+let confirmadoresAtual = ['seniovieira@gmail.com'];
+function podeConfirmarRecebimento() {
+  const eu = String(autorAtual || '').toLowerCase().trim();
+  return !!eu && confirmadoresAtual.some(e => String(e).toLowerCase().trim() === eu);
+}
 
 // Detecta se uma venda consome estoque físico que as pré-vendas de outros clientes contavam
 // usar: depois dela, disponível + a caminho não cobre mais o total reservado.
@@ -4200,17 +4213,17 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
       return { ...v, comprovantes, quitado, quitadoEm: quitado ? (v.quitadoEm || new Date().toISOString()) : null };
     });
     await setVendas(next);
-    notify('Comprovante anexado — aguardando confirmação do recebimento (senha de aprovação)');
+    notify('Comprovante anexado — aguardando confirmação do recebimento');
   }
 
-  // Confirmar recebimento: SÓ a senha de aprovação confirma. A conciliação bancária
-  // também confirma (lá o extrato é a prova), pedindo a mesma senha uma vez.
+  // Confirmar recebimento: SOMENTE o usuário autorizado (regra do dono). Registrar
+  // comprovante continua livre — restrita é a confirmação.
   async function confirmarComprovante(venda, comp) {
-    const ok = await askSenha(
-      `Confirmar o recebimento de ${currency(comp.valor || 0)} da venda de ${venda.clienteNome}? Somente a senha de aprovação confirma recebimentos.`,
-      { label: 'Confirmar recebimento', destrutivo: false }
-    );
-    if (!ok) return;
+    if (!podeConfirmarRecebimento()) {
+      notify(`⚠️ Somente o usuário autorizado confirma recebimentos (hoje: ${confirmadoresAtual.join(', ')}).`);
+      return;
+    }
+    if (!(await askConfirm(`Confirmar o recebimento de ${currency(comp.valor || 0)} da venda de ${venda.clienteNome}?`))) return;
     const next = vendas.map(v => {
       if (v.id !== venda.id) return v;
       const comprovantes = (v.comprovantes || []).map(c => c.id === comp.id ? { ...c, confirmado: true, confirmadoPor: autorAtual, confirmadoEm: new Date().toISOString() } : c);
@@ -4382,7 +4395,9 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
                           {c.valor > 0 && <p className="text-[9px] text-emerald-600 text-center leading-tight">{currency(c.valor)}</p>}
                           {c.pagamentoDireto && <p className="text-[9px] text-sky-700 text-center leading-tight truncate" title={`Pago direto a ${c.terceiroNome} — vira despesa (${c.terceiroCategoria}) ao confirmar`}>→ {c.terceiroNome}</p>}
                           {c.confirmado === false
-                            ? <button onClick={() => confirmarComprovante(v, c)} className="w-full text-[9px] bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 rounded px-0.5 py-0.5 mt-0.5 leading-tight" title="Aguardando confirmação — somente a senha de aprovação confirma">Confirmar recebim.</button>
+                            ? (podeConfirmarRecebimento()
+                              ? <button onClick={() => confirmarComprovante(v, c)} className="w-full text-[9px] bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 rounded px-0.5 py-0.5 mt-0.5 leading-tight" title="Aguardando confirmação — somente o usuário autorizado confirma">Confirmar recebim.</button>
+                              : <p className="text-[9px] text-amber-600 text-center leading-tight" title="Somente o usuário autorizado confirma recebimentos">aguard. confirmação</p>)
                             : c.confirmado === true && <p className="text-[9px] text-emerald-700 text-center leading-tight" title={`Confirmado por ${c.confirmadoPor || '—'} em ${formatDate(c.confirmadoEm)}`}>✓ confirmado</p>}
                           <button onClick={() => removerComprovante(v.id, c.id)} className="absolute -top-1.5 -right-1.5 bg-slate-900 text-white rounded-full w-4 h-4 flex items-center justify-center"><X size={10} /></button>
                         </div>
@@ -6810,7 +6825,14 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
 
   const aberta = conciliacoes.find(c => c.id === abertaId) || null;
 
+  const bloqueado = () => {
+    if (podeConfirmarRecebimento()) return false;
+    notify(`⚠️ Somente o usuário autorizado concilia (hoje: ${confirmadoresAtual.join(', ')}). Consultar é livre.`);
+    return true;
+  };
+
   async function importar() {
+    if (bloqueado()) return;
     if (!conta.trim()) { notify('Dê um nome à conta (ex: Stone JCL)'); return; }
     const txt = textoExtrato.trim();
     if (!txt) { notify('Cole o texto do extrato: abra o PDF, selecione tudo (Ctrl+A), copie e cole aqui — ou use o botão para carregar um arquivo OFX'); return; }
@@ -6841,12 +6863,14 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
     return setConciliacoes(next);
   }
   async function conciliar(l, vinculos) {
+    if (bloqueado()) return;
     if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() }))) return;
     setVinculandoId(null); setVinculosManuais([]); setSelManual('');
   }
   // Despesa que está no extrato mas nunca foi lançada no sistema: cria o Pagamento
   // (tipo Saída) já preenchido com os dados do extrato e concilia na mesma hora.
   async function lancarPagamento(l) {
+    if (bloqueado()) return;
     const beneficiario = limparBeneficiario(l.descricao);
     const novo = {
       id: uid(), tipo: 'Saída', data: new Date(l.data + 'T12:00:00').toISOString(),
@@ -6860,13 +6884,16 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, pagamentos, 
   }
 
   async function ignorar(l) {
+    if (bloqueado()) return;
     if (!(await askConfirm(`Marcar "${l.descricao}" (${currency(l.valor)}) como fora do sistema? Use para movimentos que não passam pelo SGM (contas pessoais, impostos, tarifas...).`))) return;
     await atualizarLancamento(l.id, { status: 'ignorado', conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() });
   }
   async function desfazer(l) {
+    if (bloqueado()) return;
     await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined });
   }
   async function apagarConciliacao(c) {
+    if (bloqueado()) return;
     if (!(await askConfirm(`Apagar a conciliação de ${c.conta} (${c.periodo})? O trabalho de conferência dela será perdido — o extrato pode ser importado de novo depois.`))) return;
     if (!(await setConciliacoes(conciliacoes.filter(x => x.id !== c.id)))) return;
     if (abertaId === c.id) setAbertaId(null);
@@ -7257,13 +7284,13 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
   const estimadoDe = (v) => estimadoPorVenda.get(v.id) || 0;
 
   // Confirmar recebimento a partir do Financeiro — mesma regra de todo lugar:
-  // SOMENTE a senha de aprovação confirma.
+  // SOMENTE o usuário autorizado confirma.
   async function confirmarRecebimentoFin(venda, comp) {
-    const ok = await askSenha(
-      `Confirmar o recebimento de ${currency(comp.valor || 0)} da venda de ${venda.clienteNome}? Somente a senha de aprovação confirma recebimentos.`,
-      { label: 'Confirmar recebimento', destrutivo: false }
-    );
-    if (!ok) return;
+    if (!podeConfirmarRecebimento()) {
+      notify(`⚠️ Somente o usuário autorizado confirma recebimentos (hoje: ${confirmadoresAtual.join(', ')}).`);
+      return;
+    }
+    if (!(await askConfirm(`Confirmar o recebimento de ${currency(comp.valor || 0)} da venda de ${venda.clienteNome}?`))) return;
     const next = vendasTodas.map(v => {
       if (v.id !== venda.id) return v;
       const comprovantes = (v.comprovantes || []).map(c => c.id === comp.id ? { ...c, confirmado: true, confirmadoPor: autorAtual, confirmadoEm: new Date().toISOString() } : c);
@@ -7503,12 +7530,14 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
         return (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-5">
             <h3 className="text-sm font-medium text-amber-800 mb-1">Recebimentos aguardando confirmação</h3>
-            <p className="text-[11px] text-amber-700 mb-2">{pendentes.length} comprovante(s) somando {currency(soma)} — só entram nos indicadores depois de confirmados (senha de aprovação). A conciliação bancária também confirma.</p>
+            <p className="text-[11px] text-amber-700 mb-2">{pendentes.length} comprovante(s) somando {currency(soma)} — só entram nos indicadores depois que o usuário autorizado confirmar. A conciliação bancária acelera a conferência.</p>
             <div className="space-y-1">
               {pendentes.map(({ v, c }) => (
                 <div key={c.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
                   <span className="min-w-0 truncate">{v.clienteNome} — <span className="font-medium">{currency(c.valor || 0)}</span>{c.formaRecebimentoNome ? ` · ${c.formaRecebimentoNome}` : ''}{c.pagamentoDireto ? ` · pago direto a ${c.terceiroNome}` : ''} · anexado em {formatDate(c.data)}{c.autor ? ` por ${c.autor}` : ''}</span>
-                  <button onClick={() => confirmarRecebimentoFin(v, c)} className="shrink-0 text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
+                  {podeConfirmarRecebimento()
+                    ? <button onClick={() => confirmarRecebimentoFin(v, c)} className="shrink-0 text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
+                    : <span className="shrink-0 text-[10px] text-amber-600">só o usuário autorizado</span>}
                 </div>
               ))}
             </div>
