@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
+import { LayoutDashboard, Package, Users, ShoppingCart, Plus, Search, X, Trash2, AlertTriangle, ChevronRight, Loader2, CheckCircle2, TruckIcon, LineChart, FileText, ClipboardList, ArrowRightCircle, Ban, Pencil, PackageCheck, Camera, ShieldCheck, ShieldAlert, Building2, ClipboardCheck, Warehouse, ArrowLeftRight, Database, ShoppingBag, HandCoins, DownloadCloud, UploadCloud, Scale , LogOut } from 'lucide-react';
 import { loadCollection, saveCollectionDelta, saveCollectionFull, loadConfig, saveConfig, migrarDadosAntigosSeNecessario } from './lib/storage';
 import { supabase } from './lib/supabaseClient';
 import LoginScreen from './LoginScreen';
@@ -886,7 +886,7 @@ function AppInner() {
   // Falha de gravação vira uma tela bloqueante, não um toast: o toast de sucesso do fluxo
   // seguinte apagava o aviso em milissegundos e a perda ficava invisível para o operador.
   const [falhaGravacao, setFalhaGravacao] = useState(null); // 'conflito' | 'rede'
-  const [tab, setTab] = useState('estoque');
+  const [tab, setTab] = useState('visaoGeral');
   const [estoque, setEstoque] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [fornecedores, setFornecedores] = useState([]);
@@ -1340,6 +1340,7 @@ function AppInner() {
             </div>
           </div>
           <nav className="flex gap-1 mt-3 -mb-3 flex-wrap sm:flex-nowrap sm:overflow-x-auto">
+            <TabButton icon={LayoutDashboard} label="Visão geral" active={tab === 'visaoGeral'} onClick={() => setTab('visaoGeral')} />
             <TabButton icon={Database} label="Cadastros" active={CADASTRO_TABS.includes(tab)} onClick={() => setTab(CADASTRO_TABS.includes(tab) ? tab : 'estoque')} />
             <TabButton icon={ShoppingBag} label="Setor de Compras" active={COMPRAS_TABS.includes(tab)} onClick={() => setTab(COMPRAS_TABS.includes(tab) ? tab : 'pedidos')} />
             <TabButton icon={HandCoins} label="Setor de Vendas" active={SETOR_VENDAS_TABS.includes(tab)} onClick={() => setTab(SETOR_VENDAS_TABS.includes(tab) ? tab : 'orcamentos')} />
@@ -1400,6 +1401,7 @@ function AppInner() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-5">
+        {tab === 'visaoGeral' && <VisaoGeralModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} expedicoes={expedicoes} conciliacoes={conciliacoes} propostas={propostas} indicadores={indicadores} ajustesReposicao={ajustesReposicao} irPara={setTab} />}
         {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} estoque={estoque} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'transferencias' && (
@@ -7691,6 +7693,91 @@ function GraficoImobilizado({ indicadores }) {
           </div>
         </details>
       )}
+    </div>
+  );
+}
+
+// ---- VISÃO GERAL (tela inicial do dono) ----
+// Nada aqui é cálculo novo: é o retrato do dia reunindo o que cada aba já sabe,
+// em cartões que levam direto para onde a ação acontece.
+function VisaoGeralModule({ vendas, estoque, pedidosCompra, recebimentos, expedicoes, conciliacoes, propostas, indicadores, ajustesReposicao, irPara }) {
+  const resumo = useMemo(() => {
+    const agora = new Date();
+    const hojeStr = agora.toISOString().slice(0, 10);
+    const mesIni = new Date(agora.getFullYear(), agora.getMonth(), 1);
+    const ativas = vendas.filter(v => !v.anulado);
+
+    const vendasMes = ativas.filter(v => new Date(v.data) >= mesIni);
+    const vendasHoje = ativas.filter(v => String(v.data).slice(0, 10) === hojeStr);
+
+    const ind = calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, ajustesReposicao });
+
+    let aguardConfQtd = 0, aguardConfValor = 0;
+    for (const v of ativas) for (const c of (v.comprovantes || [])) {
+      if (c.confirmado === false) { aguardConfQtd++; aguardConfValor += c.valor || 0; }
+    }
+
+    let pendUnidades = 0; const vendasPendentes = new Set();
+    for (const v of ativas) for (const it of (v.itens || [])) {
+      if ((it.quantidadePendente || 0) > 0) { pendUnidades += it.quantidadePendente; vendasPendentes.add(v.id); }
+    }
+
+    const conciliaPend = conciliacoes.reduce((a, c) => a + c.lancamentos.filter(l => l.status === 'pendente').length, 0);
+
+    let aguardSeparacao = 0, aguardEntrega = 0;
+    for (const v of ativas) for (const it of (v.itens || [])) {
+      if (it.quantidade - (it.quantidadePendente || 0) <= 0) continue;
+      const chave = chaveItemVenda(v.id, it);
+      const etapas = expedicoes.filter(ex => ex.chave === chave && !ex.anulado);
+      if (etapas.some(e => e.etapa === 'entrega')) continue;
+      if (etapas.some(e => e.etapa === 'saida')) aguardEntrega++;
+      else aguardSeparacao++;
+    }
+
+    const estoqueBaixo = estoque.filter(p => (parseFloat(p.quantidadeMinima) || 0) > 0 && availableQty(p) < parseFloat(p.quantidadeMinima)).length;
+
+    const propAbertas = (propostas || []).filter(p => (p.status || 'aberta') === 'aberta');
+
+    const fotos = (indicadores || []).slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const variacao = fotos.length >= 2 ? (fotos[fotos.length - 1].totalImobilizado || 0) - (fotos[fotos.length - 2].totalImobilizado || 0) : null;
+
+    return {
+      vendasMes: { n: vendasMes.length, soma: vendasMes.reduce((a, v) => a + v.totalVenda, 0) },
+      vendasHoje: { n: vendasHoje.length, soma: vendasHoje.reduce((a, v) => a + v.totalVenda, 0) },
+      aReceber: ind.valoresAReceber, aguardConfQtd, aguardConfValor,
+      mercadoriaAEntregar: ind.mercadoriaAEntregar || 0, pendUnidades, vendasPendentes: vendasPendentes.size,
+      conciliaPend, aguardSeparacao, aguardEntrega,
+      estoqueValor: ind.valorEstoqueDisponivel, estoqueBaixo,
+      totalImobilizado: ind.totalImobilizado, variacao,
+      propAbertas: { n: propAbertas.length, soma: propAbertas.reduce((a, p) => a + (p.calculos?.totalAVista || 0), 0) },
+    };
+  }, [vendas, estoque, pedidosCompra, recebimentos, expedicoes, conciliacoes, propostas, indicadores, ajustesReposicao]);
+
+  const cards = [
+    { titulo: 'Vendas do mês', valor: currency(resumo.vendasMes.soma), sub: `${resumo.vendasMes.n} venda(s) · hoje: ${resumo.vendasHoje.n} (${currency(resumo.vendasHoje.soma)})`, tab: 'vendas' },
+    { titulo: 'A receber', valor: currency(resumo.aReceber), sub: resumo.aguardConfQtd > 0 ? `${resumo.aguardConfQtd} comprovante(s) aguardando sua confirmação (${currency(resumo.aguardConfValor)})` : 'nenhum comprovante aguardando confirmação', alerta: resumo.aguardConfQtd > 0, tab: 'financeiro' },
+    { titulo: 'Mercadoria a entregar', valor: currency(resumo.mercadoriaAEntregar), sub: `${resumo.pendUnidades} un. pendentes em ${resumo.vendasPendentes} venda(s) — pré-vendas aguardando chegada`, alerta: resumo.pendUnidades > 0, tab: 'vendas' },
+    { titulo: 'Expedição', valor: `${resumo.aguardSeparacao + resumo.aguardEntrega} item(ns)`, sub: `${resumo.aguardSeparacao} aguardando separação · ${resumo.aguardEntrega} separado(s) p/ entrega`, alerta: resumo.aguardSeparacao + resumo.aguardEntrega > 0, tab: 'expedicao' },
+    { titulo: 'Conciliação bancária', valor: `${resumo.conciliaPend} pendente(s)`, sub: resumo.conciliaPend > 0 ? 'lançamentos de extrato sem conferência' : 'extratos em dia', alerta: resumo.conciliaPend > 0, tab: 'conciliacao' },
+    { titulo: 'Estoque disponível', valor: currency(resumo.estoqueValor), sub: resumo.estoqueBaixo > 0 ? `${resumo.estoqueBaixo} produto(s) abaixo do mínimo` : 'nenhum produto abaixo do mínimo', alerta: resumo.estoqueBaixo > 0, tab: 'estoque' },
+    { titulo: 'Propostas abertas (integradora)', valor: `${resumo.propAbertas.n}`, sub: resumo.propAbertas.n > 0 ? `${currency(resumo.propAbertas.soma)} em negociação` : 'nenhuma proposta em aberto', tab: 'propostas' },
+    { titulo: 'Total imobilizado', valor: currency(resumo.totalImobilizado), sub: resumo.variacao === null ? 'histórico começa a acumular' : `${resumo.variacao >= 0 ? '+' : '−'}${currency(Math.abs(resumo.variacao))} desde a fotografia anterior`, tab: 'financeiro' },
+  ];
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Visão geral</h2>
+      <p className="text-xs text-slate-400 mb-4">O retrato de agora — cada cartão leva para a aba onde a ação acontece.</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        {cards.map(c => (
+          <button key={c.titulo} onClick={() => irPara(c.tab)} className={`text-left bg-white border rounded-lg p-4 hover:shadow-sm transition-shadow ${c.alerta ? 'border-amber-300' : 'border-slate-200'}`}>
+            <p className="text-xs text-slate-500 mb-1">{c.titulo}</p>
+            <p className="text-xl font-semibold text-slate-800">{c.valor}</p>
+            <p className={`text-[11px] mt-1 ${c.alerta ? 'text-amber-700' : 'text-slate-400'}`}>{c.sub}</p>
+          </button>
+        ))}
+      </div>
+      <GraficoImobilizado indicadores={indicadores} />
     </div>
   );
 }
