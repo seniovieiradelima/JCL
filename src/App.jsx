@@ -6,7 +6,7 @@ import LoginScreen from './LoginScreen';
 
 const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
 const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
-const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao', 'logomarcas'];
+const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao', 'logomarcas', 'equipe'];
 const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'pagamentos', 'conciliacao', 'financeiro'];
 const PAGAMENTO_CATEGORIAS_SAIDA = [
   'Salários e encargos', 'Pró-labore / retirada de sócio', 'Aluguel', 'Energia elétrica', 'Água',
@@ -1369,6 +1369,7 @@ function AppInner() {
                 <SubTabButton icon={HandCoins} label="Formas de recebimento" active={tab === 'formasRecebimento'} onClick={() => setTab('formasRecebimento')} />
                 <SubTabButton icon={ShieldAlert} label="Senha de aprovação" active={tab === 'senhaAprovacao'} onClick={() => setTab('senhaAprovacao')} />
                 <SubTabButton icon={Camera} label="Logomarcas" active={tab === 'logomarcas'} onClick={() => setTab('logomarcas')} />
+                <SubTabButton icon={ShieldCheck} label="Equipe" active={tab === 'equipe'} onClick={() => setTab('equipe')} />
               </nav>
             </div>
           </div>
@@ -1489,6 +1490,7 @@ function AppInner() {
         )}
         {tab === 'pagamentos' && <PagamentosModule pagamentos={pagamentos} setPagamentos={persistPagamentos} vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} conciliacoes={conciliacoes} categorias={categoriasPagamento} salvarCategorias={salvarCategoriasPagamento} askSenha={askSenha} notify={notify} />}
         {tab === 'logomarcas' && <LogomarcasModule logomarcas={logomarcas} salvar={salvarLogomarcas} notify={notify} />}
+        {tab === 'equipe' && <EquipeModule askConfirm={askConfirm} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'fiscal' && <FiscalModule notasFiscais={notasFiscais} setNotasFiscais={persistNotasFiscais} askSenha={askSenha} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
@@ -2188,6 +2190,100 @@ function FiscalModule({ notasFiscais, setNotasFiscais, askSenha, notify }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- EQUIPE (aprovação de cadastros de usuários) ---------------- */
+// Os perfis vivem na tabela sgm_usuarios (fora do sgm_records de propósito: é ela que a
+// regra de segurança do banco consulta para liberar os dados). Pela RLS, cada um lê só o
+// próprio cadastro; o DONO lê e edita todos — então esta tela funciona de verdade só pra ele.
+function EquipeModule({ askConfirm, notify }) {
+  const [usuarios, setUsuarios] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erroTabela, setErroTabela] = useState('');
+
+  async function carregar() {
+    setCarregando(true);
+    const { data, error } = await supabase.from('sgm_usuarios').select('*').order('criado_em', { ascending: false });
+    if (error) { setErroTabela(error.message); setUsuarios([]); }
+    else { setErroTabela(''); setUsuarios(data || []); }
+    setCarregando(false);
+  }
+  useEffect(() => { carregar(); }, []);
+
+  async function mudar(u, mudanca, msg) {
+    const { error } = await supabase.from('sgm_usuarios').update(mudanca).eq('user_id', u.user_id);
+    if (error) { notify(`⚠️ Não foi possível salvar: ${error.message}`); return; }
+    notify(msg);
+    carregar();
+  }
+  const aprovar = (u) => mudar(u, { papel: 'equipe', ativo: true, aprovado_em: new Date().toISOString(), aprovado_por: autorAtual }, `${u.nome || u.email} aprovado — acesso liberado`);
+  const recusar = async (u) => {
+    if (!(await askConfirm(`Recusar o cadastro de ${u.nome || u.email}? A pessoa continua sem acesso e vê o aviso de recusa.`))) return;
+    mudar(u, { papel: 'recusado', ativo: false }, 'Cadastro recusado');
+  };
+  const desativar = async (u) => {
+    if (!(await askConfirm(`Desativar o acesso de ${u.nome || u.email}? A pessoa não consegue mais entrar nos dados até ser reativada.`))) return;
+    mudar(u, { ativo: false }, 'Acesso desativado');
+  };
+  const reativar = (u) => mudar(u, { papel: 'equipe', ativo: true, aprovado_em: new Date().toISOString(), aprovado_por: autorAtual }, 'Acesso reativado');
+
+  const pendentes = usuarios.filter(u => !u.ativo && u.papel !== 'recusado' && u.papel !== 'dono');
+  const ativos = usuarios.filter(u => u.ativo);
+  const recusados = usuarios.filter(u => !u.ativo && u.papel === 'recusado');
+
+  const Cartao = ({ u, acoes }) => (
+    <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-md px-3 py-2">
+      <div className="min-w-0 text-xs">
+        <p className="text-sm font-medium text-slate-700 truncate">{u.nome || '(sem nome)'} {u.papel === 'dono' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">dono</span>}</p>
+        <p className="text-slate-400 truncate">{u.email}{u.funcao ? ` · ${u.funcao}` : ''}{u.telefone ? ` · ${u.telefone}` : ''}</p>
+        <p className="text-[10px] text-slate-400">cadastro em {formatDate(u.criado_em)}{u.aprovado_em ? ` · aprovado em ${formatDate(u.aprovado_em)} por ${u.aprovado_por || '—'}` : ''}</p>
+      </div>
+      <div className="flex gap-1.5 shrink-0">{acoes}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Equipe</h2>
+      <p className="text-xs text-slate-400 mb-4">Quem se cadastra pela tela de entrada aparece aqui aguardando aprovação. Só depois do seu OK a pessoa acessa os dados — a trava vale no banco, não só na tela.</p>
+      {erroTabela && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3 mb-3">A tabela de usuários ainda não existe no banco ({erroTabela}) — rode o SQL da equipe no Supabase para ativar o fluxo de aprovação.</p>}
+      {carregando && <p className="text-sm text-slate-400">Carregando...</p>}
+
+      {pendentes.length > 0 && (
+        <div className="mb-5">
+          <h3 className="text-sm font-medium text-amber-700 mb-2">Aguardando aprovação ({pendentes.length})</h3>
+          <div className="space-y-2">
+            {pendentes.map(u => (
+              <Cartao key={u.user_id} u={u} acoes={<>
+                <button onClick={() => aprovar(u)} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-md">Aprovar e ativar</button>
+                <button onClick={() => recusar(u)} className="text-xs text-red-500 border border-red-200 px-2.5 py-1.5 rounded-md hover:bg-red-50">Recusar</button>
+              </>} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <h3 className="text-sm font-medium text-slate-500 mb-2">Ativos ({ativos.length})</h3>
+      <div className="space-y-2 mb-5">
+        {ativos.map(u => (
+          <Cartao key={u.user_id} u={u} acoes={u.papel !== 'dono' &&
+            <button onClick={() => desativar(u)} className="text-xs text-slate-500 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Desativar</button>} />
+        ))}
+        {!carregando && ativos.length === 0 && <p className="text-sm text-slate-400">Nenhum usuário ativo listado — se você não é o dono, verá apenas o seu próprio cadastro.</p>}
+      </div>
+
+      {recusados.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-slate-400 mb-2">Recusados / desativados ({recusados.length})</h3>
+          <div className="space-y-2">
+            {recusados.map(u => (
+              <Cartao key={u.user_id} u={u} acoes={<button onClick={() => reativar(u)} className="text-xs text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Reativar</button>} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -8673,9 +8769,40 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
 
 /* ---------------- AUTENTICAÇÃO (login da equipe via Supabase) ---------------- */
 
+const EMAIL_DONO = 'seniovieira@gmail.com';
+
+// Tela de quem se cadastrou e ainda não foi aprovado: nada do sistema carrega
+// (e a RLS no banco garante que nem por fora ele lê os dados).
+function AguardandoAprovacaoScreen({ email, perfil, aoVerificar }) {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6 w-full max-w-sm text-center">
+        <div className="w-9 h-9 rounded-md bg-amber-500 flex items-center justify-center font-bold text-slate-900 text-sm mx-auto mb-3">EM</div>
+        <h1 className="text-base font-semibold text-slate-800 mb-1">Cadastro recebido</h1>
+        <p className="text-sm text-slate-500 mb-3">
+          {perfil?.papel === 'recusado'
+            ? 'Seu cadastro não foi aprovado. Fale com o administrador se achar que foi um engano.'
+            : 'Seu acesso está aguardando a aprovação do administrador. Você será liberado assim que ele ativar seu perfil.'}
+        </p>
+        <div className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-md p-2 mb-4 text-left">
+          <p><span className="text-slate-400">Nome:</span> {perfil?.nome || '—'}</p>
+          <p><span className="text-slate-400">Função:</span> {perfil?.funcao || '—'}</p>
+          <p><span className="text-slate-400">E-mail:</span> {email}</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={aoVerificar} className="flex-1 text-sm bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium px-3 py-2 rounded-md">Verificar de novo</button>
+          <button onClick={() => supabase.auth.signOut()} className="flex-1 text-sm text-slate-500 border border-slate-200 px-3 py-2 rounded-md">Sair</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [perfil, setPerfil] = useState(null);
+  const [checandoPerfil, setChecandoPerfil] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -8690,7 +8817,25 @@ export default function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  if (checkingSession) {
+  async function carregarPerfil(sessaoAtual) {
+    if (!sessaoAtual) { setPerfil(null); return; }
+    setChecandoPerfil(true);
+    try {
+      const { data, error } = await supabase.from('sgm_usuarios').select('*').eq('user_id', sessaoAtual.user.id).maybeSingle();
+      // Tabela ainda não criada (migração pendente): segue o comportamento antigo — todo
+      // mundo logado entra. A trava de verdade só existe depois de rodar o SQL.
+      if (error) { console.warn('Perfil de usuário indisponível (rodar o SQL da equipe?)', error.message); setPerfil({ ativo: true, papel: 'legado' }); }
+      else setPerfil(data || { ativo: false, papel: 'pendente', nome: sessaoAtual.user.user_metadata?.nome || '', funcao: sessaoAtual.user.user_metadata?.funcao || '' });
+    } catch (e) {
+      console.warn('Perfil de usuário indisponível', e);
+      setPerfil({ ativo: true, papel: 'legado' });
+    }
+    setChecandoPerfil(false);
+  }
+
+  useEffect(() => { carregarPerfil(session); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [session?.user?.id]);
+
+  if (checkingSession || (session && checandoPerfil && !perfil)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <Loader2 className="animate-spin text-slate-400" size={24} />
@@ -8699,6 +8844,11 @@ export default function App() {
   }
 
   if (!session) return <LoginScreen />;
+
+  const ehDono = (session.user?.email || '').toLowerCase() === EMAIL_DONO || perfil?.papel === 'dono';
+  if (!ehDono && perfil && !perfil.ativo) {
+    return <AguardandoAprovacaoScreen email={session.user?.email} perfil={perfil} aoVerificar={() => carregarPerfil(session)} />;
+  }
 
   return <AppInner />;
 }
