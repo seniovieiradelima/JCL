@@ -20,6 +20,24 @@ const SETOR_VENDAS_TABS = ['orcamentos', 'vendas', 'expedicao'];
 const INTEGRADORA_TABS = ['propostas'];
 const FISCAL_TABS = ['fiscal'];
 
+// Catálogo de abas para as permissões por usuário (a aba Equipe é sempre só do dono).
+const ABAS_SISTEMA = [
+  ['visaoGeral', 'Visão geral', 'Geral'],
+  ['estoque', 'Estoque', 'Cadastros'], ['depositos', 'Depósitos', 'Cadastros'],
+  ['fornecedores', 'Fornecedores', 'Cadastros'], ['clientes', 'Clientes', 'Cadastros'],
+  ['formasRecebimento', 'Formas de recebimento', 'Cadastros'], ['senhaAprovacao', 'Senha de aprovação', 'Cadastros'],
+  ['logomarcas', 'Logomarcas', 'Cadastros'],
+  ['transferencias', 'Transferências', 'Setor de Compras'], ['pedidos', 'Pedidos de compra', 'Setor de Compras'],
+  ['recebimento', 'Recebimento', 'Setor de Compras'], ['conferencia', 'Conferência', 'Setor de Compras'],
+  ['balanco', 'Balanço de estoque', 'Setor de Compras'], ['pagamentos', 'Pagamentos', 'Setor de Compras'],
+  ['conciliacao', 'Conciliação bancária', 'Setor de Compras'], ['financeiro', 'Financeiro', 'Setor de Compras'],
+  ['orcamentos', 'Orçamentos', 'Setor de Vendas'], ['vendas', 'Vendas', 'Setor de Vendas'], ['expedicao', 'Expedição', 'Setor de Vendas'],
+  ['propostas', 'Propostas', 'Integradora'],
+  ['fiscal', 'Fiscal', 'Fiscal'],
+];
+// Atalho "Operação": o dia a dia sem a parte financeira/fiscal e sem configurações sensíveis.
+const ABAS_PRESET_OPERACAO = ['estoque', 'depositos', 'fornecedores', 'clientes', 'transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'orcamentos', 'vendas', 'expedicao', 'propostas'];
+
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -883,7 +901,7 @@ function SenhaDialogModal({ message, senhaConfig, label = 'Apagar', destrutivo =
   );
 }
 
-function AppInner() {
+function AppInner({ perfil }) {
   const [loading, setLoading] = useState(true);
   // Se a leitura inicial falhar, o sistema PRECISA avisar em vez de entrar com dados vazios.
   // Entrar com estoque zerado fazia todo lançamento seguinte ser descartado em silêncio.
@@ -891,7 +909,18 @@ function AppInner() {
   // Falha de gravação vira uma tela bloqueante, não um toast: o toast de sucesso do fluxo
   // seguinte apagava o aviso em milissegundos e a perda ficava invisível para o operador.
   const [falhaGravacao, setFalhaGravacao] = useState(null); // 'conflito' | 'rede'
-  const [tab, setTab] = useState('visaoGeral');
+  // Permissões por aba: dono vê tudo; sem lista gravada (abas = null) também vê tudo;
+  // com lista, o menu encolhe e cair numa aba proibida redireciona para a primeira liberada.
+  const donoLogado = (autorAtual || '').toLowerCase() === EMAIL_DONO || perfil?.papel === 'dono';
+  const abasRestritas = !donoLogado && Array.isArray(perfil?.abas) ? perfil.abas : null;
+  const podeAba = (k) => (k === 'equipe' ? donoLogado : (!abasRestritas || abasRestritas.includes(k)));
+  const primeiraAbaPermitida = () => (['visaoGeral', ...ABAS_SISTEMA.map(a => a[0])].find(podeAba)) || 'visaoGeral';
+  const grupoVisivel = (tabs) => tabs.some(podeAba);
+  const entrarGrupo = (tabs) => setTab(tabs.includes(tab) && podeAba(tab) ? tab : tabs.find(podeAba));
+
+  const [tab, setTab] = useState(() => primeiraAbaPermitida());
+  useEffect(() => { if (!podeAba(tab)) setTab(primeiraAbaPermitida()); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, perfil]);
   const [estoque, setEstoque] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [fornecedores, setFornecedores] = useState([]);
@@ -1350,26 +1379,26 @@ function AppInner() {
             </div>
           </div>
           <nav className="flex gap-1 mt-3 -mb-3 flex-wrap sm:flex-nowrap sm:overflow-x-auto">
-            <TabButton icon={LayoutDashboard} label="Visão geral" active={tab === 'visaoGeral'} onClick={() => setTab('visaoGeral')} />
-            <TabButton icon={Database} label="Cadastros" active={CADASTRO_TABS.includes(tab)} onClick={() => setTab(CADASTRO_TABS.includes(tab) ? tab : 'estoque')} />
-            <TabButton icon={ShoppingBag} label="Setor de Compras" active={COMPRAS_TABS.includes(tab)} onClick={() => setTab(COMPRAS_TABS.includes(tab) ? tab : 'pedidos')} />
-            <TabButton icon={HandCoins} label="Setor de Vendas" active={SETOR_VENDAS_TABS.includes(tab)} onClick={() => setTab(SETOR_VENDAS_TABS.includes(tab) ? tab : 'orcamentos')} />
-            <TabButton icon={FileText} label="Integradora" active={INTEGRADORA_TABS.includes(tab)} onClick={() => setTab(INTEGRADORA_TABS.includes(tab) ? tab : 'propostas')} />
-            <TabButton icon={Landmark} label="Fiscal" active={FISCAL_TABS.includes(tab)} onClick={() => setTab('fiscal')} />
+            {podeAba('visaoGeral') && <TabButton icon={LayoutDashboard} label="Visão geral" active={tab === 'visaoGeral'} onClick={() => setTab('visaoGeral')} />}
+            {grupoVisivel(CADASTRO_TABS) && <TabButton icon={Database} label="Cadastros" active={CADASTRO_TABS.includes(tab)} onClick={() => entrarGrupo(CADASTRO_TABS)} />}
+            {grupoVisivel(COMPRAS_TABS) && <TabButton icon={ShoppingBag} label="Setor de Compras" active={COMPRAS_TABS.includes(tab)} onClick={() => entrarGrupo(COMPRAS_TABS)} />}
+            {grupoVisivel(SETOR_VENDAS_TABS) && <TabButton icon={HandCoins} label="Setor de Vendas" active={SETOR_VENDAS_TABS.includes(tab)} onClick={() => entrarGrupo(SETOR_VENDAS_TABS)} />}
+            {grupoVisivel(INTEGRADORA_TABS) && <TabButton icon={FileText} label="Integradora" active={INTEGRADORA_TABS.includes(tab)} onClick={() => entrarGrupo(INTEGRADORA_TABS)} />}
+            {podeAba('fiscal') && <TabButton icon={Landmark} label="Fiscal" active={FISCAL_TABS.includes(tab)} onClick={() => setTab('fiscal')} />}
           </nav>
         </div>
         {CADASTRO_TABS.includes(tab) && (
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
               <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
-                <SubTabButton icon={Package} label="Estoque" active={tab === 'estoque'} onClick={() => setTab('estoque')} />
-                <SubTabButton icon={Warehouse} label="Depósitos" active={tab === 'depositos'} onClick={() => setTab('depositos')} />
-                <SubTabButton icon={Building2} label="Fornecedores" active={tab === 'fornecedores'} onClick={() => setTab('fornecedores')} />
-                <SubTabButton icon={Users} label="Clientes" active={tab === 'clientes'} onClick={() => setTab('clientes')} />
-                <SubTabButton icon={HandCoins} label="Formas de recebimento" active={tab === 'formasRecebimento'} onClick={() => setTab('formasRecebimento')} />
-                <SubTabButton icon={ShieldAlert} label="Senha de aprovação" active={tab === 'senhaAprovacao'} onClick={() => setTab('senhaAprovacao')} />
-                <SubTabButton icon={Camera} label="Logomarcas" active={tab === 'logomarcas'} onClick={() => setTab('logomarcas')} />
-                <SubTabButton icon={ShieldCheck} label="Equipe" active={tab === 'equipe'} onClick={() => setTab('equipe')} />
+                {podeAba('estoque') && <SubTabButton icon={Package} label="Estoque" active={tab === 'estoque'} onClick={() => setTab('estoque')} />}
+                {podeAba('depositos') && <SubTabButton icon={Warehouse} label="Depósitos" active={tab === 'depositos'} onClick={() => setTab('depositos')} />}
+                {podeAba('fornecedores') && <SubTabButton icon={Building2} label="Fornecedores" active={tab === 'fornecedores'} onClick={() => setTab('fornecedores')} />}
+                {podeAba('clientes') && <SubTabButton icon={Users} label="Clientes" active={tab === 'clientes'} onClick={() => setTab('clientes')} />}
+                {podeAba('formasRecebimento') && <SubTabButton icon={HandCoins} label="Formas de recebimento" active={tab === 'formasRecebimento'} onClick={() => setTab('formasRecebimento')} />}
+                {podeAba('senhaAprovacao') && <SubTabButton icon={ShieldAlert} label="Senha de aprovação" active={tab === 'senhaAprovacao'} onClick={() => setTab('senhaAprovacao')} />}
+                {podeAba('logomarcas') && <SubTabButton icon={Camera} label="Logomarcas" active={tab === 'logomarcas'} onClick={() => setTab('logomarcas')} />}
+                {podeAba('equipe') && <SubTabButton icon={ShieldCheck} label="Equipe" active={tab === 'equipe'} onClick={() => setTab('equipe')} />}
               </nav>
             </div>
           </div>
@@ -1378,14 +1407,14 @@ function AppInner() {
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
               <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
-                <SubTabButton icon={ArrowLeftRight} label="Transferências" active={tab === 'transferencias'} onClick={() => setTab('transferencias')} />
-                <SubTabButton icon={ClipboardList} label="Pedidos de compra" active={tab === 'pedidos'} onClick={() => setTab('pedidos')} />
-                <SubTabButton icon={TruckIcon} label="Recebimento" active={tab === 'recebimento'} onClick={() => setTab('recebimento')} />
-                <SubTabButton icon={ClipboardList} label="Conferência" active={tab === 'conferencia'} onClick={() => setTab('conferencia')} />
-                <SubTabButton icon={Scale} label="Balanço de estoque" active={tab === 'balanco'} onClick={() => setTab('balanco')} />
-                <SubTabButton icon={HandCoins} label="Pagamentos" active={tab === 'pagamentos'} onClick={() => setTab('pagamentos')} />
-                <SubTabButton icon={ArrowRightCircle} label="Conciliação" active={tab === 'conciliacao'} onClick={() => setTab('conciliacao')} />
-                <SubTabButton icon={LineChart} label="Financeiro" active={tab === 'financeiro'} onClick={() => setTab('financeiro')} />
+                {podeAba('transferencias') && <SubTabButton icon={ArrowLeftRight} label="Transferências" active={tab === 'transferencias'} onClick={() => setTab('transferencias')} />}
+                {podeAba('pedidos') && <SubTabButton icon={ClipboardList} label="Pedidos de compra" active={tab === 'pedidos'} onClick={() => setTab('pedidos')} />}
+                {podeAba('recebimento') && <SubTabButton icon={TruckIcon} label="Recebimento" active={tab === 'recebimento'} onClick={() => setTab('recebimento')} />}
+                {podeAba('conferencia') && <SubTabButton icon={ClipboardList} label="Conferência" active={tab === 'conferencia'} onClick={() => setTab('conferencia')} />}
+                {podeAba('balanco') && <SubTabButton icon={Scale} label="Balanço de estoque" active={tab === 'balanco'} onClick={() => setTab('balanco')} />}
+                {podeAba('pagamentos') && <SubTabButton icon={HandCoins} label="Pagamentos" active={tab === 'pagamentos'} onClick={() => setTab('pagamentos')} />}
+                {podeAba('conciliacao') && <SubTabButton icon={ArrowRightCircle} label="Conciliação" active={tab === 'conciliacao'} onClick={() => setTab('conciliacao')} />}
+                {podeAba('financeiro') && <SubTabButton icon={LineChart} label="Financeiro" active={tab === 'financeiro'} onClick={() => setTab('financeiro')} />}
               </nav>
             </div>
           </div>
@@ -1394,9 +1423,9 @@ function AppInner() {
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
               <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
-                <SubTabButton icon={ClipboardCheck} label="Orçamentos" active={tab === 'orcamentos'} onClick={() => setTab('orcamentos')} />
-                <SubTabButton icon={ShoppingCart} label="Vendas" active={tab === 'vendas'} onClick={() => setTab('vendas')} />
-                <SubTabButton icon={PackageCheck} label="Expedição" active={tab === 'expedicao'} onClick={() => setTab('expedicao')} />
+                {podeAba('orcamentos') && <SubTabButton icon={ClipboardCheck} label="Orçamentos" active={tab === 'orcamentos'} onClick={() => setTab('orcamentos')} />}
+                {podeAba('vendas') && <SubTabButton icon={ShoppingCart} label="Vendas" active={tab === 'vendas'} onClick={() => setTab('vendas')} />}
+                {podeAba('expedicao') && <SubTabButton icon={PackageCheck} label="Expedição" active={tab === 'expedicao'} onClick={() => setTab('expedicao')} />}
               </nav>
             </div>
           </div>
@@ -1405,7 +1434,7 @@ function AppInner() {
           <div className="bg-slate-800 border-t border-slate-700">
             <div className="max-w-6xl mx-auto px-4">
               <nav className="flex gap-1 flex-wrap sm:flex-nowrap sm:overflow-x-auto py-0.5">
-                <SubTabButton icon={FileText} label="Propostas" active={tab === 'propostas'} onClick={() => setTab('propostas')} />
+                {podeAba('propostas') && <SubTabButton icon={FileText} label="Propostas" active={tab === 'propostas'} onClick={() => setTab('propostas')} />}
               </nav>
             </div>
           </div>
@@ -2219,6 +2248,22 @@ function EquipeModule({ askConfirm, notify }) {
     carregar();
   }
   const aprovar = (u) => mudar(u, { papel: 'equipe', ativo: true, aprovado_em: new Date().toISOString(), aprovado_por: autorAtual }, `${u.nome || u.email} aprovado — acesso liberado`);
+
+  // Permissões por aba: null = vê tudo; lista = só as marcadas (a pessoa recarrega e o menu muda)
+  const [permissoesDe, setPermissoesDe] = useState(null);
+  const [draftAbas, setDraftAbas] = useState([]);
+  function abrirPermissoes(u) {
+    setPermissoesDe(u.user_id);
+    setDraftAbas(Array.isArray(u.abas) ? [...u.abas] : ABAS_SISTEMA.map(a => a[0]));
+  }
+  async function salvarPermissoes(u, lista) {
+    const todas = lista.length === ABAS_SISTEMA.length;
+    const { error } = await supabase.from('sgm_usuarios').update({ abas: todas ? null : lista }).eq('user_id', u.user_id);
+    if (error) { notify(`⚠️ Não foi possível salvar: ${error.message}`); return; }
+    notify(`Permissões de ${u.nome || u.email} salvas — valem no próximo carregamento da tela dela`);
+    setPermissoesDe(null);
+    carregar();
+  }
   const recusar = async (u) => {
     if (!(await askConfirm(`Recusar o cadastro de ${u.nome || u.email}? A pessoa continua sem acesso e vê o aviso de recusa.`))) return;
     mudar(u, { papel: 'recusado', ativo: false }, 'Cadastro recusado');
@@ -2268,8 +2313,45 @@ function EquipeModule({ askConfirm, notify }) {
       <h3 className="text-sm font-medium text-slate-500 mb-2">Ativos ({ativos.length})</h3>
       <div className="space-y-2 mb-5">
         {ativos.map(u => (
-          <Cartao key={u.user_id} u={u} acoes={u.papel !== 'dono' &&
-            <button onClick={() => desativar(u)} className="text-xs text-slate-500 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Desativar</button>} />
+          <div key={u.user_id}>
+            <Cartao u={u} acoes={u.papel !== 'dono' && <>
+              <button onClick={() => (permissoesDe === u.user_id ? setPermissoesDe(null) : abrirPermissoes(u))} className="text-xs text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">
+                Permissões{Array.isArray(u.abas) ? ` (${u.abas.length})` : ' (tudo)'}
+              </button>
+              <button onClick={() => desativar(u)} className="text-xs text-slate-500 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Desativar</button>
+            </>} />
+            {permissoesDe === u.user_id && (
+              <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mt-1">
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                  <p className="text-xs font-medium text-slate-600">Abas que {u.nome || u.email} pode usar</p>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => setDraftAbas(ABAS_SISTEMA.map(a => a[0]))} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Tudo</button>
+                    <button onClick={() => setDraftAbas([...ABAS_PRESET_OPERACAO])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white" title="O dia a dia sem financeiro, fiscal, conciliação, pagamentos e configurações">Operação</button>
+                    <button onClick={() => setDraftAbas([])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Nenhuma</button>
+                  </div>
+                </div>
+                {['Geral', 'Cadastros', 'Setor de Compras', 'Setor de Vendas', 'Integradora', 'Fiscal'].map(grupo => (
+                  <div key={grupo} className="mb-1.5">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">{grupo}</p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      {ABAS_SISTEMA.filter(a => a[2] === grupo).map(([k, rotulo]) => (
+                        <label key={k} className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer">
+                          <input type="checkbox" checked={draftAbas.includes(k)}
+                            onChange={e => setDraftAbas(d => (e.target.checked ? [...d, k] : d.filter(x => x !== k)))} />
+                          {rotulo}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <p className="text-[10px] text-slate-400 mt-1 mb-2">A aba Equipe é sempre exclusiva do dono. A mudança vale quando a pessoa recarregar a tela (F5). A trava por aba é da interface — a proteção de banco continua sendo o cadastro aprovado.</p>
+                <div className="flex gap-2">
+                  <button onClick={() => salvarPermissoes(u, draftAbas)} disabled={draftAbas.length === 0} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md disabled:opacity-40">Salvar permissões</button>
+                  <button onClick={() => setPermissoesDe(null)} className="text-xs text-slate-500 px-2 py-1.5">Cancelar</button>
+                </div>
+              </div>
+            )}
+          </div>
         ))}
         {!carregando && ativos.length === 0 && <p className="text-sm text-slate-400">Nenhum usuário ativo listado — se você não é o dono, verá apenas o seu próprio cadastro.</p>}
       </div>
@@ -8850,5 +8932,5 @@ export default function App() {
     return <AguardandoAprovacaoScreen email={session.user?.email} perfil={perfil} aoVerificar={() => carregarPerfil(session)} />;
   }
 
-  return <AppInner />;
+  return <AppInner perfil={ehDono ? { ...(perfil || {}), papel: 'dono' } : perfil} />;
 }
