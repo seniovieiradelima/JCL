@@ -290,6 +290,55 @@ async function dataUrlParaStorage(dataUrl, pasta) {
 
 const fotoEmbutida = (s) => typeof s === 'string' && s.startsWith('data:');
 
+// ---- Comprovantes em bucket PRIVADO ----
+// Comprovante financeiro não fica em link público: os NOVOS sobem para o bucket
+// 'comprovantes' (privado) e são abertos por link assinado, temporário, só para quem
+// está logado e aprovado. Os antigos (URL pública do bucket de fotos) seguem abrindo.
+async function comprovantePrivadoUpload(file) {
+  let corpo = file;
+  let ext;
+  if ((file.type || '').startsWith('image/')) {
+    const dataUrl = await fileToCompressedDataUrl(file);
+    corpo = await (await fetch(dataUrl)).blob();
+    ext = 'jpg';
+  } else {
+    ext = ((file.name || '').split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
+  }
+  const caminho = `${uid()}${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage.from('comprovantes').upload(caminho, corpo, {
+    contentType: corpo.type || file.type || undefined,
+  });
+  if (error) throw error;
+  return { arquivoPath: caminho, tipo: corpo.type || file.type || '' };
+}
+async function urlAssinadaComprovante(caminho, segundos = 3600) {
+  const { data, error } = await supabase.storage.from('comprovantes').createSignedUrl(caminho, segundos);
+  if (error) throw error;
+  return data.signedUrl;
+}
+// Mostra um comprovante dos dois mundos: privado (gera link assinado) ou antigo (URL pública).
+function ComprovanteArquivo({ comp, className }) {
+  const [url, setUrl] = useState(comp.arquivoPath ? null : (comp.dataUrl || null));
+  const [falhou, setFalhou] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    if (comp.arquivoPath) {
+      urlAssinadaComprovante(comp.arquivoPath)
+        .then(u => { if (vivo) setUrl(u); })
+        .catch(() => { if (vivo) setFalhou(true); });
+    } else setUrl(comp.dataUrl || null);
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comp.arquivoPath, comp.dataUrl]);
+  const ehImagem = (comp.tipo || '').startsWith('image/');
+  if (falhou || !url) {
+    return <div className={`${className} flex items-center justify-center bg-slate-100 text-slate-400 border border-slate-200`} title={falhou ? 'Não foi possível abrir o arquivo seguro' : 'Carregando arquivo seguro...'}><FileText size={16} /></div>;
+  }
+  return ehImagem
+    ? <MiniaturaFoto src={url} alt={comp.nome || 'Comprovante'} className={className} />
+    : <a href={url} target="_blank" rel="noreferrer" className={`${className} flex flex-col items-center justify-center gap-1 border border-slate-200 bg-white text-slate-500`}><FileText size={18} /><span className="text-[9px]">PDF</span></a>;
+}
+
 // ---- Logomarcas dos documentos (config 'logomarcas' no banco) ----
 // integradora: propostas da aba Integradora; distribuidora: recibos, orçamentos e
 // relatórios das abas da distribuidora. Sem imagem, vale o selo "EM" desenhado.
@@ -4671,17 +4720,17 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
 
   async function anexarComprovante(vendaId, file, formaId, formaNome, valor, terceiro) {
     if (!file) return;
-    const isImage = file.type.startsWith('image/');
-    let dataUrl;
+    let privado;
     try {
-      dataUrl = isImage ? await fotoParaStorage(file, 'comprovantes') : await arquivoParaStorage(file, 'comprovantes');
+      privado = await comprovantePrivadoUpload(file);
     } catch (err) {
       console.error(err);
       notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
       return;
     }
     const comprovante = {
-      id: uid(), nome: file.name, tipo: file.type, dataUrl, data: new Date().toISOString(),
+      id: uid(), nome: file.name, tipo: privado.tipo || file.type, arquivoPath: privado.arquivoPath,
+      data: new Date().toISOString(),
       formaRecebimentoId: formaId || null, formaRecebimentoNome: formaNome || '', valor: valor || 0,
       autor: autorAtual, confirmado: false,
       ...(terceiro ? { pagamentoDireto: true, terceiroNome: terceiro.nome, terceiroCategoria: terceiro.categoria } : {}),
@@ -4864,14 +4913,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
                     <div className="flex flex-wrap gap-2 mb-2">
                       {v.comprovantes.map(c => (
                         <div key={c.id} className="relative w-16">
-                          {c.tipo.startsWith('image/') ? (
-                            <MiniaturaFoto src={c.dataUrl} alt={c.nome} className="w-16 h-16 object-cover rounded-md border border-slate-200" />
-                          ) : (
-                            <a href={c.dataUrl} download={c.nome} className="w-16 h-16 flex flex-col items-center justify-center gap-1 rounded-md border border-slate-200 bg-white text-slate-500">
-                              <FileText size={18} />
-                              <span className="text-[9px]">PDF</span>
-                            </a>
-                          )}
+                          <ComprovanteArquivo comp={c} className="w-16 h-16 object-cover rounded-md" />
                           {c.formaRecebimentoNome && <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={c.formaRecebimentoNome}>{c.formaRecebimentoNome}</p>}
                           {c.valor > 0 && <p className="text-[9px] text-emerald-600 text-center leading-tight">{currency(c.valor)}</p>}
                           {c.pagamentoDireto && <p className="text-[9px] text-sky-700 text-center leading-tight truncate" title={`Pago direto a ${c.terceiroNome} — vira despesa (${c.terceiroCategoria}) ao confirmar`}>→ {c.terceiroNome}</p>}
@@ -6326,9 +6368,8 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     const input = e.target;
     setEnviandoComprovante(true);
     try {
-      const isImage = file.type.startsWith('image/');
-      const dataUrl = isImage ? await fotoParaStorage(file, 'pagamentos') : await arquivoParaStorage(file, 'pagamentos');
-      setComprovante({ nome: file.name, tipo: file.type, dataUrl });
+      const privado = await comprovantePrivadoUpload(file);
+      setComprovante({ nome: file.name, tipo: privado.tipo || file.type, arquivoPath: privado.arquivoPath });
     } catch (err) {
       console.error(err);
       notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
@@ -6497,11 +6538,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
               </p>
               <p className="text-xs text-slate-500">{p.categoria} {p.beneficiario && `· ${p.beneficiario}`} · {formatDate(p.data)}</p>
               {p.comprovante && (
-                p.comprovante.tipo?.startsWith('image/') ? (
-                  <MiniaturaFoto src={p.comprovante.dataUrl} alt="Comprovante" className="w-12 h-12 object-cover rounded border border-slate-200 mt-1.5" />
-                ) : (
-                  <a href={p.comprovante.dataUrl} download={p.comprovante.nome} className="text-xs text-amber-600 underline mt-1 inline-block">Ver comprovante (PDF)</a>
-                )
+                <div className="mt-1.5"><ComprovanteArquivo comp={p.comprovante} className="w-12 h-12 object-cover rounded" /></div>
               )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
