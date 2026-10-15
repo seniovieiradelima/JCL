@@ -38,6 +38,21 @@ const ABAS_SISTEMA = [
 // Atalho "Operação": o dia a dia sem a parte financeira/fiscal e sem configurações sensíveis.
 const ABAS_PRESET_OPERACAO = ['estoque', 'depositos', 'fornecedores', 'clientes', 'transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'orcamentos', 'vendas', 'expedicao', 'propostas'];
 
+// Travas de AÇÃO: dentro das abas liberadas, o que a pessoa pode FAZER. Mesmo padrão das
+// abas: null = tudo liberado; lista = só o que está nela. Dono e modo legado ignoram.
+const ACOES_SISTEMA = [
+  ['criticas', 'Operações com senha (exclusões, anulações, trocas de série, backup)'],
+  ['cadastros', 'Criar e editar produtos, clientes, fornecedores e depósitos'],
+  ['precos', 'Editar preços e margens (preço de venda do produto, parâmetros da proposta)'],
+  ['expedicaoConfirmar', 'Confirmar etapas de expedição'],
+  ['propostasAceitar', 'Aceitar proposta e gerar venda'],
+];
+let perfilAtual = null; // preenchido quando o AppInner monta; null = antes do login/modo legado
+function podeAcao(chave) {
+  if (!perfilAtual || perfilAtual.papel === 'dono' || perfilAtual.papel === 'legado') return true;
+  return !Array.isArray(perfilAtual.acoes) || perfilAtual.acoes.includes(chave);
+}
+
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -967,6 +982,7 @@ function AppInner({ perfil }) {
   const grupoVisivel = (tabs) => tabs.some(podeAba);
   const entrarGrupo = (tabs) => setTab(tabs.includes(tab) && podeAba(tab) ? tab : tabs.find(podeAba));
 
+  useEffect(() => { perfilAtual = perfil || null; return () => { perfilAtual = null; }; }, [perfil]);
   const [tab, setTab] = useState(() => primeiraAbaPermitida());
   useEffect(() => { if (!podeAba(tab)) setTab(primeiraAbaPermitida()); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, perfil]);
@@ -1009,6 +1025,10 @@ function AppInner({ perfil }) {
   const [balancoDesbloqueado, setBalancoDesbloqueado] = useState(false);
 
   function askSenha(message, options) {
+    if (!podeAcao('criticas')) {
+      notify('⚠️ Seu perfil não permite operações críticas (exclusões, anulações, trocas) — fale com o administrador.');
+      return Promise.resolve(null);
+    }
     return new Promise(resolve => {
       setSenhaDialog({ message, resolve, label: options?.label || 'Apagar', destrutivo: options?.destrutivo !== false });
     });
@@ -2276,10 +2296,62 @@ function FiscalModule({ notasFiscais, setNotasFiscais, askSenha, notify }) {
 // Os perfis vivem na tabela sgm_usuarios (fora do sgm_records de propósito: é ela que a
 // regra de segurança do banco consulta para liberar os dados). Pela RLS, cada um lê só o
 // próprio cadastro; o DONO lê e edita todos — então esta tela funciona de verdade só pra ele.
+// Seletores reaproveitados pelo editor de permissões do usuário e pelo editor de cargos.
+function SeletorDeAbas({ valor, aoMudar }) {
+  return (
+    <div>
+      <div className="flex gap-1.5 mb-2">
+        <button onClick={() => aoMudar(ABAS_SISTEMA.map(a => a[0]))} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Tudo</button>
+        <button onClick={() => aoMudar([...ABAS_PRESET_OPERACAO])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white" title="O dia a dia sem financeiro, fiscal, conciliação, pagamentos e configurações">Operação</button>
+        <button onClick={() => aoMudar([])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Nenhuma</button>
+      </div>
+      {['Geral', 'Cadastros', 'Setor de Compras', 'Setor de Vendas', 'Integradora', 'Fiscal'].map(grupo => (
+        <div key={grupo} className="mb-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">{grupo}</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {ABAS_SISTEMA.filter(a => a[2] === grupo).map(([k, rotulo]) => (
+              <label key={k} className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer">
+                <input type="checkbox" checked={valor.includes(k)}
+                  onChange={e => aoMudar(e.target.checked ? [...valor, k] : valor.filter(x => x !== k))} />
+                {rotulo}
+              </label>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SeletorDeAcoes({ valor, aoMudar }) {
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-200">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+        <p className="text-[10px] uppercase tracking-wide text-slate-400">O que pode fazer (além de consultar)</p>
+        <div className="flex gap-1.5">
+          <button onClick={() => aoMudar(ACOES_SISTEMA.map(a => a[0]))} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Tudo</button>
+          <button onClick={() => aoMudar([])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Nada</button>
+        </div>
+      </div>
+      <div className="space-y-0.5">
+        {ACOES_SISTEMA.map(([k, rotulo]) => (
+          <label key={k} className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={valor.includes(k)}
+              onChange={e => aoMudar(e.target.checked ? [...valor, k] : valor.filter(x => x !== k))} />
+            {rotulo}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function EquipeModule({ askConfirm, notify }) {
   const [usuarios, setUsuarios] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erroTabela, setErroTabela] = useState('');
+  const [cargos, setCargos] = useState([]);
+  const [erroColunas, setErroColunas] = useState(false);
 
   async function carregar() {
     setCarregando(true);
@@ -2288,31 +2360,109 @@ function EquipeModule({ askConfirm, notify }) {
     else { setErroTabela(''); setUsuarios(data || []); }
     setCarregando(false);
   }
-  useEffect(() => { carregar(); }, []);
+  useEffect(() => {
+    carregar();
+    loadConfig('cargos', []).then(v => setCargos(Array.isArray(v) ? v : [])).catch(() => {});
+  }, []);
 
   async function mudar(u, mudanca, msg) {
     const { error } = await supabase.from('sgm_usuarios').update(mudanca).eq('user_id', u.user_id);
-    if (error) { notify(`⚠️ Não foi possível salvar: ${error.message}`); return; }
-    notify(msg);
+    if (error) {
+      if (/column|cargo|acoes/i.test(error.message)) setErroColunas(true);
+      notify(`⚠️ Não foi possível salvar: ${error.message}`);
+      return false;
+    }
+    if (msg) notify(msg);
     carregar();
+    return true;
   }
   const aprovar = (u) => mudar(u, { papel: 'equipe', ativo: true, aprovado_em: new Date().toISOString(), aprovado_por: autorAtual }, `${u.nome || u.email} aprovado — acesso liberado`);
 
-  // Permissões por aba: null = vê tudo; lista = só as marcadas (a pessoa recarrega e o menu muda)
+  // ---- Cargos: o conjunto de abas + ações com nome. Atribuir um cargo COPIA as permissões
+  // pro usuário; editar o cargo reaplica em todo mundo que o tem. ----
+  const [cargoEditando, setCargoEditando] = useState(null); // {id?, nome, abas:[], acoes:[]}
+  const abasDe = v => (Array.isArray(v) ? v : ABAS_SISTEMA.map(a => a[0]));
+  const acoesDe = v => (Array.isArray(v) ? v : ACOES_SISTEMA.map(a => a[0]));
+
+  async function salvarCargo() {
+    const nome = (cargoEditando.nome || '').trim();
+    if (!nome) { notify('Dê um nome ao cargo (ex: Vendedor, Expedição).'); return; }
+    if (cargos.some(c => c.nome.toLowerCase() === nome.toLowerCase() && c.id !== cargoEditando.id)) { notify('Já existe um cargo com esse nome.'); return; }
+    const abas = cargoEditando.abas.length === ABAS_SISTEMA.length ? null : cargoEditando.abas;
+    const acoes = cargoEditando.acoes.length === ACOES_SISTEMA.length ? null : cargoEditando.acoes;
+    const registro = { id: cargoEditando.id || uid(), nome, abas, acoes };
+    const anterior = cargos.find(c => c.id === registro.id) || null;
+    const lista = anterior ? cargos.map(c => (c.id === registro.id ? registro : c)) : [...cargos, registro];
+    if (!(await saveConfig('cargos', lista))) { notify('⚠️ Não foi possível salvar o cargo — tente de novo.'); return; }
+    setCargos(lista);
+    const nomeAntigo = anterior ? anterior.nome : nome;
+    const afetados = usuarios.filter(u => u.cargo === nomeAntigo && u.papel !== 'dono');
+    let falhas = 0;
+    for (const u of afetados) {
+      const { error } = await supabase.from('sgm_usuarios').update({ cargo: nome, abas, acoes }).eq('user_id', u.user_id);
+      if (error) { falhas++; if (/column|cargo|acoes/i.test(error.message)) setErroColunas(true); }
+    }
+    notify(falhas > 0
+      ? `⚠️ Cargo "${nome}" salvo, mas ${falhas} de ${afetados.length} pessoa(s) não foram atualizadas — confira o SQL das colunas.`
+      : afetados.length > 0 ? `Cargo "${nome}" salvo — permissões reaplicadas em ${afetados.length} pessoa(s)` : `Cargo "${nome}" salvo`);
+    setCargoEditando(null);
+    if (afetados.length > 0) carregar();
+  }
+  async function excluirCargo(c) {
+    const comEle = usuarios.filter(u => u.cargo === c.nome);
+    if (!(await askConfirm(`Excluir o cargo "${c.nome}"? ${comEle.length > 0 ? `${comEle.length} pessoa(s) MANTÊM as permissões atuais, só perdem o vínculo com o cargo.` : 'Nenhuma pessoa usa este cargo.'}`))) return;
+    const lista = cargos.filter(x => x.id !== c.id);
+    if (!(await saveConfig('cargos', lista))) { notify('⚠️ Não foi possível excluir — tente de novo.'); return; }
+    setCargos(lista);
+    for (const u of comEle) await supabase.from('sgm_usuarios').update({ cargo: null }).eq('user_id', u.user_id);
+    notify(`Cargo "${c.nome}" excluído`);
+    if (comEle.length > 0) carregar();
+  }
+  async function aplicarCargo(u, nomeCargo) {
+    if (!nomeCargo) { await mudar(u, { cargo: null }, 'Vínculo com o cargo desfeito — as permissões atuais ficam como estão (personalizadas)'); return; }
+    const c = cargos.find(x => x.nome === nomeCargo);
+    if (!c) return;
+    await mudar(u, { cargo: c.nome, abas: c.abas ?? null, acoes: c.acoes ?? null }, `${u.nome || u.email} agora é "${c.nome}" — abas e ações do cargo aplicadas`);
+  }
+
+  // ---- Permissões individuais (ajuste fino desliga o cargo) ----
   const [permissoesDe, setPermissoesDe] = useState(null);
   const [draftAbas, setDraftAbas] = useState([]);
+  const [draftAcoes, setDraftAcoes] = useState([]);
   function abrirPermissoes(u) {
     setPermissoesDe(u.user_id);
-    setDraftAbas(Array.isArray(u.abas) ? [...u.abas] : ABAS_SISTEMA.map(a => a[0]));
+    setDraftAbas(abasDe(u.abas));
+    setDraftAcoes(acoesDe(u.acoes));
   }
-  async function salvarPermissoes(u, lista) {
-    const todas = lista.length === ABAS_SISTEMA.length;
-    const { error } = await supabase.from('sgm_usuarios').update({ abas: todas ? null : lista }).eq('user_id', u.user_id);
-    if (error) { notify(`⚠️ Não foi possível salvar: ${error.message}`); return; }
-    notify(`Permissões de ${u.nome || u.email} salvas — valem no próximo carregamento da tela dela`);
-    setPermissoesDe(null);
-    carregar();
+  async function salvarPermissoes(u) {
+    const abas = draftAbas.length === ABAS_SISTEMA.length ? null : draftAbas;
+    const acoes = draftAcoes.length === ACOES_SISTEMA.length ? null : draftAcoes;
+    const ok = await mudar(u, { abas, acoes, cargo: null }, `Permissões de ${u.nome || u.email} salvas — valem no próximo carregamento da tela dela`);
+    if (ok) setPermissoesDe(null);
   }
+
+  // ---- Editar dados do cadastro + redefinição de senha ----
+  const [dadosDe, setDadosDe] = useState(null);
+  const [draftDados, setDraftDados] = useState({ nome: '', funcao: '', telefone: '' });
+  function abrirDados(u) {
+    setDadosDe(u.user_id);
+    setDraftDados({ nome: u.nome || '', funcao: u.funcao || '', telefone: u.telefone || '' });
+  }
+  async function salvarDados(u) {
+    if (!draftDados.nome.trim()) { notify('O nome não pode ficar vazio.'); return; }
+    const ok = await mudar(u, { nome: draftDados.nome.trim(), funcao: draftDados.funcao.trim(), telefone: draftDados.telefone.trim() }, 'Cadastro atualizado');
+    if (ok) setDadosDe(null);
+  }
+  async function redefinirSenha(u) {
+    if (!(await askConfirm(`Enviar o e-mail de redefinição de senha para ${u.email}? A pessoa clica no link e escolhe a senha nova.`))) return;
+    const { error } = await supabase.auth.resetPasswordForEmail(u.email, { redirectTo: window.location.origin });
+    if (error) notify(`⚠️ Não foi possível enviar: ${error.message}`);
+    else notify(`E-mail de redefinição enviado para ${u.email}`);
+  }
+
+  const pendentes = usuarios.filter(u => !u.ativo && u.papel !== 'recusado' && u.papel !== 'dono');
+  const ativos = usuarios.filter(u => u.ativo);
+  const recusados = usuarios.filter(u => !u.ativo && u.papel === 'recusado');
   const recusar = async (u) => {
     if (!(await askConfirm(`Recusar o cadastro de ${u.nome || u.email}? A pessoa continua sem acesso e vê o aviso de recusa.`))) return;
     mudar(u, { papel: 'recusado', ativo: false }, 'Cadastro recusado');
@@ -2323,18 +2473,18 @@ function EquipeModule({ askConfirm, notify }) {
   };
   const reativar = (u) => mudar(u, { papel: 'equipe', ativo: true, aprovado_em: new Date().toISOString(), aprovado_por: autorAtual }, 'Acesso reativado');
 
-  const pendentes = usuarios.filter(u => !u.ativo && u.papel !== 'recusado' && u.papel !== 'dono');
-  const ativos = usuarios.filter(u => u.ativo);
-  const recusados = usuarios.filter(u => !u.ativo && u.papel === 'recusado');
-
+  const btnCls = 'text-xs text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50';
   const Cartao = ({ u, acoes }) => (
-    <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-md px-3 py-2">
+    <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-md px-3 py-2 flex-wrap">
       <div className="min-w-0 text-xs">
-        <p className="text-sm font-medium text-slate-700 truncate">{u.nome || '(sem nome)'} {u.papel === 'dono' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">dono</span>}</p>
+        <p className="text-sm font-medium text-slate-700 truncate">
+          {u.nome || '(sem nome)'} {u.papel === 'dono' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">dono</span>}
+          {u.cargo && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 ml-1">{u.cargo}</span>}
+        </p>
         <p className="text-slate-400 truncate">{u.email}{u.funcao ? ` · ${u.funcao}` : ''}{u.telefone ? ` · ${u.telefone}` : ''}</p>
         <p className="text-[10px] text-slate-400">cadastro em {formatDate(u.criado_em)}{u.aprovado_em ? ` · aprovado em ${formatDate(u.aprovado_em)} por ${u.aprovado_por || '—'}` : ''}</p>
       </div>
-      <div className="flex gap-1.5 shrink-0">{acoes}</div>
+      <div className="flex gap-1.5 shrink-0 flex-wrap">{acoes}</div>
     </div>
   );
 
@@ -2343,7 +2493,44 @@ function EquipeModule({ askConfirm, notify }) {
       <h2 className="text-lg font-semibold mb-1">Equipe</h2>
       <p className="text-xs text-slate-400 mb-4">Quem se cadastra pela tela de entrada aparece aqui aguardando aprovação. Só depois do seu OK a pessoa acessa os dados — a trava vale no banco, não só na tela.</p>
       {erroTabela && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3 mb-3">A tabela de usuários ainda não existe no banco ({erroTabela}) — rode o SQL da equipe no Supabase para ativar o fluxo de aprovação.</p>}
+      {erroColunas && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3 mb-3">As colunas de cargo/ações ainda não existem no banco — rode o SQL dos cargos no Supabase (uma linha, enviada junto com esta atualização).</p>}
       {carregando && <p className="text-sm text-slate-400">Carregando...</p>}
+
+      <div className="bg-violet-50 border border-violet-200 rounded-md p-3 mb-5">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+          <h3 className="text-sm font-medium text-violet-800">Cargos ({cargos.length})</h3>
+          <button onClick={() => setCargoEditando({ nome: '', abas: [...ABAS_PRESET_OPERACAO], acoes: ['cadastros', 'expedicaoConfirmar'] })} className="text-xs bg-violet-600 hover:bg-violet-700 text-white px-2.5 py-1.5 rounded-md">+ Novo cargo</button>
+        </div>
+        <p className="text-[11px] text-violet-700 mb-2">O cargo é um conjunto de abas e ações com nome (ex: Vendedor, Expedição). Atribua pelo seletor no cartão da pessoa; editar o cargo reaplica as permissões em todo mundo que o tem. Ajustar as permissões de uma pessoa à mão desfaz o vínculo dela com o cargo.</p>
+        {cargos.length === 0 && !cargoEditando && <p className="text-xs text-violet-400">Nenhum cargo criado ainda.</p>}
+        <div className="space-y-1">
+          {cargos.map(c => (
+            <div key={c.id} className="flex items-center justify-between gap-2 bg-white border border-violet-100 rounded px-2.5 py-1.5 text-xs">
+              <span className="font-medium text-slate-700">{c.nome}
+                <span className="text-slate-400 font-normal ml-2">{Array.isArray(c.abas) ? `${c.abas.length} abas` : 'todas as abas'} · {Array.isArray(c.acoes) ? `${c.acoes.length} ações` : 'todas as ações'} · {usuarios.filter(u => u.cargo === c.nome).length} pessoa(s)</span>
+              </span>
+              <span className="flex gap-1.5 shrink-0">
+                <button onClick={() => setCargoEditando({ id: c.id, nome: c.nome, abas: abasDe(c.abas), acoes: acoesDe(c.acoes) })} className="text-slate-600 border border-slate-300 px-2 py-0.5 rounded hover:bg-slate-50">Editar</button>
+                <button onClick={() => excluirCargo(c)} className="text-red-500 border border-red-200 px-2 py-0.5 rounded hover:bg-red-50">Excluir</button>
+              </span>
+            </div>
+          ))}
+        </div>
+        {cargoEditando && (
+          <div className="bg-white border border-violet-200 rounded-md p-3 mt-2">
+            <div className="mb-2">
+              <label className="text-[10px] uppercase tracking-wide text-slate-400">Nome do cargo</label>
+              <input value={cargoEditando.nome} onChange={e => setCargoEditando(c => ({ ...c, nome: e.target.value }))} placeholder="Ex: Vendedor" className="w-full sm:w-64 border border-slate-200 rounded-md px-2.5 py-1.5 text-sm block" />
+            </div>
+            <SeletorDeAbas valor={cargoEditando.abas} aoMudar={abas => setCargoEditando(c => ({ ...c, abas }))} />
+            <SeletorDeAcoes valor={cargoEditando.acoes} aoMudar={acoes => setCargoEditando(c => ({ ...c, acoes }))} />
+            <div className="flex gap-2 mt-3">
+              <button onClick={salvarCargo} disabled={cargoEditando.abas.length === 0} className="text-xs bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded-md disabled:opacity-40">Salvar cargo</button>
+              <button onClick={() => setCargoEditando(null)} className="text-xs text-slate-500 px-2 py-1.5">Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {pendentes.length > 0 && (
         <div className="mb-5">
@@ -2364,38 +2551,41 @@ function EquipeModule({ askConfirm, notify }) {
         {ativos.map(u => (
           <div key={u.user_id}>
             <Cartao u={u} acoes={u.papel !== 'dono' && <>
-              <button onClick={() => (permissoesDe === u.user_id ? setPermissoesDe(null) : abrirPermissoes(u))} className="text-xs text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">
-                Permissões{Array.isArray(u.abas) ? ` (${u.abas.length})` : ' (tudo)'}
+              {cargos.length > 0 && (
+                <select value={u.cargo || ''} onChange={e => aplicarCargo(u, e.target.value)} className="text-xs border border-slate-300 rounded-md px-1.5 py-1.5 text-slate-600" title="Atribuir um cargo copia as abas e ações dele para esta pessoa">
+                  <option value="">— personalizado —</option>
+                  {cargos.map(c => <option key={c.id} value={c.nome}>{c.nome}</option>)}
+                </select>
+              )}
+              <button onClick={() => (permissoesDe === u.user_id ? setPermissoesDe(null) : (abrirPermissoes(u), setDadosDe(null)))} className={btnCls}>
+                Permissões{Array.isArray(u.abas) ? ` (${u.abas.length} abas` : ' (tudo'}{Array.isArray(u.acoes) ? `, ${u.acoes.length} ações)` : ')'}
               </button>
-              <button onClick={() => desativar(u)} className="text-xs text-slate-500 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Desativar</button>
+              <button onClick={() => (dadosDe === u.user_id ? setDadosDe(null) : (abrirDados(u), setPermissoesDe(null)))} className={btnCls}>Editar dados</button>
+              <button onClick={() => redefinirSenha(u)} className={btnCls}>Redefinir senha</button>
+              <button onClick={() => desativar(u)} className={btnCls}>Desativar</button>
             </>} />
-            {permissoesDe === u.user_id && (
-              <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mt-1">
-                <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
-                  <p className="text-xs font-medium text-slate-600">Abas que {u.nome || u.email} pode usar</p>
-                  <div className="flex gap-1.5">
-                    <button onClick={() => setDraftAbas(ABAS_SISTEMA.map(a => a[0]))} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Tudo</button>
-                    <button onClick={() => setDraftAbas([...ABAS_PRESET_OPERACAO])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white" title="O dia a dia sem financeiro, fiscal, conciliação, pagamentos e configurações">Operação</button>
-                    <button onClick={() => setDraftAbas([])} className="text-[11px] text-slate-600 border border-slate-300 px-2 py-1 rounded hover:bg-white">Nenhuma</button>
-                  </div>
-                </div>
-                {['Geral', 'Cadastros', 'Setor de Compras', 'Setor de Vendas', 'Integradora', 'Fiscal'].map(grupo => (
-                  <div key={grupo} className="mb-1.5">
-                    <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">{grupo}</p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1">
-                      {ABAS_SISTEMA.filter(a => a[2] === grupo).map(([k, rotulo]) => (
-                        <label key={k} className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer">
-                          <input type="checkbox" checked={draftAbas.includes(k)}
-                            onChange={e => setDraftAbas(d => (e.target.checked ? [...d, k] : d.filter(x => x !== k)))} />
-                          {rotulo}
-                        </label>
-                      ))}
-                    </div>
+            {dadosDe === u.user_id && (
+              <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mt-1 flex gap-2 flex-wrap items-end">
+                {[['nome', 'Nome completo'], ['funcao', 'Função'], ['telefone', 'Telefone / WhatsApp']].map(([k, rotulo]) => (
+                  <div key={k}>
+                    <label className="text-[10px] uppercase tracking-wide text-slate-400 block">{rotulo}</label>
+                    <input value={draftDados[k]} onChange={e => setDraftDados(d => ({ ...d, [k]: e.target.value }))} className="border border-slate-200 rounded-md px-2.5 py-1.5 text-sm" />
                   </div>
                 ))}
-                <p className="text-[10px] text-slate-400 mt-1 mb-2">A aba Equipe é sempre exclusiva do dono. A mudança vale quando a pessoa recarregar a tela (F5). A trava por aba é da interface — a proteção de banco continua sendo o cadastro aprovado.</p>
                 <div className="flex gap-2">
-                  <button onClick={() => salvarPermissoes(u, draftAbas)} disabled={draftAbas.length === 0} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md disabled:opacity-40">Salvar permissões</button>
+                  <button onClick={() => salvarDados(u)} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md">Salvar</button>
+                  <button onClick={() => setDadosDe(null)} className="text-xs text-slate-500 px-2 py-1.5">Cancelar</button>
+                </div>
+              </div>
+            )}
+            {permissoesDe === u.user_id && (
+              <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mt-1">
+                <p className="text-xs font-medium text-slate-600 mb-2">Abas que {u.nome || u.email} pode usar{u.cargo ? ` (hoje pelo cargo "${u.cargo}" — salvar aqui desfaz o vínculo)` : ''}</p>
+                <SeletorDeAbas valor={draftAbas} aoMudar={setDraftAbas} />
+                <SeletorDeAcoes valor={draftAcoes} aoMudar={setDraftAcoes} />
+                <p className="text-[10px] text-slate-400 mt-2 mb-2">A aba Equipe é sempre exclusiva do dono. A mudança vale quando a pessoa recarregar a tela (F5). A trava por aba e por ação é da interface — a proteção de banco continua sendo o cadastro aprovado.</p>
+                <div className="flex gap-2">
+                  <button onClick={() => salvarPermissoes(u)} disabled={draftAbas.length === 0} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md disabled:opacity-40">Salvar permissões</button>
                   <button onClick={() => setPermissoesDe(null)} className="text-xs text-slate-500 px-2 py-1.5">Cancelar</button>
                 </div>
               </div>
@@ -2410,7 +2600,7 @@ function EquipeModule({ askConfirm, notify }) {
           <h3 className="text-sm font-medium text-slate-400 mb-2">Recusados / desativados ({recusados.length})</h3>
           <div className="space-y-2">
             {recusados.map(u => (
-              <Cartao key={u.user_id} u={u} acoes={<button onClick={() => reativar(u)} className="text-xs text-slate-600 border border-slate-300 px-2.5 py-1.5 rounded-md hover:bg-slate-50">Reativar</button>} />
+              <Cartao key={u.user_id} u={u} acoes={<button onClick={() => reativar(u)} className={btnCls}>Reativar</button>} />
             ))}
           </div>
         </div>
@@ -2715,6 +2905,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
   }
 
   async function handleAdd(e) {
+    if (!podeAcao('cadastros')) { notify('⚠️ Seu perfil não permite criar ou editar produtos.'); return; }
     e.preventDefault();
     if (!form.marca || !form.modelo) { notify('Preencha marca e modelo antes de salvar'); return; }
     const precoVenda = parseValorBR(form.precoVenda) || 0;
@@ -2861,7 +3052,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
             Controlar por número de série (recomendado para inversores)
           </label>
           <div className="grid grid-cols-2 gap-2">
-            <input type="text" inputMode="decimal" placeholder="Preço de venda (R$) ex: 518,42" value={form.precoVenda} onChange={e => setForm(f => ({ ...f, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+            <input type="text" inputMode="decimal" placeholder="Preço de venda (R$) ex: 518,42" value={form.precoVenda} onChange={e => setForm(f => ({ ...f, precoVenda: e.target.value }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços'} className="border border-slate-200 rounded-md px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" />
             <input type="number" placeholder="Estoque mínimo (alerta)" value={form.quantidadeMinima} onChange={e => setForm(f => ({ ...f, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
           </div>
           <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
@@ -2994,6 +3185,7 @@ function DepositosModule({ depositos, setDepositos, estoque, askConfirm, askSenh
   function emptyForm() { return { nome: '', endereco: '', observacoes: '' }; }
 
   async function handleAdd(e) {
+    if (!podeAcao('cadastros')) { notify('⚠️ Seu perfil não permite criar ou editar depósitos.'); return; }
     e.preventDefault();
     if (!form.nome) { notify('Preencha o nome do depósito antes de salvar'); return; }
     await setDepositos([...depositos, { id: uid(), ...form }]);
@@ -3262,6 +3454,7 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, askSenh
   }
 
   async function handleAdd(e) {
+    if (!podeAcao('cadastros')) { notify('⚠️ Seu perfil não permite criar ou editar fornecedores.'); return; }
     e.preventDefault();
     if (!form.nome) { notify('Preencha a razão social antes de salvar'); return; }
     if (editandoFornecedorId) {
@@ -4195,6 +4388,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, askSenha, notify })
   }
 
   async function handleAdd(e) {
+    if (!podeAcao('cadastros')) { notify('⚠️ Seu perfil não permite criar ou editar clientes.'); return; }
     e.preventDefault();
     if (!form.nome) { notify('Preencha o nome do cliente antes de salvar'); return; }
     if (editandoClienteId) {
@@ -5488,6 +5682,7 @@ function ExpedicaoEtapaForm({ etapa, vendaId, item, estoque, setEstoque, vendas,
   function removeFoto(idx) { setFotos(f => f.filter((_, i) => i !== idx)); }
 
   async function confirmar() {
+    if (!podeAcao('expedicaoConfirmar')) { notify('⚠️ Seu perfil não permite confirmar etapas de expedição.'); return; }
     if (fotos.length === 0) { notify(`Anexe pelo menos uma foto da ${rotulo}`); return; }
     const serialDigitado = String(serialConfirmado || '').trim();
     if (item.serial && !serialDigitado) { notify('Confirme o número de série do inversor'); return; }
@@ -7098,6 +7293,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
   // é o "Dar baixa" normal da aba Vendas, item a item, quando a mercadoria for separada.
   // Kits paramétricos (cabo/MC4, estrutura) não são produtos do estoque e ficam de fora.
   async function gerarVendaDaProposta(p) {
+    if (!podeAcao('propostasAceitar')) { notify('⚠️ Seu perfil não permite aceitar propostas e gerar vendas.'); return; }
     if (p.vendaId && (vendas || []).some(v => v.id === p.vendaId && !v.anulado)) {
       notify('Esta proposta já virou venda — está na aba Vendas do Setor de Vendas.');
       return;
@@ -7314,7 +7510,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
                   ['precoKitEstrutura', 'Kit estrutura 4 placas (R$)'],
                 ].map(([chave, rotulo]) => (
                   <div key={chave}><label className={rotuloCls}>{rotulo}</label>
-                    <input type="text" inputMode="decimal" value={String(params[chave]).replace('.', ',')} onChange={e => setParams(pp => ({ ...pp, [chave]: parseFloat(e.target.value.replace(',', '.')) || 0 }))} className={inputCls} /></div>
+                    <input type="text" inputMode="decimal" value={String(params[chave]).replace('.', ',')} onChange={e => setParams(pp => ({ ...pp, [chave]: parseFloat(e.target.value.replace(',', '.')) || 0 }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços e margens'} className={inputCls + ' disabled:bg-slate-100 disabled:text-slate-400'} /></div>
                 ))}
               </div>
             )}
@@ -8975,11 +9171,48 @@ function AguardandoAprovacaoScreen({ email, perfil, aoVerificar }) {
   );
 }
 
+// O link "redefinir senha" do e-mail entra aqui: a pessoa chega logada numa sessão de
+// recuperação e só precisa escolher a senha nova.
+function NovaSenhaScreen({ aoConcluir }) {
+  const [senha, setSenha] = useState('');
+  const [senha2, setSenha2] = useState('');
+  const [erro, setErro] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  async function salvar() {
+    setErro('');
+    if (senha.length < 6) { setErro('A senha precisa de pelo menos 6 caracteres.'); return; }
+    if (senha !== senha2) { setErro('As senhas não conferem.'); return; }
+    setSalvando(true);
+    const { error } = await supabase.auth.updateUser({ password: senha });
+    setSalvando(false);
+    if (error) { setErro(`Não foi possível trocar a senha: ${error.message}`); return; }
+    aoConcluir();
+  }
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6 w-full max-w-sm">
+        <div className="w-9 h-9 rounded-md bg-amber-500 flex items-center justify-center font-bold text-slate-900 text-sm mb-3">EM</div>
+        <h1 className="text-base font-semibold text-slate-800 mb-1">Escolha sua nova senha</h1>
+        <p className="text-xs text-slate-400 mb-4">Você chegou pelo link de redefinição — defina a senha nova e pronto, já segue direto pro sistema.</p>
+        <div className="space-y-3">
+          <input type="password" placeholder="Senha nova (mín. 6 caracteres)" value={senha} onChange={e => setSenha(e.target.value)} className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm" />
+          <input type="password" placeholder="Repita a senha nova" value={senha2} onChange={e => setSenha2(e.target.value)} className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm" />
+          {erro && <p className="text-xs text-red-500">{erro}</p>}
+          <button onClick={salvar} disabled={salvando} className="w-full flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">
+            {salvando && <Loader2 size={14} className="animate-spin" />} Salvar senha nova
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [perfil, setPerfil] = useState(null);
   const [checandoPerfil, setChecandoPerfil] = useState(false);
+  const [recuperandoSenha, setRecuperandoSenha] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -8990,6 +9223,7 @@ export default function App() {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
       autorAtual = newSession?.user?.email || '';
+      if (_event === 'PASSWORD_RECOVERY') setRecuperandoSenha(true);
     });
     return () => listener.subscription.unsubscribe();
   }, []);
@@ -9021,6 +9255,7 @@ export default function App() {
   }
 
   if (!session) return <LoginScreen />;
+  if (recuperandoSenha) return <NovaSenhaScreen aoConcluir={() => setRecuperandoSenha(false)} />;
 
   const ehDono = (session.user?.email || '').toLowerCase() === EMAIL_DONO || perfil?.papel === 'dono';
   if (!ehDono && perfil && !perfil.ativo) {
