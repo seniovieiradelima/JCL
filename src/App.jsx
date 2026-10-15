@@ -7491,8 +7491,17 @@ function parseExtratoOFX(texto) {
   return lanc.sort((a, b) => a.data.localeCompare(b.data));
 }
 
+// Liquidação de maquininha/antecipação: o crédito chega LÍQUIDO (taxa já descontada),
+// então não bate ao centavo com o comprovante — a sugestão usa tolerância de taxa.
+const TAXA_CARTAO_MAXIMA = 0.18; // 18% cobre débito, crédito parcelado e antecipação
+function ehLiquidacaoCartao(l) {
+  return l.tipo === 'entrada' && /recebimento\s+(de\s+)?vendas|antecipa|liquida/i.test(l.descricao || '');
+}
+
 // Sugestões para um lançamento: mesmo valor (ao centavo), ordenadas pela proximidade de
 // data. Saída casa com Pagamentos e Pedidos de compra; entrada, com comprovantes de venda.
+// Para liquidação de cartão, entram também comprovantes de valor BRUTO compatível
+// (bruto ≥ líquido, taxa implícita até 18%), com a taxa mostrada no rótulo.
 function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
   const sug = [];
   const dEx = new Date(l.data + 'T12:00:00').getTime();
@@ -7515,6 +7524,22 @@ function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
       }
       if ((v.comprovantes || []).length === 0 && bate(v.totalVenda)) {
         sug.push({ tipo: 'venda', refId: v.id, rotulo: `Venda ${v.clienteNome} — total ${currency(v.totalVenda)} (sem comprovante anexado)`, valor: v.totalVenda, dist: dias(v.data) });
+      }
+    }
+    if (ehLiquidacaoCartao(l)) {
+      for (const v of (vendas || [])) {
+        if (v.anulado) continue;
+        for (const c of (v.comprovantes || [])) {
+          const bruto = c.valor || 0;
+          if (bruto <= l.valor + 0.009) continue;                   // taxa é desconto: bruto > líquido
+          const taxa = (bruto - l.valor) / bruto;
+          if (taxa > TAXA_CARTAO_MAXIMA) continue;
+          sug.push({
+            tipo: 'venda', refId: v.id, compId: c.id, taxaCartao: true,
+            rotulo: `Venda ${v.clienteNome} — comprovante ${currency(bruto)}${c.formaRecebimentoNome ? ' · ' + c.formaRecebimentoNome : ''} · taxa implícita ${(taxa * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%${c.confirmado === false ? ' (conciliar CONFIRMA)' : ''}`,
+            valor: bruto, dist: taxa * 100 + dias(c.data || v.data) / 30,
+          });
+        }
       }
     }
   }
@@ -7684,6 +7709,15 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     // Entrada do extrato vinculada a comprovante(s) de venda: o extrato é a prova bancária,
     // então conciliar também CONFIRMA o recebimento — um ato só, como o dono pediu.
     const confirmacoes = l.tipo === 'entrada' ? vinculos.filter(x => x.tipo === 'venda' && x.compId) : [];
+    // Entrada de cartão: a soma dos comprovantes (bruto) passa do líquido do extrato.
+    // A diferença é a taxa da operadora — lançada como despesa, pro lucro real fechar.
+    // A pergunta vem ANTES de qualquer gravação: um "não" aqui não deixa nada pela metade.
+    const somaVinculos = vinculos.reduce((a, x) => a + (x.valor || 0), 0);
+    const diferenca = Math.round((somaVinculos - l.valor) * 100) / 100;
+    const lancarTaxa = l.tipo === 'entrada' && diferenca > 0.009 && somaVinculos > 0 && diferenca / somaVinculos <= TAXA_CARTAO_MAXIMA && !!setPagamentos;
+    if (lancarTaxa && !(await askConfirm(
+      `O comprovante soma ${currency(somaVinculos)} e o extrato creditou ${currency(l.valor)}: diferença de ${currency(diferenca)} (${((diferenca / somaVinculos) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% — taxa do cartão). Conciliar e lançar essa diferença como despesa "Taxas de cartão" em Pagamentos?`
+    ))) return;
     if (confirmacoes.length > 0) {
       const porVenda = new Map();
       confirmacoes.forEach(x => { if (!porVenda.has(x.refId)) porVenda.set(x.refId, new Set()); porVenda.get(x.refId).add(x.compId); });
@@ -7699,11 +7733,27 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
       });
       if (!(await setVendas(next))) return;
     }
-    if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() }))) {
-      if (confirmacoes.length > 0) notify('⚠️ O recebimento foi confirmado, mas o lançamento do extrato NÃO ficou marcado como conciliado. Recarregue (F5) e concilie de novo — a confirmação não se repete.');
+    let taxaLancada = 0, taxaPagamentoId = null;
+    if (lancarTaxa) {
+      const pgTaxa = {
+        id: uid(), tipo: 'Saída', data: new Date(l.data + 'T12:00:00').toISOString(),
+        categoria: 'Taxas de cartão',
+        descricao: `Taxa de cartão — ${l.descricao} (conciliação ${aberta?.conta || ''})`.trim(),
+        beneficiario: 'Operadora de cartão', valor: diferenca, comprovante: null,
+        criadoEm: new Date().toISOString(), autor: autorAtual, viaTaxaCartao: true,
+      };
+      if (!(await setPagamentos([pgTaxa, ...pagamentos]))) {
+        notify('⚠️ Não foi possível lançar a taxa — nada foi conciliado. Tente de novo.');
+        return;
+      }
+      taxaLancada = diferenca; taxaPagamentoId = pgTaxa.id;
+    }
+    if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString(), ...(taxaLancada > 0 ? { taxaLancada, taxaPagamentoId } : {}) }))) {
+      if (confirmacoes.length > 0 || taxaLancada > 0) notify('⚠️ As gravações no sistema foram feitas, mas o lançamento do extrato NÃO ficou marcado como conciliado. Recarregue (F5) e concilie de novo — confirmação e taxa não se repetem.');
       return;
     }
-    if (confirmacoes.length > 0) notify('Conciliado — recebimento confirmado pela prova do extrato');
+    if (taxaLancada > 0) notify(`Conciliado — ${currency(taxaLancada)} de taxa de cartão lançados como despesa${confirmacoes.length > 0 ? ' e recebimento confirmado' : ''}`);
+    else if (confirmacoes.length > 0) notify('Conciliado — recebimento confirmado pela prova do extrato');
     setVinculandoId(null); setVinculosManuais([]); setSelManual('');
   }
   // Despesa que está no extrato mas nunca foi lançada no sistema: cria o Pagamento
@@ -7733,7 +7783,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     const acoes = [];
     for (const l of pendentes) {
       if (vezesPorValor.get(`${l.tipo}:${l.valor.toFixed(2)}`) > 1) continue;
-      const sug = sugerirVinculos(l, { vendas, pagamentos, pedidosCompra });
+      const sug = sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }).filter(x => !x.taxaCartao);
       if (sug.length !== 1) continue;
       const chave = `${sug[0].tipo}:${sug[0].compId || sug[0].refId}`;
       if (usados.has(chave)) continue;   // um registro do sistema fecha só UM lançamento do extrato
@@ -7790,7 +7840,13 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
   }
   async function desfazer(l) {
     if (bloqueado()) return;
-    await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined });
+    // A conciliação criou a despesa da taxa de cartão? Desfazer remove ela junto —
+    // senão a taxa ficaria órfã e re-conciliar lançaria em dobro.
+    if (l.taxaPagamentoId && pagamentos.some(p => p.id === l.taxaPagamentoId)) {
+      if (!(await setPagamentos(pagamentos.filter(p => p.id !== l.taxaPagamentoId)))) return;
+      notify(`Despesa de ${currency(l.taxaLancada || 0)} (taxa de cartão) removida de Pagamentos junto com o desfazer`);
+    }
+    await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined, taxaLancada: undefined, taxaPagamentoId: undefined });
   }
   async function limparRepetidos() {
     if (bloqueado()) return;
@@ -8114,7 +8170,9 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
                   {l.status === 'conciliado' && (l.vinculos || []).length > 0 && (
                     <div className="mt-1 text-[11px] text-emerald-700">
                       {l.vinculos.map((x, i) => <p key={i}>↳ {x.rotulo}</p>)}
-                      {Math.abs(somaVinculos - l.valor) > 0.01 && <p className="text-amber-600">valores não batem exatamente ({currency(somaVinculos)} no sistema) — confirmado manualmente</p>}
+                      {l.taxaLancada > 0
+                        ? <p className="text-sky-700">taxa de cartão de {currency(l.taxaLancada)} lançada como despesa em Pagamentos ✓</p>
+                        : Math.abs(somaVinculos - l.valor) > 0.01 && <p className="text-amber-600">valores não batem exatamente ({currency(somaVinculos)} no sistema) — confirmado manualmente</p>}
                     </div>
                   )}
                   {l.status !== 'pendente' && (
