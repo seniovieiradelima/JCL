@@ -6778,7 +6778,7 @@ function numeroDe(texto) {
   return m ? parseFloat(m[0]) : 0;
 }
 
-function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada }) {
+function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto }) {
   const p = { ...PARAMS_PROPOSTA_PADRAO, ...(params || {}) };
   const kwp = qtdPlacas * wpPlaca / 1000;
   const geracaoMensal = kwp * p.fatorGeracao;
@@ -6801,7 +6801,12 @@ function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valor
   const valorInstalacao = custoInstalacao * (1 + p.markupInstalacao / 100);
 
   const valorEquipamentosCliente = valorEquipamentos * (1 + p.margemEquipamentos / 100);
-  const totalAVista = valorEquipamentosCliente + valorInstalacao;
+  // Desconto do vendedor: SÓ nos equipamentos e limitado à margem — o preço final nunca
+  // desce abaixo do valor da distribuidora. A instalação não tem desconto.
+  const descontoMaximo = Math.max(0, valorEquipamentosCliente - valorEquipamentos);
+  const descontoAplicado = Math.min(Math.max(0, desconto || 0), descontoMaximo);
+  const valorEquipamentosFinal = valorEquipamentosCliente - descontoAplicado;
+  const totalAVista = valorEquipamentosFinal + valorInstalacao;
   const roiMeses = economiaMensal > 0 ? totalAVista / economiaMensal : 0;
 
   const saldo = Math.max(0, totalAVista - (entrada || 0));
@@ -6819,7 +6824,8 @@ function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valor
   return {
     kwp, geracaoMensal, contaAtual, economiaMensal, contaResidual,
     instalacao: { moPlacas, moInversor, homologacao, comissionamento, administrativo, materialEletrico, frete, custo: custoInstalacao, valor: valorInstalacao },
-    valorEquipamentosDistribuidora: valorEquipamentos, valorEquipamentosCliente, totalAVista, roiMeses,
+    valorEquipamentosDistribuidora: valorEquipamentos, valorEquipamentosCliente,
+    desconto: descontoAplicado, descontoMaximo, valorEquipamentosFinal, totalAVista, roiMeses,
     entrada: entrada || 0, parcelamentos,
   };
 }
@@ -6849,8 +6855,22 @@ function desenharProposta(p, logo) {
   ];
   const pagamentos = (c.parcelamentos || []).map(x => [x.rotulo, `${x.parcelas}x de ${currency(x.valorParcela)}`]);
 
+  // Observações quebradas em linhas de até ~95 caracteres para caber no canvas
+  const obsLinhas = [];
+  for (const par of String(p.observacoes || '').split('\n')) {
+    let resto = par.trim();
+    while (resto.length > 95) {
+      let corte = resto.lastIndexOf(' ', 95);
+      if (corte < 60) corte = 95;
+      obsLinhas.push(resto.slice(0, corte));
+      resto = resto.slice(corte).trim();
+    }
+    if (resto) obsLinhas.push(resto);
+  }
+
   const altura = 100 + 60 + (30 + sistema.length * 22 + 14) + (30 + equipamentos.length * 20 + 14)
-    + (30 + 44 + 64 + (c.entrada > 0 ? 20 : 0) + 14) + (30 + pagamentos.length * 20 + 14) + 70 + margem;
+    + (30 + 44 + (c.desconto > 0 ? 22 : 0) + 64 + (c.entrada > 0 ? 20 : 0) + 14) + (30 + pagamentos.length * 20 + 14)
+    + (obsLinhas.length > 0 ? 30 + obsLinhas.length * 18 + 14 : 0) + 70 + margem;
 
   const canvas = document.createElement('canvas');
   canvas.width = largura; canvas.height = altura;
@@ -6916,6 +6936,7 @@ function desenharProposta(p, logo) {
 
   secao('Investimento');
   linhaDupla('Equipamentos (à vista)', currency(c.valorEquipamentosCliente || 0), false);
+  if (c.desconto > 0) linhaDupla('Desconto nos equipamentos', `− ${currency(c.desconto)}`, true);
   linhaDupla('Instalação', currency(c.instalacao?.valor || 0), false);
   ctx.fillStyle = '#fef8ec';
   ctx.fillRect(margem, y - 12, larguraUtil, 56);
@@ -6933,6 +6954,12 @@ function desenharProposta(p, logo) {
 
   secao('Formas de pagamento');
   pagamentos.forEach(([e, d]) => linhaDupla(e, d, false));
+
+  if (obsLinhas.length > 0) {
+    secao('Observações');
+    ctx.font = '12px Arial'; ctx.fillStyle = '#0f172a';
+    obsLinhas.forEach(t => { ctx.fillText(t, margem, y); y += 18; });
+  }
 
   y += 8;
   ctx.font = '9px Arial'; ctx.fillStyle = '#94a3b8';
@@ -6962,6 +6989,7 @@ function desenharCustosInstalacao(p, logo) {
     ['Conta residual', `${currency(c.contaResidual || 0)}/mês`],
     ['Payback', c.roiMeses ? `${Math.round(c.roiMeses)} meses` : '—'],
     ['Equipamentos (à vista)', currency(c.valorEquipamentosCliente || 0)],
+    ...(c.desconto > 0 ? [['Desconto nos equipamentos', `− ${currency(c.desconto)}`]] : []),
     ['Instalação', currency(inst.valor || 0)],
     ['TOTAL À VISTA', currency(c.totalAVista || 0)],
   ];
@@ -6986,7 +7014,7 @@ function desenharCustosInstalacao(p, logo) {
 
   const altura = 100 + 60
     + (30 + resumo.length * 22 + 14)
-    + (30 + 26 + itensDistribuidora.length * 26 + 26 + 22 + 22 + 14)
+    + (30 + 26 + itensDistribuidora.length * 26 + 26 + 22 + 22 + (c.desconto > 0 ? 44 : 0) + 14)
     + (30 + custosInst.length * 24 + 24 * 3 + 14)
     + 30 + 24 + 60 + margem;
 
@@ -7041,7 +7069,7 @@ function desenharCustosInstalacao(p, logo) {
   }
 
   secao('Proposta resumida (o que o cliente vê)');
-  resumo.forEach(([e, d], i) => linhaDupla(e, d, i === 8));
+  resumo.forEach(([e, d]) => linhaDupla(e, d, e === 'TOTAL À VISTA'));
 
   secao('Custos dos itens na distribuidora');
   ctx.fillStyle = '#f1f5f9'; ctx.fillRect(margem, y - 16, larguraUtil, 24);
@@ -7071,6 +7099,10 @@ function desenharCustosInstalacao(p, logo) {
   linhaDupla('Total na distribuidora', currency(c.valorEquipamentosDistribuidora || 0), true);
   linhaDupla(`Vendido ao cliente (+${p.params?.margemEquipamentos ?? 25}%)`, currency(c.valorEquipamentosCliente || 0), false);
   linhaDupla('Margem sobre equipamentos', currency((c.valorEquipamentosCliente || 0) - (c.valorEquipamentosDistribuidora || 0)), false, '#047857');
+  if (c.desconto > 0) {
+    linhaDupla('Desconto concedido pelo vendedor', `− ${currency(c.desconto)}`, false, '#b91c1c');
+    linhaDupla('Margem restante nos equipamentos', currency(((c.valorEquipamentosFinal ?? c.valorEquipamentosCliente) || 0) - (c.valorEquipamentosDistribuidora || 0)), true, '#047857');
+  }
 
   secao('Previsão de custos da instalação');
   custosInst.forEach(([e, d]) => linhaDupla(e, currency(d || 0), false));
@@ -7085,7 +7117,7 @@ function desenharCustosInstalacao(p, logo) {
   ctx.font = 'bold 13px Arial'; ctx.fillStyle = '#047857';
   ctx.fillText('Resultado bruto estimado (margem equip. + saldo instalação)', margem, y);
   ctx.textAlign = 'right';
-  ctx.fillText(currency(((c.valorEquipamentosCliente || 0) - (c.valorEquipamentosDistribuidora || 0)) + ((inst.valor || 0) - (inst.custo || 0))), largura - margem, y);
+  ctx.fillText(currency((((c.valorEquipamentosFinal ?? c.valorEquipamentosCliente) || 0) - (c.valorEquipamentosDistribuidora || 0)) + ((inst.valor || 0) - (inst.custo || 0))), largura - margem, y);
   ctx.textAlign = 'left';
   y += 24;
 
@@ -7125,7 +7157,7 @@ function exportarParaTermo(p) {
     adicionais: (p.adicionais || []).map(a => ({ descricao: a.descricao, quantidade: a.quantidade })),
     financeiro: {
       custoEquipamentosDistribuidora: c.valorEquipamentosDistribuidora ?? null,
-      vendaEquipamentos: c.valorEquipamentosCliente ?? null,
+      vendaEquipamentos: (c.valorEquipamentosFinal ?? c.valorEquipamentosCliente) ?? null,
       valorInstalacao: c.instalacao?.valor ?? null,
       totalAVista: c.totalAVista ?? null,
     },
@@ -7174,6 +7206,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
   const [addQtd, setAddQtd] = useState('1');
   const [params, setParams] = useState({ ...PARAMS_PROPOSTA_PADRAO });
   const [entrada, setEntrada] = useState('');
+  const [desconto, setDesconto] = useState('');
+  const [observacoes, setObservacoes] = useState('');
   const [mostrarParams, setMostrarParams] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [filtroStatus, setFiltroStatus] = useState('todas');
@@ -7236,8 +7270,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
   const calc = useMemo(() => calcularProposta({
     qtdPlacas: num(qtdPlacas), wpPlaca: num(wpPlaca),
     qtdInversores: num(qtdInversores), kwInversor: num(kwInversor),
-    valorEquipamentos, params, entrada: num(entrada),
-  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada]);
+    valorEquipamentos, params, entrada: num(entrada), desconto: num(desconto),
+  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto]);
 
   function limparForm() {
     setEditandoId(null); setClienteNome(''); setClienteContato('');
@@ -7245,6 +7279,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
     setAdicionais([]); setAddProdutoId(''); setAddQtd('1');
     setParams({ ...PARAMS_PROPOSTA_PADRAO }); setEntrada('');
+    setDesconto(''); setObservacoes('');
     setShowForm(false);
   }
 
@@ -7254,6 +7289,10 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     if (num(wpPlaca) <= 0) { notify('Informe a potência da placa em Wp'); return; }
     if (!inversorSel || num(qtdInversores) <= 0) { notify('Escolha o inversor e a quantidade'); return; }
     if (num(kwInversor) <= 0) { notify('Informe a potência do inversor em kW'); return; }
+    if (num(desconto) > calc.descontoMaximo + 0.009) {
+      notify(`⚠️ O desconto máximo desta proposta é ${currency(calc.descontoMaximo)} — a margem entre a distribuidora e o valor de venda dos equipamentos. Acima disso venderia abaixo do preço da distribuidora.`);
+      return;
+    }
     const existente = editandoId ? propostas.find(x => x.id === editandoId) : null;
     const registro = {
       id: editandoId || uid(),
@@ -7267,6 +7306,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
         estrutura: { quantidade: qtdKitsEstrutura, precoUnit: params.precoKitEstrutura || 0 },
       },
       adicionais, params: { ...params }, entrada: num(entrada),
+      desconto: num(desconto), observacoes: observacoes.trim(),
       calculos: calc,
       autor: autorAtual,
     };
@@ -7285,6 +7325,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     setKwInversor(String(p.inversor?.kw ?? '')); setPrecoInversor(String(p.inversor?.precoUnit ?? '').replace('.', ','));
     setAdicionais(p.adicionais || []); setParams({ ...PARAMS_PROPOSTA_PADRAO, ...(p.params || {}) });
     setEntrada(p.entrada ? String(p.entrada).replace('.', ',') : '');
+    setDesconto(p.desconto ? String(p.desconto).replace('.', ',') : '');
+    setObservacoes(p.observacoes || '');
     setShowForm(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -7408,6 +7450,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
       <h2>Investimento</h2>
       <table>
         <tr><td>Equipamentos (à vista)</td><td class="dir">${currency(c.valorEquipamentosCliente || 0)}</td></tr>
+        ${c.desconto > 0 ? `<tr><td><strong>Desconto nos equipamentos</strong></td><td class="dir"><strong>− ${currency(c.desconto)}</strong></td></tr>` : ''}
         <tr><td>Instalação</td><td class="dir">${currency(c.instalacao?.valor || 0)}</td></tr>
       </table>
       <div class="caixa">
@@ -7416,6 +7459,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
         ${c.entrada > 0 ? `<div class="meta">Entrada de ${currency(c.entrada)} + saldo conforme opções abaixo</div>` : ''}
       </div>
       <table>${linhasParc}</table>
+      ${p.observacoes ? `<h2>Observações</h2><p>${esc(p.observacoes).replace(/\n/g, '<br>')}</p>` : ''}
 
       <p class="rodape">Proposta válida por 7 dias. Geração e economia são estimativas — variam com irradiação, sombreamento e hábitos de consumo. Valores de financiamento são aproximados e dependem de aprovação de crédito no banco.</p>
       <script>window.print();</script>
@@ -7525,6 +7569,17 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
 
           <div className="grid grid-cols-2 gap-3 mb-3">
             <div><label className={rotuloCls}>Entrada (R$, opcional)</label><input type="text" inputMode="decimal" value={entrada} onChange={e => setEntrada(e.target.value)} placeholder="Ex: 3000" className={inputCls} /></div>
+            <div>
+              <label className={rotuloCls}>Desconto nos equipamentos (R$, opcional)</label>
+              <input type="text" inputMode="decimal" value={desconto} onChange={e => setDesconto(e.target.value)} placeholder="Ex: 500" className={inputCls} />
+              <p className={`text-[10px] mt-0.5 ${num(desconto) > calc.descontoMaximo + 0.009 ? 'text-red-500 font-medium' : 'text-slate-400'}`}>
+                máximo {currency(calc.descontoMaximo)} — a margem dos equipamentos; a instalação não tem desconto
+              </p>
+            </div>
+          </div>
+          <div className="mb-3">
+            <label className={rotuloCls}>Observações (saem na proposta do cliente)</label>
+            <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} rows={2} placeholder="Ex: prazo de instalação, condições combinadas, detalhes do telhado..." className={inputCls} />
           </div>
 
           <div className="bg-slate-50 border border-slate-200 rounded-md p-3 mb-3 text-sm">
@@ -7538,6 +7593,11 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
             <div className="space-y-1 text-xs border-t border-slate-200 pt-2">
               <div className="flex justify-between"><span className="text-slate-500">Equipamentos (distribuidora: placas + inversor + kits automáticos + adicionais)</span><span>{currency(valorEquipamentos)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">Equipamentos para o cliente (+{params.margemEquipamentos}%)</span><span className="font-medium">{currency(calc.valorEquipamentosCliente)}</span></div>
+              {calc.desconto > 0 && <>
+                <div className="flex justify-between text-rose-600"><span>Desconto do vendedor</span><span>−{currency(calc.desconto)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Equipamentos com desconto</span><span className="font-medium">{currency(calc.valorEquipamentosFinal)}</span></div>
+                <div className="flex justify-between text-emerald-700"><span>Margem restante nos equipamentos</span><span>{currency(calc.valorEquipamentosFinal - calc.valorEquipamentosDistribuidora)}</span></div>
+              </>}
               <div className="pt-1">
                 <p className="text-[11px] font-medium text-slate-600 mb-1">Previsão de custos da instalação (tabela — uso do vendedor)</p>
                 <div className="bg-white border border-slate-200 rounded-md px-2 py-1">
@@ -7595,7 +7655,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 text-xs space-y-1">
                 <p className="text-slate-600">{p.placa?.quantidade}x {p.placa?.descricao} ({p.placa?.wp} Wp) · {p.inversor?.quantidade}x {p.inversor?.descricao} ({p.inversor?.kw} kW){(p.adicionais || []).map(a => ` · ${a.quantidade}x ${a.descricao}`).join('')}</p>
                 <p className="text-slate-500">Geração {Math.round(p.calculos?.geracaoMensal || 0)} kWh/mês · economia {currency(p.calculos?.economiaMensal || 0)}/mês · payback {Math.round(p.calculos?.roiMeses || 0)} meses</p>
-                <p className="text-slate-500">Equipamentos {currency(p.calculos?.valorEquipamentosCliente || 0)} + instalação {currency(p.calculos?.instalacao?.valor || 0)}{p.entrada > 0 ? ` · entrada ${currency(p.entrada)}` : ''}</p>
+                <p className="text-slate-500">Equipamentos {currency(p.calculos?.valorEquipamentosFinal ?? p.calculos?.valorEquipamentosCliente ?? 0)}{(p.calculos?.desconto || 0) > 0 ? ` (desconto de ${currency(p.calculos.desconto)} já aplicado)` : ''} + instalação {currency(p.calculos?.instalacao?.valor || 0)}{p.entrada > 0 ? ` · entrada ${currency(p.entrada)}` : ''}</p>
+                {p.observacoes && <p className="text-slate-500 italic">Obs: {p.observacoes}</p>}
                 {p.calculos?.instalacao && (
                   <div className="bg-white border border-slate-200 rounded-md px-2 py-1 mt-1 max-w-md">
                     <p className="text-[11px] font-medium text-slate-600 py-0.5">Previsão de custos da instalação (uso do vendedor)</p>
