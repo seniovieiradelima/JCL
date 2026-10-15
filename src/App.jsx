@@ -79,6 +79,13 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('pt-BR');
 }
 
+// Dia E horário — para registros em que a hora importa (separação e entrega da expedição).
+// Os registros antigos já guardavam o horário completo, então aparecem certos retroativamente.
+function formatDataHora(iso) {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString('pt-BR')} às ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 function availableQty(item, depositoId) {
   if (!item) return 0;
   if (item.serializado) return (item.unidades || []).filter(u => u.status === 'Disponível' && (!depositoId || u.depositoId === depositoId)).length;
@@ -5540,7 +5547,7 @@ function ExpedicaoModule({ vendas, setVendas, estoque, setEstoque, expedicoes, s
                         <span className="inline-flex items-center justify-center min-w-[2.6rem] px-2 py-1 rounded-md bg-slate-800 text-white text-lg font-bold leading-none shrink-0">{item.quantidade}x</span>
                         <div className="min-w-0">
                           <p className="text-sm">{item.descricao} {item.serial && <span className="text-xs font-mono text-slate-400">· SN {item.serial}</span>}</p>
-                          <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Separado em {formatDate(saida.data)}</p>
+                          <p className="text-xs text-slate-400 flex items-center gap-1"><CheckCircle2 size={11} className="text-emerald-500" /> Separado em {formatDataHora(saida.data)}</p>
                           {saida.fotos && saida.fotos.length > 0 && (
                             <div className="flex gap-1.5 mt-1.5">
                               {saida.fotos.map((f, i) => (
@@ -5614,7 +5621,7 @@ function ExpedicaoModule({ vendas, setVendas, estoque, setEstoque, expedicoes, s
                             {saida.serialConfirmado === item.serial ? <ShieldCheck size={11} /> : <ShieldAlert size={11} />} SN {saida.serialConfirmado || '—'}
                           </p>
                         )}
-                        <p className="text-slate-400">{formatDate(saida.data)}</p>
+                        <p className="text-slate-400">{formatDataHora(saida.data)}</p>
                         {saida.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
                             {saida.fotos.map((f, i) => (
@@ -5630,7 +5637,7 @@ function ExpedicaoModule({ vendas, setVendas, estoque, setEstoque, expedicoes, s
                             {entrega.serialConfirmado === item.serial ? <ShieldCheck size={11} /> : <ShieldAlert size={11} />} SN {entrega.serialConfirmado || '—'}
                           </p>
                         )}
-                        <p className="text-slate-400">{formatDate(entrega.data)}</p>
+                        <p className="text-slate-400">{formatDataHora(entrega.data)}</p>
                         {entrega.fotos.length > 0 && (
                           <div className="flex gap-1 mt-1 flex-wrap">
                             {entrega.fotos.map((f, i) => (
