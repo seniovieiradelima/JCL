@@ -6778,7 +6778,14 @@ function numeroDe(texto) {
   return m ? parseFloat(m[0]) : 0;
 }
 
-function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto }) {
+// Proposta nova guarda uma LISTA de inversores (combinar modelos, microinversores);
+// as antigas têm o objeto único `inversor` — este helper serve os dois formatos.
+function inversoresDaProposta(p) {
+  if (Array.isArray(p?.inversores) && p.inversores.length > 0) return p.inversores;
+  return p?.inversor ? [p.inversor] : [];
+}
+
+function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto, inversores }) {
   const p = { ...PARAMS_PROPOSTA_PADRAO, ...(params || {}) };
   const kwp = qtdPlacas * wpPlaca / 1000;
   const geracaoMensal = kwp * p.fatorGeracao;
@@ -6788,10 +6795,14 @@ function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valor
 
   // Custos de instalação — as mesmas faixas da planilha
   const moPlacas = p.moPorPlaca * qtdPlacas;
-  const moInversor = kwInversor > 29 ? 600 * qtdInversores
-    : kwInversor > 14 ? 400 * qtdInversores
-    : kwInversor > 2.99 ? 300 * qtdInversores
-    : 150 + 150 * qtdInversores;
+  const listaInversores = (inversores && inversores.length > 0)
+    ? inversores
+    : (qtdInversores > 0 ? [{ quantidade: qtdInversores, kw: kwInversor }] : []);
+  const moInversor = listaInversores.reduce((acc, inv) => {
+    const kw = inv.kw || 0, q = inv.quantidade || 0;
+    if (q <= 0) return acc;
+    return acc + (kw > 29 ? 600 * q : kw > 14 ? 400 * q : kw > 2.99 ? 300 * q : 150 + 150 * q);
+  }, 0);
   const homologacao = kwp > 12 ? 500 : 300;
   const comissionamento = p.comissionamento;
   const administrativo = p.admPorKwp * kwp;
@@ -6847,7 +6858,7 @@ function desenharProposta(p, logo) {
   ];
   const equipamentos = [
     `${p.placa?.quantidade}x ${p.placa?.descricao}`,
-    `${p.inversor?.quantidade}x ${p.inversor?.descricao}`,
+    ...inversoresDaProposta(p).map(i => `${i.quantidade}x ${i.descricao}`),
     ...(p.kits?.dc?.quantidade > 0 ? [`${p.kits.dc.quantidade}x kit cabeamento DC 50m + 4 pares MC4`] : []),
     ...(p.kits?.estrutura?.quantidade > 0 ? [`${p.kits.estrutura.quantidade}x kit estrutura de fixação (4 placas)`] : []),
     ...(p.adicionais || []).map(a => `${a.quantidade}x ${a.descricao}`),
@@ -6988,6 +6999,10 @@ function desenharCustosInstalacao(p, logo) {
     ['Economia mensal', `${currency(c.economiaMensal || 0)}/mês`],
     ['Conta residual', `${currency(c.contaResidual || 0)}/mês`],
     ['Payback', c.roiMeses ? `${Math.round(c.roiMeses)} meses` : '—'],
+    ...(p.dimensionamento?.geracaoDesejada > 0 ? [
+      ['Dimensionamento — geração desejada', `${p.dimensionamento.geracaoDesejada.toLocaleString('pt-BR')} kWh/mês (${p.dimensionamento.fatorGeracao || 130} kWh/kWp/mês)`],
+      ['Sugestão da memória de cálculo', `${p.dimensionamento.qtdPlacasSugerida > 0 ? `${p.dimensionamento.qtdPlacasSugerida} placas · ` : ''}${(p.dimensionamento.kwpSugerido || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · inversor mín. ${(p.dimensionamento.kwMinInversor || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kW (over panel 40%)`],
+    ] : []),
     ['Equipamentos (à vista)', currency(c.valorEquipamentosCliente || 0)],
     ...(c.desconto > 0 ? [['Desconto nos equipamentos', `− ${currency(c.desconto)}`]] : []),
     ['Instalação', currency(inst.valor || 0)],
@@ -6996,7 +7011,7 @@ function desenharCustosInstalacao(p, logo) {
 
   const itensDistribuidora = [
     { descricao: p.placa?.descricao || 'Placas', quantidade: p.placa?.quantidade || 0, precoUnit: p.placa?.precoUnit || 0 },
-    { descricao: p.inversor?.descricao || 'Inversor', quantidade: p.inversor?.quantidade || 0, precoUnit: p.inversor?.precoUnit || 0 },
+    ...inversoresDaProposta(p).map(i => ({ descricao: i.descricao, quantidade: i.quantidade || 0, precoUnit: i.precoUnit || 0 })),
     ...(p.kits?.dc?.quantidade > 0 ? [{ descricao: 'Kit DC 50m + 4 pares MC4', quantidade: p.kits.dc.quantidade, precoUnit: p.kits.dc.precoUnit }] : []),
     ...(p.kits?.estrutura?.quantidade > 0 ? [{ descricao: 'Kit estrutura para 4 placas', quantidade: p.kits.estrutura.quantidade, precoUnit: p.kits.estrutura.precoUnit }] : []),
     ...(p.adicionais || []),
@@ -7004,7 +7019,7 @@ function desenharCustosInstalacao(p, logo) {
 
   const custosInst = [
     [`Mão de obra — placas (${p.placa?.quantidade || 0} un.)`, inst.moPlacas],
-    [`Mão de obra — inversor (${p.inversor?.quantidade || 0} un. de ${p.inversor?.kw || 0} kW)`, inst.moInversor],
+    [`Mão de obra — inversor (${inversoresDaProposta(p).reduce((a, i) => a + (i.quantidade || 0), 0)} un.)`, inst.moInversor],
     ['Homologação', inst.homologacao],
     ['Comissionamento', inst.comissionamento],
     [`Administrativo (R$ ${p.params?.admPorKwp ?? 100}/kWp)`, inst.administrativo],
@@ -7149,7 +7164,13 @@ function exportarParaTermo(p) {
     vendedor: p.autor || '',
     kwp: c.kwp || 0,
     placa: p.placa ? { descricao: p.placa.descricao, quantidade: p.placa.quantidade, wp: p.placa.wp } : null,
-    inversor: p.inversor ? { descricao: p.inversor.descricao, quantidade: p.inversor.quantidade, kw: p.inversor.kw } : null,
+    inversor: (() => {
+      const lista = inversoresDaProposta(p);
+      if (lista.length === 0) return null;
+      if (lista.length === 1) return { descricao: lista[0].descricao, quantidade: lista[0].quantidade, kw: lista[0].kw };
+      return { descricao: lista.map(i => `${i.quantidade}x ${i.descricao}`).join(' + '), quantidade: lista.reduce((a, i) => a + (i.quantidade || 0), 0), kw: lista[0].kw };
+    })(),
+    inversores: inversoresDaProposta(p).map(i => ({ descricao: i.descricao, quantidade: i.quantidade, kw: i.kw })),
     kits: {
       dc: { quantidade: p.kits?.dc?.quantidade || 0 },
       estrutura: { quantidade: p.kits?.estrutura?.quantidade || 0 },
@@ -7201,6 +7222,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
   const [qtdInversores, setQtdInversores] = useState('1');
   const [kwInversor, setKwInversor] = useState('');
   const [precoInversor, setPrecoInversor] = useState('');
+  const [inversores, setInversores] = useState([]); // modelos já adicionados (combinar modelos/micros)
+  const [geracaoDesejada, setGeracaoDesejada] = useState('');
   const [adicionais, setAdicionais] = useState([]);
   const [addProdutoId, setAddProdutoId] = useState('');
   const [addQtd, setAddQtd] = useState('1');
@@ -7249,6 +7272,12 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
       if (kw > 0) setKwInversor(String(kw));
     }
   }
+  function adicionarInversor() {
+    if (!inversorSel || num(qtdInversores) <= 0) { notify('Escolha o inversor e a quantidade antes de adicionar'); return; }
+    if (num(kwInversor) <= 0) { notify('Informe a potência do inversor em kW'); return; }
+    setInversores(l => [...l, { id: uid(), produtoId: inversorSel.id, descricao: descricaoProduto(inversorSel), quantidade: num(qtdInversores), kw: num(kwInversor), precoUnit: num(precoInversor) }]);
+    setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
+  }
   function adicionarItem() {
     const p = estoque.find(i => i.id === addProdutoId);
     const qtd = num(addQtd);
@@ -7259,24 +7288,44 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
 
   const placaSel = estoque.find(i => i.id === placaId);
   const inversorSel = estoque.find(i => i.id === inversorId);
+  // O inversor preenchido nos campos JÁ conta na proposta, sem precisar clicar em adicionar —
+  // o botão "adicionar à lista" existe só para combinar mais de um modelo.
+  const invRascunho = inversorSel && num(qtdInversores) > 0
+    ? { id: 'rascunho', produtoId: inversorSel.id, descricao: descricaoProduto(inversorSel), quantidade: num(qtdInversores), kw: num(kwInversor), precoUnit: num(precoInversor) }
+    : null;
+  const inversoresEfetivos = [...inversores, ...(invRascunho ? [invRascunho] : [])];
+  const kwTotalInversores = inversoresEfetivos.reduce((a, i) => a + (i.kw || 0) * (i.quantidade || 0), 0);
+
+  // Dimensionamento: memória de cálculo SEPARADA do que for digitado — não preenche nada sozinha.
+  const fatorG = params.fatorGeracao || 130;
+  const kwpAlvo = num(geracaoDesejada) > 0 ? num(geracaoDesejada) / fatorG : 0;
+  const qtdPlacasSugerida = kwpAlvo > 0 && num(wpPlaca) > 0 ? Math.ceil((kwpAlvo * 1000) / num(wpPlaca)) : 0;
+  const kwpSugerido = qtdPlacasSugerida > 0 ? (qtdPlacasSugerida * num(wpPlaca)) / 1000 : kwpAlvo;
+  const kwMinSugerido = kwpSugerido / 1.4; // over panel máximo recomendado: 40%
+  const kwpDigitado = (num(qtdPlacas) * num(wpPlaca)) / 1000;
+  const kwMinDigitado = kwpDigitado / 1.4;
+  const fmt2 = (v) => (v || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
   // Cabos, MC4 e estrutura entram sozinhos, pela regra da planilha:
   // 1 kit DC (50m + 4 pares MC4) a cada 7 placas; 1 kit de estrutura a cada 4 placas.
   const qtdKitsDc = num(qtdPlacas) > 0 ? Math.ceil(num(qtdPlacas) / 7) : 0;
   const qtdKitsEstrutura = num(qtdPlacas) > 0 ? Math.ceil(num(qtdPlacas) / 4) : 0;
   const valorKits = qtdKitsDc * (params.precoKitDc || 0) + qtdKitsEstrutura * (params.precoKitEstrutura || 0);
-  const valorEquipamentos = num(precoPlaca) * num(qtdPlacas) + num(precoInversor) * num(qtdInversores)
+  const valorEquipamentos = num(precoPlaca) * num(qtdPlacas)
+    + inversoresEfetivos.reduce((acc, i) => acc + (i.precoUnit || 0) * (i.quantidade || 0), 0)
     + valorKits + adicionais.reduce((acc, a) => acc + a.precoUnit * a.quantidade, 0);
 
   const calc = useMemo(() => calcularProposta({
     qtdPlacas: num(qtdPlacas), wpPlaca: num(wpPlaca),
     qtdInversores: num(qtdInversores), kwInversor: num(kwInversor),
+    inversores: inversoresEfetivos.map(i => ({ quantidade: i.quantidade, kw: i.kw })),
     valorEquipamentos, params, entrada: num(entrada), desconto: num(desconto),
-  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto]);
+  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, inversores, inversorId, precoInversor, valorEquipamentos, params, entrada, desconto]);
 
   function limparForm() {
     setEditandoId(null); setClienteNome(''); setClienteContato('');
     setPlacaId(''); setQtdPlacas(''); setWpPlaca(''); setPrecoPlaca('');
     setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
+    setInversores([]); setGeracaoDesejada('');
     setAdicionais([]); setAddProdutoId(''); setAddQtd('1');
     setParams({ ...PARAMS_PROPOSTA_PADRAO }); setEntrada('');
     setDesconto(''); setObservacoes('');
@@ -7287,8 +7336,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     if (!clienteNome.trim()) { notify('Informe o nome do cliente'); return; }
     if (!placaSel || num(qtdPlacas) <= 0) { notify('Escolha a placa e a quantidade'); return; }
     if (num(wpPlaca) <= 0) { notify('Informe a potência da placa em Wp'); return; }
-    if (!inversorSel || num(qtdInversores) <= 0) { notify('Escolha o inversor e a quantidade'); return; }
-    if (num(kwInversor) <= 0) { notify('Informe a potência do inversor em kW'); return; }
+    if (inversoresEfetivos.length === 0) { notify('Escolha pelo menos um inversor (pode combinar mais de um modelo)'); return; }
+    if (inversoresEfetivos.some(i => (i.quantidade || 0) <= 0 || (i.kw || 0) <= 0)) { notify('Confira a quantidade e a potência (kW) de cada inversor'); return; }
     if (num(desconto) > calc.descontoMaximo + 0.009) {
       notify(`⚠️ O desconto máximo desta proposta é ${currency(calc.descontoMaximo)} — a margem entre a distribuidora e o valor de venda dos equipamentos. Acima disso venderia abaixo do preço da distribuidora.`);
       return;
@@ -7300,7 +7349,12 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
       atualizadoEm: editandoId ? new Date().toISOString() : undefined,
       clienteNome: clienteNome.trim(), clienteContato: clienteContato.trim(),
       placa: { produtoId: placaSel.id, descricao: descricaoProduto(placaSel), quantidade: num(qtdPlacas), wp: num(wpPlaca), precoUnit: num(precoPlaca) },
-      inversor: { produtoId: inversorSel.id, descricao: descricaoProduto(inversorSel), quantidade: num(qtdInversores), kw: num(kwInversor), precoUnit: num(precoInversor) },
+      inversor: (({ id, ...i }) => i)(inversoresEfetivos[0]),
+      inversores: inversoresEfetivos.map(({ id, ...i }) => i),
+      dimensionamento: kwpAlvo > 0 ? {
+        geracaoDesejada: num(geracaoDesejada), fatorGeracao: fatorG, kwpAlvo,
+        qtdPlacasSugerida, kwpSugerido, kwMinInversor: kwMinSugerido,
+      } : null,
       kits: {
         dc: { quantidade: qtdKitsDc, precoUnit: params.precoKitDc || 0 },
         estrutura: { quantidade: qtdKitsEstrutura, precoUnit: params.precoKitEstrutura || 0 },
@@ -7321,8 +7375,9 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     setClienteNome(p.clienteNome || ''); setClienteContato(p.clienteContato || '');
     setPlacaId(p.placa?.produtoId || ''); setQtdPlacas(String(p.placa?.quantidade ?? ''));
     setWpPlaca(String(p.placa?.wp ?? '')); setPrecoPlaca(String(p.placa?.precoUnit ?? '').replace('.', ','));
-    setInversorId(p.inversor?.produtoId || ''); setQtdInversores(String(p.inversor?.quantidade ?? '1'));
-    setKwInversor(String(p.inversor?.kw ?? '')); setPrecoInversor(String(p.inversor?.precoUnit ?? '').replace('.', ','));
+    setInversores(inversoresDaProposta(p).map(i => ({ id: uid(), produtoId: i.produtoId, descricao: i.descricao, quantidade: i.quantidade, kw: i.kw, precoUnit: i.precoUnit || 0 })));
+    setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
+    setGeracaoDesejada(p.dimensionamento?.geracaoDesejada ? String(p.dimensionamento.geracaoDesejada).replace('.', ',') : '');
     setAdicionais(p.adicionais || []); setParams({ ...PARAMS_PROPOSTA_PADRAO, ...(p.params || {}) });
     setEntrada(p.entrada ? String(p.entrada).replace('.', ',') : '');
     setDesconto(p.desconto ? String(p.desconto).replace('.', ',') : '');
@@ -7349,7 +7404,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     }
     const itensBrutos = [
       p.placa && { produtoId: p.placa.produtoId, descricao: p.placa.descricao, quantidade: p.placa.quantidade, precoUnit: p.placa.precoUnit },
-      p.inversor && { produtoId: p.inversor.produtoId, descricao: p.inversor.descricao, quantidade: p.inversor.quantidade, precoUnit: p.inversor.precoUnit },
+      ...inversoresDaProposta(p).map(inv => ({ produtoId: inv.produtoId, descricao: inv.descricao, quantidade: inv.quantidade, precoUnit: inv.precoUnit })),
       ...(p.adicionais || []),
     ].filter(x => x && x.produtoId && x.quantidade > 0);
     if (itensBrutos.length === 0) { notify('A proposta não tem itens ligados a produtos do estoque.'); return; }
@@ -7406,7 +7461,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     const inst = c.instalacao || {};
     const linhasEquip = [
       `${p.placa.quantidade}x ${esc(p.placa.descricao)}`,
-      `${p.inversor.quantidade}x ${esc(p.inversor.descricao)}`,
+      ...inversoresDaProposta(p).map(i => `${i.quantidade}x ${esc(i.descricao)}`),
       ...(p.kits?.dc?.quantidade > 0 ? [`${p.kits.dc.quantidade}x kit cabeamento DC 50m + 4 pares MC4`] : ['Cabeamento e proteções']),
       ...(p.kits?.estrutura?.quantidade > 0 ? [`${p.kits.estrutura.quantidade}x kit estrutura de fixação (4 placas)`] : ['Estrutura de fixação']),
       ...(p.adicionais || []).map(a => `${a.quantidade}x ${esc(a.descricao)}`),
@@ -7494,8 +7549,34 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
             <div><label className={rotuloCls}>Contato / cidade (opcional)</label><input value={clienteContato} onChange={e => setClienteContato(e.target.value)} placeholder="Telefone, cidade..." className={inputCls} /></div>
           </div>
 
+          <div className="border border-sky-200 bg-sky-50 rounded-md p-3 mb-3">
+            <p className="text-xs font-medium text-sky-800 mb-2">Dimensionamento rápido — memória de cálculo</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-start">
+              <div><label className={rotuloCls}>Geração desejada (kWh/mês)</label><input type="text" inputMode="decimal" value={geracaoDesejada} onChange={e => setGeracaoDesejada(e.target.value)} placeholder="Ex: 1300" className={inputCls} /></div>
+              <div className="sm:col-span-2 text-xs text-sky-800 space-y-0.5 pt-1">
+                {kwpAlvo > 0 ? (
+                  <>
+                    <p>Usina para gerar isso: <strong>{fmt2(kwpAlvo)} kWp</strong> ({fatorG} kWh/kWp/mês).</p>
+                    {qtdPlacasSugerida > 0 ? (
+                      <p>
+                        Com a placa escolhida ({num(wpPlaca)} Wp): <strong>{qtdPlacasSugerida} placas</strong> (arredondado para cima → {fmt2(kwpSugerido)} kWp)
+                        · inversor mínimo <strong>{fmt2(kwMinSugerido)} kW</strong> (over panel máx. 40%).{' '}
+                        <button onClick={() => setQtdPlacas(String(qtdPlacasSugerida))} className="underline font-medium">usar {qtdPlacasSugerida} placas</button>
+                      </p>
+                    ) : (
+                      <p>Escolha a placa abaixo para a sugestão de quantidade · inversor mínimo <strong>{fmt2(kwMinSugerido)} kW</strong>.</p>
+                    )}
+                    <p className="text-sky-600">A sugestão fica gravada como memória de cálculo, separada do que você digitar — sai no resumo interno do vendedor, nunca na proposta do cliente.</p>
+                  </>
+                ) : (
+                  <p>Digite quantos kWh/mês o cliente quer gerar e escolha a placa: o sistema sugere a quantidade (sempre arredondando para cima) e o inversor mínimo. A sugestão não preenche nada sozinha — é referência.</p>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div className="border border-slate-200 rounded-md p-3 mb-3">
-            <p className="text-xs font-medium text-slate-600 mb-2">Placas</p>
+            <p className="text-xs font-medium text-slate-600 mb-2">Placas{qtdPlacasSugerida > 0 ? ` — sugestão: ${qtdPlacasSugerida}` : ''}</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-end">
               <div className="col-span-2 sm:col-span-2"><label className={rotuloCls}>Modelo (base de dados do site)</label>
                 <SelectPesquisavel opcoes={opcoesPlacas} value={placaId} onChange={escolherPlaca} placeholder="Buscar placa..." /></div>
@@ -7506,7 +7587,17 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
           </div>
 
           <div className="border border-slate-200 rounded-md p-3 mb-3">
-            <p className="text-xs font-medium text-slate-600 mb-2">Inversor</p>
+            <p className="text-xs font-medium text-slate-600 mb-2">Inversores{kwMinSugerido > 0 ? ` — mínimo recomendado: ${fmt2(kwMinSugerido)} kW` : ''}</p>
+            {inversores.length > 0 && (
+              <div className="space-y-1 mb-2">
+                {inversores.map(inv => (
+                  <div key={inv.id} className="flex items-center justify-between text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1.5">
+                    <span className="text-slate-600">{inv.quantidade}x {inv.descricao} — {inv.kw} kW · {currency(inv.precoUnit)}/un.</span>
+                    <button onClick={() => setInversores(l => l.filter(x => x.id !== inv.id))} className="text-slate-400 hover:text-red-500 ml-2"><X size={13} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-end">
               <div className="col-span-2 sm:col-span-2"><label className={rotuloCls}>Modelo (base de dados do site)</label>
                 <SelectPesquisavel opcoes={opcoesInversores} value={inversorId} onChange={escolherInversor} placeholder="Buscar inversor..." /></div>
@@ -7514,6 +7605,17 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
               <div><label className={rotuloCls}>Potência (kW)</label><input type="text" inputMode="decimal" value={kwInversor} onChange={e => setKwInversor(e.target.value)} placeholder="Ex: 6" className={inputCls} /></div>
               <div className="col-span-2"><label className={rotuloCls}>Preço distribuidora (un.)</label><input type="text" inputMode="decimal" value={precoInversor} onChange={e => setPrecoInversor(e.target.value)} placeholder="Ex: 1500,00" className={inputCls} /></div>
             </div>
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              <button onClick={adicionarInversor} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-1.5 rounded-md">+ Adicionar à lista (combinar outro modelo)</button>
+              <span className="text-[10px] text-slate-400">O inversor preenchido acima já entra na proposta — o botão é só para microinversores ou vários modelos (ex: 3x 25 kW).</span>
+            </div>
+            {kwpDigitado > 0 && kwTotalInversores > 0 && (
+              <p className={`text-[11px] mt-2 ${kwTotalInversores + 0.005 < kwMinDigitado ? 'text-amber-600 font-medium' : 'text-emerald-700'}`}>
+                {fmt2(kwTotalInversores)} kW de inversor para {fmt2(kwpDigitado)} kWp de placas — {kwTotalInversores + 0.005 < kwMinDigitado
+                  ? `abaixo do mínimo de ${fmt2(kwMinDigitado)} kW: o over panel passa dos 40% recomendados`
+                  : `dentro do over panel máximo de 40% (mínimo ${fmt2(kwMinDigitado)} kW)`}
+              </p>
+            )}
           </div>
 
           <div className="border border-slate-200 rounded-md p-3 mb-3 bg-slate-50">
@@ -7646,14 +7748,17 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
                     {statusDe(p) === 'aceita' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">Aceita{p.vendaId ? ' · venda gerada' : ''}</span>}
                     {statusDe(p) === 'perdida' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-500 shrink-0">Perdida</span>}
                   </p>
-                  <p className="text-xs text-slate-400">{formatDate(p.data)} · {(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · {p.placa?.quantidade}x placa + {p.inversor?.quantidade}x inversor</p>
+                  <p className="text-xs text-slate-400">{formatDate(p.data)} · {(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · {p.placa?.quantidade}x placa + {inversoresDaProposta(p).reduce((a, i) => a + (i.quantidade || 0), 0)}x inversor</p>
                 </div>
               </div>
               <span className="text-sm font-semibold shrink-0">{currency(p.calculos?.totalAVista || 0)}</span>
             </div>
             {expanded[p.id] && (
               <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 text-xs space-y-1">
-                <p className="text-slate-600">{p.placa?.quantidade}x {p.placa?.descricao} ({p.placa?.wp} Wp) · {p.inversor?.quantidade}x {p.inversor?.descricao} ({p.inversor?.kw} kW){(p.adicionais || []).map(a => ` · ${a.quantidade}x ${a.descricao}`).join('')}</p>
+                <p className="text-slate-600">{p.placa?.quantidade}x {p.placa?.descricao} ({p.placa?.wp} Wp){inversoresDaProposta(p).map(i => ` · ${i.quantidade}x ${i.descricao} (${i.kw} kW)`).join('')}{(p.adicionais || []).map(a => ` · ${a.quantidade}x ${a.descricao}`).join('')}</p>
+                {p.dimensionamento?.geracaoDesejada > 0 && (
+                  <p className="text-sky-700">Memória de cálculo: {p.dimensionamento.geracaoDesejada.toLocaleString('pt-BR')} kWh/mês desejados → {p.dimensionamento.qtdPlacasSugerida > 0 ? `${p.dimensionamento.qtdPlacasSugerida} placas sugeridas · ` : ''}{(p.dimensionamento.kwpSugerido || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · inversor mín. {(p.dimensionamento.kwMinInversor || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kW</p>
+                )}
                 <p className="text-slate-500">Geração {Math.round(p.calculos?.geracaoMensal || 0)} kWh/mês · economia {currency(p.calculos?.economiaMensal || 0)}/mês · payback {Math.round(p.calculos?.roiMeses || 0)} meses</p>
                 <p className="text-slate-500">Equipamentos {currency(p.calculos?.valorEquipamentosFinal ?? p.calculos?.valorEquipamentosCliente ?? 0)}{(p.calculos?.desconto || 0) > 0 ? ` (desconto de ${currency(p.calculos.desconto)} já aplicado)` : ''} + instalação {currency(p.calculos?.instalacao?.valor || 0)}{p.entrada > 0 ? ` · entrada ${currency(p.entrada)}` : ''}</p>
                 {p.observacoes && <p className="text-slate-500 italic">Obs: {p.observacoes}</p>}
