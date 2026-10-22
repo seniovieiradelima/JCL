@@ -727,6 +727,49 @@ function mapaReservadoPorProduto(vendas) {
   return m;
 }
 
+// Distribui as pendências de pré-venda/entrega pelos PEDIDOS DE COMPRA a chegar, em ordem
+// de chegada (pedido mais antigo primeiro; venda mais antiga reserva primeiro). É uma conta
+// determinística — todo mundo vê a mesma distribuição e nenhuma unidade é prometida duas
+// vezes. O que não couber em pedido nenhum sai em `descoberto` (pré-venda sem pedido).
+function distribuirReservasPorPedido(pedidosCompra, recebimentos, vendas) {
+  const recebido = mapaRecebidoPorItem(recebimentos);
+  const saldos = []; // na ordem FIFO dos pedidos
+  const porChave = new Map(); // `${pedidoId}|${itemLineId}` -> { falta, livre, reservas: [{vendaId, clienteNome, qtd}] }
+  const pedidosOrdenados = (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado)
+    .slice().sort((a, b) => (a.data || '').localeCompare(b.data || '') || String(a.id).localeCompare(String(b.id)));
+  for (const p of pedidosOrdenados) {
+    for (const it of (p.itens || [])) {
+      const falta = it.quantidade - (recebido.get(`${p.id}|${it.id}`) || 0);
+      if (falta <= 0) continue;
+      const info = { falta, livre: falta, reservas: [] };
+      porChave.set(`${p.id}|${it.id}`, info);
+      saldos.push({ produtoId: it.produtoId, info });
+    }
+  }
+  const descoberto = new Map(); // produtoId -> pendência sem pedido para cobrir
+  const vendasOrdenadas = (vendas || []).filter(v => !v.anulado)
+    .slice().sort((a, b) => (a.data || '').localeCompare(b.data || '') || String(a.id).localeCompare(String(b.id)));
+  for (const v of vendasOrdenadas) {
+    const pendPorProduto = new Map();
+    for (const it of (v.itens || [])) {
+      const pend = it.quantidadePendente || 0;
+      if (pend > 0) pendPorProduto.set(it.itemId, (pendPorProduto.get(it.itemId) || 0) + pend);
+    }
+    for (const [produtoId, pendTotal] of pendPorProduto) {
+      let resta = pendTotal;
+      for (const sdo of saldos) {
+        if (resta <= 0) break;
+        if (sdo.produtoId !== produtoId || sdo.info.livre <= 0) continue;
+        const usa = Math.min(sdo.info.livre, resta);
+        sdo.info.livre -= usa; resta -= usa;
+        sdo.info.reservas.push({ vendaId: v.id, clienteNome: v.clienteNome || '(sem nome)', qtd: usa });
+      }
+      if (resta > 0) descoberto.set(produtoId, (descoberto.get(produtoId) || 0) + resta);
+    }
+  }
+  return { porChave, descoberto };
+}
+
 // Mesma regra de custoEstimadoUnitario, calculada em lote para todos os produtos.
 function mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos) {
   const recebido = mapaRecebidoPorItem(recebimentos);
@@ -1537,6 +1580,7 @@ function AppInner({ perfil }) {
             fornecedores={fornecedores}
             pedidos={pedidosCompra} setPedidos={persistPedidosCompra}
             recebimentos={recebimentos}
+            vendas={vendas}
             askConfirm={askConfirm}
             askSenha={askSenha}
             notify={notify}
@@ -1915,11 +1959,14 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
   const opcoesProdutos = useMemo(() => estoque.map(i => {
     const disp = availableQty(i);
     const aCaminho = aCaminhoMap.get(i.id)?.total || 0;
-    const rotulo = disp === 0 && aCaminho === 0 ? 'sem estoque — pré-venda'
-      : aCaminho > 0 ? `${disp} disp. + ${aCaminho} a caminho`
+    const reservado = reservadoMap.get(i.id) || 0;
+    const livre = aCaminho - reservado; // negativo = pré-venda sem pedido para cobrir
+    const rotulo = disp === 0 && aCaminho === 0 && reservado === 0 ? 'sem estoque — pré-venda'
+      : livre < 0 ? `${disp} disp. · ${-livre} pré-vendido(s) SEM pedido`
+      : aCaminho > 0 ? `${disp} disp. + ${livre} livres a chegar${reservado > 0 ? ` (${aCaminho} pedidos − ${reservado} pré-vendidos)` : ''}`
       : `${disp} disp.`;
     return { value: i.id, label: `${i.categoria} · ${descricaoProduto(i)} (${rotulo})` };
-  }), [estoque, aCaminhoMap]);
+  }), [estoque, aCaminhoMap, reservadoMap]);
 
   const depositosComEstoque = produtoAtual ? depositos.filter(d => availableQty(produtoAtual, d.id) > 0) : [];
 
@@ -1941,6 +1988,13 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
       // Venda normal: pode adicionar além do estoque. O que faltar vira pendência de entrega.
       const disp = availableQty(produtoAtual, depositoSel);
       if (qtd > disp) notify(`${qtd - disp} de ${qtd} sem estoque agora — se virar venda, ficam pendentes de entrega`);
+    } else {
+      // Pré-venda: compara com o que está a chegar e ainda não foi prometido a ninguém.
+      const aCaminho = aCaminhoMap.get(produtoAtual.id)?.total || 0;
+      const reservado = reservadoMap.get(produtoAtual.id) || 0;
+      const noCarrinho = carrinho.filter(x => x.preVenda && x.itemId === produtoAtual.id).reduce((a, x) => a + x.quantidade, 0);
+      const livre = aCaminho - reservado - noCarrinho;
+      if (qtd > livre) notify(`⚠️ Pré-venda além da cobertura: ${qtd} un. com saldo livre de ${livre} nos pedidos a chegar — lance o pedido de compra para cobrir o restante.`);
     }
     const marca = preVendaSel ? { preVenda: true } : {};
     if (produtoAtual.serializado) {
@@ -1996,6 +2050,19 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
             <span><strong>Pré-venda (encomenda)</strong> — não baixa do estoque agora, mesmo tendo disponível. O que você tem em estoque continua livre para outros clientes; a baixa deste item é feita depois, na aba Vendas, quando a mercadoria chegar.</span>
           </label>
         )}
+        {produtoAtual && preVendaSel && (() => {
+          const aCaminho = aCaminhoMap.get(produtoAtual.id)?.total || 0;
+          const reservado = reservadoMap.get(produtoAtual.id) || 0;
+          const noCarrinho = carrinho.filter(x => x.preVenda && x.itemId === produtoAtual.id).reduce((a, x) => a + x.quantidade, 0);
+          const livre = aCaminho - reservado - noCarrinho;
+          const excede = (parseInt(qtdSel) || 1) > livre;
+          return (
+            <p className={`text-xs px-1 ${livre < 0 ? 'text-red-600 font-medium' : excede ? 'text-amber-700 font-medium' : 'text-slate-500'}`}>
+              A chegar nos pedidos de compra: {aCaminho} · já prometido em pré-venda: {reservado}{noCarrinho > 0 ? ` · neste carrinho: ${noCarrinho}` : ''} · saldo livre: <strong>{livre}</strong>
+              {livre < 0 ? ' — NEGATIVO: já se vendeu além do que foi pedido; lance o pedido de compra' : excede ? ' — esta quantidade passa do que está pedido: a pré-venda fica SEM COBERTURA até lançar o pedido de compra' : ''}
+            </p>
+          );
+        })()}
         {produtoAtual && !preVendaSel && (
           <select value={depositoSel} onChange={e => setDepositoSel(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="">Selecione o depósito...</option>
@@ -2864,6 +2931,9 @@ function ExtratoMovimentacoes({ item, vendas, recebimentos, pedidosCompra, trans
 }
 
 function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, pedidosCompra, transferencias, balancos, askConfirm, askSenha, notify }) {
+  // A chegar e pré-vendido por produto — pro cadastro mostrar o que está LIVRE de verdade.
+  const aCaminhoMapCad = useMemo(() => mapaACaminhoPorProduto(pedidosCompra, recebimentos), [pedidosCompra, recebimentos]);
+  const reservadoMapCad = useMemo(() => mapaReservadoPorProduto(vendas), [vendas]);
   const [showForm, setShowForm] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [filtroCategoria, setFiltroCategoria] = useState('Todos');
@@ -3090,6 +3160,20 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
+                  {(() => {
+                    const aCaminho = aCaminhoMapCad.get(item.id)?.total || 0;
+                    const reservado = reservadoMapCad.get(item.id) || 0;
+                    if (aCaminho === 0 && reservado === 0) return null;
+                    const livre = aCaminho - reservado; // negativo = alerta: vendeu-se além dos pedidos
+                    return (
+                      <span className="text-[11px] text-slate-500 text-right leading-tight" title="Dos pedidos de compra a chegar, quanto ainda não foi prometido em pré-venda — negativo significa pré-venda sem pedido">
+                        {aCaminho} a chegar{reservado > 0 ? ` · ${reservado} pré-vendido` : ''}
+                        <span className={`block font-medium ${livre > 0 ? 'text-emerald-700' : livre === 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                          {livre < 0 ? `${livre} — fazer pedido!` : `${livre} livre(s) p/ vender`}
+                        </span>
+                      </span>
+                    );
+                  })()}
                   <span className={`text-xs ${disp <= (item.quantidadeMinima || 0) ? 'text-red-500 font-medium flex items-center gap-1' : 'text-slate-500'}`}>
                     {disp <= (item.quantidadeMinima || 0) && <AlertTriangle size={12} />}{disp} disp.
                   </span>
@@ -3530,9 +3614,11 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, askSenh
 
 /* ---------------- PEDIDOS DE COMPRA (como um "orçamento" de compra, ainda sem estoque) ---------------- */
 
-function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, askConfirm, askSenha, notify }) {
+function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, vendas, askConfirm, askSenha, notify }) {
   // Recebido por item de pedido, calculado uma vez — as listas abaixo consultam o mapa.
   const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
+  // Pré-vendas distribuídas pelos pedidos (FIFO) — cada pedido mostra o que dele já está prometido.
+  const reservasPedidos = useMemo(() => distribuirReservasPorPedido(pedidos, recebimentos, vendas), [pedidos, recebimentos, vendas]);
   const recebidoDe = (pedidoId, itemId) => recebidoPorItem.get(`${pedidoId}|${itemId}`) || 0;
   const [showForm, setShowForm] = useState(false);
   const [numeroPedidoFornecedor, setNumeroPedidoFornecedor] = useState('');
@@ -3750,6 +3836,17 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
         </button>
       </div>
 
+      {reservasPedidos.descoberto.size > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-md p-3 mb-3 text-xs">
+          <p className="font-medium text-red-700 mb-1">Pré-venda sem pedido para cobrir</p>
+          <p className="text-red-600 mb-1.5">Já foi vendido mais do que há em pedidos a chegar — falta lançar (ou aumentar) o pedido de compra destes itens:</p>
+          {[...reservasPedidos.descoberto.entries()].map(([produtoId, qtd]) => {
+            const prod = estoque.find(x => x.id === produtoId);
+            return <p key={produtoId} className="text-red-700">• {prod ? descricaoProduto(prod) : '(produto removido)'} — {qtd} un. prometida(s) sem cobertura</p>;
+          })}
+        </div>
+      )}
+
       {showForm && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
           <div className="flex justify-between items-center">
@@ -3892,14 +3989,23 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
                         </div>
                       );
                     }
+                    const reserva = reservasPedidos.porChave.get(`${p.id}|${i.id}`);
                     return (
-                      <div key={idx} className="flex justify-between items-center gap-2 text-xs text-slate-600">
-                        <span className="min-w-0">{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</span>
-                        {!p.anulado && (
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button onClick={() => abrirEdicaoItem(p, i)} title="Editar item" className="flex items-center gap-1 text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-400 rounded px-1.5 py-1"><Pencil size={12} /> Editar</button>
-                            <button onClick={() => removerItemPedido(p, i)} title="Remover item" className="flex items-center text-slate-500 hover:text-red-600 border border-slate-200 hover:border-red-300 rounded px-1.5 py-1"><Trash2 size={12} /></button>
-                          </div>
+                      <div key={idx} className="text-xs text-slate-600">
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="min-w-0">{i.descricao} — {i.quantidade}x {currency(i.custoUnitario)} · recebido {recebido}/{i.quantidade}</span>
+                          {!p.anulado && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button onClick={() => abrirEdicaoItem(p, i)} title="Editar item" className="flex items-center gap-1 text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-400 rounded px-1.5 py-1"><Pencil size={12} /> Editar</button>
+                              <button onClick={() => removerItemPedido(p, i)} title="Remover item" className="flex items-center text-slate-500 hover:text-red-600 border border-slate-200 hover:border-red-300 rounded px-1.5 py-1"><Trash2 size={12} /></button>
+                            </div>
+                          )}
+                        </div>
+                        {reserva && reserva.reservas.length > 0 && (
+                          <p className="text-[11px] text-amber-700 pl-2">
+                            ↳ dos {reserva.falta} a chegar, {reserva.falta - reserva.livre} já prometido(s) em pré-venda: {reserva.reservas.map(r => `${r.qtd}x ${r.clienteNome}`).join(', ')} ·{' '}
+                            <span className={`font-medium ${reserva.livre > 0 ? 'text-emerald-700' : 'text-red-600'}`}>{reserva.livre} livre(s) neste pedido</span>
+                          </p>
                         )}
                       </div>
                     );
