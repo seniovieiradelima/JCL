@@ -837,12 +837,20 @@ function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, aju
     }
   }
 
-  // A receber = o que falta de recebimento CONFIRMADO em cada venda ativa. Comprovante
-  // anexado mas não confirmado continua contando como "a receber" até a senha confirmar.
-  const valoresAReceber = ativas.reduce((acc, v) => {
-    const comprovado = (v.comprovantes || []).filter(comprovanteConfirmado).reduce((a, c) => a + (c.valor || 0), 0);
-    return acc + Math.max(0, v.totalVenda - comprovado);
-  }, 0);
+  // A receber = o que ainda está SEM COMPROVANTE em cada venda ativa. Comprovante anexado
+  // conta como recebido aqui mesmo aguardando confirmação — o dinheiro já entrou e está
+  // girando (virou compra/estoque); contar como "a receber" até o OK do dono somava o mesmo
+  // valor DUAS vezes no imobilizado. A confirmação é auditoria: o total que aguarda sai em
+  // `aguardandoConfirmacao`, informativo, fora da soma.
+  let valoresAReceber = 0, aguardandoConfirmacao = 0;
+  for (const v of ativas) {
+    let comprovado = 0;
+    for (const c of (v.comprovantes || [])) {
+      comprovado += (c.valor || 0);
+      if (!comprovanteConfirmado(c)) aguardandoConfirmacao += (c.valor || 0);
+    }
+    valoresAReceber += Math.max(0, v.totalVenda - comprovado);
+  }
 
   // Mercadoria a entregar = débito de mercadoria com clientes: itens vendidos (muitas vezes
   // já pagos) ainda pendentes de entrega, a preço de venda. Informativo — não entra no total.
@@ -851,9 +859,17 @@ function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, aju
 
   return {
     valorEstoqueDisponivel, valorEstoqueAguardando, cmvAcumulado, pedidosAcumulado, totalAjustes,
-    saldoReposicao, valoresAReceber, mercadoriaAEntregar,
+    saldoReposicao, valoresAReceber, aguardandoConfirmacao, mercadoriaAEntregar,
     totalImobilizado: valorEstoqueDisponivel + valorEstoqueAguardando + saldoReposicao + valoresAReceber,
   };
+}
+
+// Venda da integradora (Estação Mossoró): gerada de proposta aceita OU com o cliente
+// nomeado Estação Mossoró. O filtro do Financeiro usa isto para ver só a distribuidora.
+function ehVendaIntegradora(v) {
+  if (v.origemPropostaId) return true;
+  const nome = String(v.clienteNome || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return nome.includes('estacao mossoro');
 }
 
 // Quantidade de um produto já comprometida em pré-vendas ativas (pendências de entrega).
@@ -1358,6 +1374,7 @@ function AppInner({ perfil }) {
           valorEstoqueAguardando: arred(ind.valorEstoqueAguardando),
           saldoReposicao: arred(ind.saldoReposicao),
           valoresAReceber: arred(ind.valoresAReceber),
+          aguardandoConfirmacao: arred(ind.aguardandoConfirmacao || 0),
           mercadoriaAEntregar: arred(ind.mercadoriaAEntregar),
           totalImobilizado: arred(ind.totalImobilizado),
           gravadoEm: agora.toISOString(),
@@ -1370,6 +1387,7 @@ function AppInner({ perfil }) {
           existente.valorEstoqueAguardando === registro.valorEstoqueAguardando &&
           existente.saldoReposicao === registro.saldoReposicao &&
           existente.mercadoriaAEntregar === registro.mercadoriaAEntregar &&
+          (existente.aguardandoConfirmacao || 0) === registro.aguardandoConfirmacao &&
           existente.valoresAReceber === registro.valoresAReceber) return;
         const proximos = existente ? indicadores.map(i => (i.id === idDia ? registro : i)) : [...indicadores, registro];
         const r = await saveCollectionDelta('indicadores', indicadores, proximos);
@@ -9074,7 +9092,8 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
     setEstimativasEdit({});
   }
 
-  const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado), [vendasTodas]);
+  const [semIntegradora, setSemIntegradora] = useState(false);
+  const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado && (!semIntegradora || !ehVendaIntegradora(v))), [vendasTodas, semIntegradora]);
   const [periodo, setPeriodo] = useState('mes');
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
@@ -9151,8 +9170,8 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
   // Saldo de reposição e balanço da distribuidora: a MESMA conta da fotografia diária
   // (calcularIndicadores) — o painel e o gráfico de histórico nunca divergem.
   const indicadoresAgora = useMemo(
-    () => calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas: vendasTodas, ajustesReposicao, mapaCustoUnit: custoUnitEstimadoMapa }),
-    [estoque, pedidosCompra, recebimentos, vendasTodas, ajustesReposicao, custoUnitEstimadoMapa]
+    () => calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas: semIntegradora ? vendasTodas.filter(v => !ehVendaIntegradora(v)) : vendasTodas, ajustesReposicao, mapaCustoUnit: custoUnitEstimadoMapa }),
+    [estoque, pedidosCompra, recebimentos, vendasTodas, semIntegradora, ajustesReposicao, custoUnitEstimadoMapa]
   );
   const saldoReposicao = { cmvAcumulado: indicadoresAgora.cmvAcumulado, pedidosAcumulado: indicadoresAgora.pedidosAcumulado, saldo: indicadoresAgora.saldoReposicao };
   const balanco = indicadoresAgora;
@@ -9170,6 +9189,14 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
 
   return (
     <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <button onClick={() => setSemIntegradora(x => !x)}
+          className={`text-xs px-3 py-1.5 rounded-full border ${semIntegradora ? 'bg-violet-700 text-white border-violet-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+          title="Tira da conta as vendas geradas de propostas da integradora e as vendas com cliente Estação Mossoró">
+          {semIntegradora ? '✓ Sem a integradora (Estação Mossoró)' : 'Excluir integradora (Estação Mossoró)'}
+        </button>
+        {semIntegradora && <span className="text-[11px] text-violet-700">Movimentação SEM as negociações da Estação Mossoró Integradora — vale para o balanço e a listagem abaixo; a fotografia diária do histórico continua completa.</span>}
+      </div>
       <div className={`rounded-lg p-4 mb-5 border ${saldoReposicao.saldo < 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
         <p className={`text-xs ${saldoReposicao.saldo < 0 ? 'text-amber-700' : 'text-emerald-700'}`}>Saldo de reposição a manter em caixa (acumulado: custo de todas as vendas, menos todos os pedidos de compra, mais ajustes)</p>
         <p className={`text-2xl font-semibold ${saldoReposicao.saldo < 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{currency(saldoReposicao.saldo)}</p>
@@ -9253,9 +9280,15 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
             <span className="font-medium">{currency(saldoReposicao.saldo)}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-slate-600">Valores a receber <span className="text-slate-400">(sem recebimento confirmado)</span></span>
+            <span className="text-slate-600">Valores a receber <span className="text-slate-400">(ainda sem comprovante anexado)</span></span>
             <span className="font-medium">{currency(balanco.valoresAReceber)}</span>
           </div>
+          {(balanco.aguardandoConfirmacao || 0) > 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Recebimentos aguardando sua confirmação <span className="text-slate-400">(auditoria — o dinheiro já entrou, não soma no total)</span></span>
+              <span className="font-medium text-amber-700">{currency(balanco.aguardandoConfirmacao)}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm">
             <span className="text-slate-600">Mercadoria a entregar <span className="text-slate-400">(pré-vendas pendentes, a preço de venda — não entra no total)</span></span>
             <span className="font-medium text-amber-700">{currency(balanco.mercadoriaAEntregar || 0)}</span>
