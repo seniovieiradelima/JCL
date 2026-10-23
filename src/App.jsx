@@ -1661,7 +1661,7 @@ function AppInner({ perfil }) {
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'fiscal' && <FiscalModule notasFiscais={notasFiscais} setNotasFiscais={persistNotasFiscais} askSenha={askSenha} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toasts.length > 0 && (
@@ -9008,7 +9008,7 @@ function VisaoGeralModule({ vendas, estoque, pedidosCompra, recebimentos, expedi
   );
 }
 
-function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, setPagamentos, ajustesReposicao, setAjustesReposicao, askSenha, notify }) {
+function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, setPagamentos, ajustesReposicao, setAjustesReposicao, askConfirm, askSenha, notify }) {
   // Custo estimado das pendências por venda: calculado UMA vez (a auditoria achou a mesma
   // conta cara refeita 5 vezes por render, uma delas por linha da lista).
   const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
