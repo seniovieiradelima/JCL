@@ -8357,12 +8357,39 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     notify(`${total} repetido(s) removidos${apagadas > 0 ? ` e ${apagadas} extrato(s) que ficaram vazios foram apagados` : ''}.`);
   }
 
+  // Apagar um extrato importado (ex: período errado). A pergunta conta o que vai junto:
+  // o trabalho de conciliação se perde; as despesas de taxa de cartão lançadas POR ELE são
+  // removidas (senão reconciliar o extrato certo lançaria em dobro); confirmações de
+  // recebimento FICAM — o dinheiro entrou de verdade, e reconciliar depois não duplica nada.
   async function apagarConciliacao(c) {
     if (bloqueado()) return;
-    if (!(await askConfirm(`Apagar a conciliação de ${c.conta} (${c.periodo})? O trabalho de conferência dela será perdido — o extrato pode ser importado de novo depois.`))) return;
-    if (!(await setConciliacoes(conciliacoes.filter(x => x.id !== c.id)))) return;
+    const lanc = c.lancamentos || [];
+    const conciliados = lanc.filter(l => l.status === 'conciliado');
+    const ignorados = lanc.filter(l => l.status === 'ignorado').length;
+    const confirmaram = conciliados.filter(l => (l.vinculos || []).some(x => x.tipo === 'venda' && x.compId)).length;
+    const idsTaxas = lanc.map(l => l.taxaPagamentoId).filter(id => id && (pagamentos || []).some(p => p.id === id));
+    const totalTaxas = (pagamentos || []).filter(p => idsTaxas.includes(p.id)).reduce((a, p) => a + (p.valor || 0), 0);
+    const detalhes = [
+      `Ela tem ${lanc.length} lançamento(s)` + (conciliados.length > 0 ? `, ${conciliados.length} já conciliado(s) — esse trabalho será perdido` : '') + (ignorados > 0 ? `, ${ignorados} fora do sistema` : '') + '.',
+      confirmaram > 0 ? `Os recebimentos confirmados por ela (${confirmaram}) CONTINUAM confirmados — o dinheiro entrou; reconciliar o extrato certo depois não confirma em dobro.` : null,
+      idsTaxas.length > 0 ? `As ${idsTaxas.length} despesa(s) de taxa de cartão lançadas por ela (${currency(totalTaxas)}) serão REMOVIDAS de Pagamentos — ao reconciliar, elas são lançadas de novo, sem duplicar.` : null,
+      'O extrato pode ser importado de novo depois.',
+    ].filter(Boolean).join(' ');
+    if (!(await askConfirm(`Apagar a conciliação de ${c.conta} (${c.periodo})? ${detalhes}`))) return;
+    if (idsTaxas.length > 0 && setPagamentos) {
+      if (!(await setPagamentos(pagamentos.filter(p => !idsTaxas.includes(p.id))))) {
+        notify('⚠️ Não foi possível remover as taxas de cartão — NADA foi apagado. Tente de novo.');
+        return;
+      }
+    }
+    if (!(await setConciliacoes(conciliacoes.filter(x => x.id !== c.id)))) {
+      if (idsTaxas.length > 0) notify('⚠️ As taxas de cartão foram removidas, mas a conciliação NÃO foi apagada. Recarregue (F5) e apague de novo — as taxas não saem em dobro.');
+      return;
+    }
     if (abertaId === c.id) setAbertaId(null);
-    notify('Conciliação apagada');
+    notify(idsTaxas.length > 0
+      ? `Conciliação apagada — ${idsTaxas.length} taxa(s) de cartão (${currency(totalTaxas)}) removida(s) de Pagamentos junto`
+      : 'Conciliação apagada');
   }
 
   // Opções do vínculo manual (saídas: pagamentos e pedidos; entradas: vendas)
