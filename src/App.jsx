@@ -9148,6 +9148,8 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
   }
 
   const [semIntegradora, setSemIntegradora] = useState(false);
+  // Conferência separada por destino do depósito (cartão, PIX JCL, Stone...) — pedido do dono 27/10
+  const [filtroFormaConf, setFiltroFormaConf] = useState('todas');
   const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado && (!semIntegradora || !ehVendaIntegradora(v))), [vendasTodas, semIntegradora]);
   const [periodo, setPeriodo] = useState('mes');
   const [dataInicio, setDataInicio] = useState('');
@@ -9299,13 +9301,42 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
           for (const c of (v.comprovantes || [])) if (c.confirmado === false) pendentes.push({ v, c });
         }
         if (pendentes.length === 0) return null;
-        const soma = pendentes.reduce((a, x) => a + (x.c.valor || 0), 0);
+        const somaTotal = pendentes.reduce((a, x) => a + (x.c.valor || 0), 0);
+        // Agrupa pelo destino do depósito para conferir cada forma separadamente
+        const formaDe = (c) => c.formaRecebimentoNome || 'Sem forma informada';
+        const porForma = new Map();
+        for (const { c } of pendentes) {
+          const f = formaDe(c);
+          const atual = porForma.get(f) || { qtd: 0, soma: 0 };
+          atual.qtd += 1; atual.soma += c.valor || 0;
+          porForma.set(f, atual);
+        }
+        const formas = [...porForma.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+        const filtroAtivo = filtroFormaConf !== 'todas' && porForma.has(filtroFormaConf) ? filtroFormaConf : 'todas';
+        const visiveis = filtroAtivo === 'todas' ? pendentes : pendentes.filter(({ c }) => formaDe(c) === filtroAtivo);
+        const soma = visiveis.reduce((a, x) => a + (x.c.valor || 0), 0);
         return (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-5">
             <h3 className="text-sm font-medium text-amber-800 mb-1">Recebimentos aguardando confirmação</h3>
-            <p className="text-[11px] text-amber-700 mb-2">{pendentes.length} comprovante(s) somando {currency(soma)} — só entram nos indicadores depois que o usuário autorizado confirmar. A conciliação bancária acelera a conferência.</p>
+            <p className="text-[11px] text-amber-700 mb-2">
+              {filtroAtivo === 'todas'
+                ? `${pendentes.length} comprovante(s) somando ${currency(somaTotal)}`
+                : `${visiveis.length} comprovante(s) de ${filtroAtivo} somando ${currency(soma)} — de ${pendentes.length} no total (${currency(somaTotal)})`}
+              {' '}— só entram nos indicadores depois que o usuário autorizado confirmar. A conciliação bancária acelera a conferência.
+            </p>
+            {formas.length > 1 && (
+              <div className="flex gap-1.5 mb-2 flex-wrap">
+                <button onClick={() => setFiltroFormaConf('todas')} className={`text-[11px] px-2.5 py-1 rounded-full border ${filtroAtivo === 'todas' ? 'bg-amber-700 text-white border-amber-700' : 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'}`}>Todas ({pendentes.length})</button>
+                {formas.map(f => {
+                  const info = porForma.get(f);
+                  return (
+                    <button key={f} onClick={() => setFiltroFormaConf(f)} title={`${info.qtd} comprovante(s) somando ${currency(info.soma)}`} className={`text-[11px] px-2.5 py-1 rounded-full border ${filtroAtivo === f ? 'bg-amber-700 text-white border-amber-700' : 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'}`}>{f} ({info.qtd} · {currency(info.soma)})</button>
+                  );
+                })}
+              </div>
+            )}
             <div className="space-y-1">
-              {pendentes.map(({ v, c }) => (
+              {visiveis.map(({ v, c }) => (
                 <div key={c.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
                   <span className="min-w-0 truncate">{v.clienteNome} — <span className="font-medium">{currency(c.valor || 0)}</span>{c.formaRecebimentoNome ? ` · ${c.formaRecebimentoNome}` : ''}{c.pagamentoDireto ? ` · pago direto a ${c.terceiroNome}` : ''} · anexado em {formatDate(c.data)}{c.autor ? ` por ${c.autor}` : ''}</span>
                   {podeConfirmarRecebimento()
