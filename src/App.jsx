@@ -8331,6 +8331,33 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     if (!(await askConfirm(`Marcar "${l.descricao}" (${currency(l.valor)}) como fora do sistema? Use para movimentos que não passam pelo SGM (contas pessoais, impostos, tarifas...).`))) return;
     await atualizarLancamento(l.id, { status: 'ignorado', conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString() });
   }
+  // Fecha o extrato de uma vez: tudo que sobrou pendente vira "fora do sistema".
+  // A pergunta avisa da consequência: marcado assim conta como RESOLVIDO, então
+  // reimportar um extrato do mesmo período NÃO traz essas linhas de volta — se a
+  // intenção é refazer o extrato depois, o caminho certo é "Apagar conciliação".
+  async function marcarPendentesForaDoSistema() {
+    if (bloqueado()) return;
+    const pend = (aberta?.lancamentos || []).filter(l => l.status === 'pendente');
+    if (pend.length === 0) { notify('Nada pendente neste extrato.'); return; }
+    const entradas = pend.filter(l => l.tipo === 'entrada');
+    const saidas = pend.filter(l => l.tipo === 'saida');
+    if (!(await askConfirm(
+      `Marcar os ${pend.length} lançamento(s) pendentes de ${aberta.conta} (${aberta.periodo}) como fora do sistema?`
+      + ` São ${entradas.length} entrada(s) somando ${currency(entradas.reduce((a, l) => a + (l.valor || 0), 0))} e ${saidas.length} saída(s) somando ${currency(saidas.reduce((a, l) => a + (l.valor || 0), 0))}.`
+      + ' ATENÇÃO: marcados assim eles contam como resolvidos — se importar de novo um extrato do mesmo período, essas linhas NÃO voltam como pendentes.'
+      + ' Se a ideia é refazer este extrato depois (ex: período importado errado), use "Apagar conciliação" — aí a nova importação chega completa.'
+      + ' Dá para desfazer um a um no filtro "Fora do sistema".'
+    ))) return;
+    const agora = new Date().toISOString();
+    const next = conciliacoes.map(c => c.id !== aberta.id ? c : {
+      ...c,
+      lancamentos: c.lancamentos.map(l => l.status === 'pendente'
+        ? { ...l, status: 'ignorado', conciliadoPor: autorAtual, conciliadoEm: agora, emMassa: true }
+        : l),
+    });
+    if (!(await setConciliacoes(next))) return;
+    notify(`${pend.length} pendente(s) de ${aberta.conta} (${aberta.periodo}) marcados como fora do sistema — extrato fechado.`);
+  }
   async function desfazer(l) {
     if (bloqueado()) return;
     // A conciliação criou a despesa da taxa de cartão? Desfazer remove ela junto —
@@ -8339,7 +8366,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
       if (!(await setPagamentos(pagamentos.filter(p => p.id !== l.taxaPagamentoId)))) return;
       notify(`Despesa de ${currency(l.taxaLancada || 0)} (taxa de cartão) removida de Pagamentos junto com o desfazer`);
     }
-    await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined, taxaLancada: undefined, taxaPagamentoId: undefined });
+    await atualizarLancamento(l.id, { status: 'pendente', vinculos: [], conciliadoPor: undefined, conciliadoEm: undefined, taxaLancada: undefined, taxaPagamentoId: undefined, emMassa: undefined });
   }
   async function limparRepetidos() {
     if (bloqueado()) return;
@@ -8656,6 +8683,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
             </div>
             <div className="flex gap-2">
               <button onClick={conciliarAutomaticos} className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-md" title="Concilia tudo que tem correspondência única e exata de valor no sistema — respeitando os filtros ativos; o resto fica para o vínculo manual">Conciliar automáticos</button>
+              {resumo.pendentes > 0 && <button onClick={marcarPendentesForaDoSistema} className="text-xs text-slate-600 border border-slate-300 hover:bg-slate-50 px-2.5 py-1 rounded-md" title="Marca de uma vez todos os pendentes deste extrato como fora do sistema — para quando o que sobrou não passa pelo SGM. Para refazer um extrato importado errado, prefira Apagar conciliação">Pendentes → fora do sistema</button>}
               <button onClick={() => apagarConciliacao(aberta)} className="text-xs text-red-500 hover:bg-red-50 px-2 py-1 rounded-md">Apagar conciliação</button>
             </div>
           </div>
