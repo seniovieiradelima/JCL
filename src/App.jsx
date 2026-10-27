@@ -9195,28 +9195,60 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
     return margemAcumulada + entradasAcumuladas - saidasAcumuladas;
   }, [vendas, pagamentos, estimadoPorVenda]);
 
-  const vendasFiltradas = useMemo(() => {
-    if (periodo === 'tudo') return vendas;
+  // O mesmo recorte de período para vendas (pela data da venda) e recebimentos
+  // (pela data do comprovante) — um predicado só, os quadros nunca divergem.
+  const noPeriodo = useMemo(() => {
+    if (periodo === 'tudo') return () => true;
     if (periodo === 'personalizado') {
-      if (!dataInicio && !dataFim) return vendas;
+      if (!dataInicio && !dataFim) return () => true;
       const inicio = dataInicio ? new Date(dataInicio + 'T00:00:00') : null;
       const fim = dataFim ? new Date(dataFim + 'T23:59:59') : null;
-      return vendas.filter(v => {
-        const d = new Date(v.data);
-        return (!inicio || d >= inicio) && (!fim || d <= fim);
-      });
+      return (d) => (!inicio || d >= inicio) && (!fim || d <= fim);
     }
     const agora = new Date();
     if (periodo === 'mesPassado') {
       const inicio = new Date(agora.getFullYear(), agora.getMonth() - 1, 1);
       const fim = new Date(agora.getFullYear(), agora.getMonth(), 0, 23, 59, 59);
-      return vendas.filter(v => { const d = new Date(v.data); return d >= inicio && d <= fim; });
+      return (d) => d >= inicio && d <= fim;
     }
     const limite = new Date();
     if (periodo === '30dias') limite.setDate(agora.getDate() - 30);
     if (periodo === 'mes') { limite.setDate(1); limite.setHours(0, 0, 0, 0); }
-    return vendas.filter(v => new Date(v.data) >= limite);
-  }, [vendas, periodo, dataInicio, dataFim]);
+    return (d) => d >= limite;
+  }, [periodo, dataInicio, dataFim]);
+  // Mais novas em cima: sem rolar a tela, o dono vê primeiro a última venda e a margem dela.
+  const vendasFiltradas = useMemo(
+    () => vendas.filter(v => noPeriodo(new Date(v.data))).sort((a, b) => new Date(b.data) - new Date(a.data)),
+    [vendas, noPeriodo]
+  );
+
+  // Totais recebidos por forma de recebimento no período — conferência canal por canal
+  // (cartão, PIX JCL, Stone...). Conta TODO comprovante anexado (dinheiro que entrou),
+  // destacando a parte que ainda aguarda confirmação.
+  const recebimentosPorForma = useMemo(() => {
+    const map = new Map();
+    let total = 0;
+    for (const v of vendas) {
+      for (const c of (v.comprovantes || [])) {
+        if (!noPeriodo(new Date(c.data || v.data))) continue;
+        const forma = c.formaRecebimentoNome || 'Sem forma informada';
+        const atual = map.get(forma) || { total: 0, qtd: 0, aConfirmar: 0 };
+        atual.total += c.valor || 0;
+        atual.qtd += 1;
+        if (!comprovanteConfirmado(c)) atual.aConfirmar += c.valor || 0;
+        map.set(forma, atual);
+        total += c.valor || 0;
+      }
+    }
+    return { linhas: [...map.entries()].sort((a, b) => b[1].total - a[1].total), total };
+  }, [vendas, noPeriodo]);
+
+  // Pedidos de compra do mesmo período analisado, mais novos em cima.
+  const pedidosFiltrados = useMemo(
+    () => (pedidosCompra || []).filter(p => !p.cancelado && !p.anulado && noPeriodo(new Date(p.data)))
+      .sort((a, b) => new Date(b.data) - new Date(a.data)),
+    [pedidosCompra, noPeriodo]
+  );
 
   const totais = useMemo(() => {
     const totalVenda = vendasFiltradas.reduce((acc, v) => acc + v.totalVenda, 0);
@@ -9294,64 +9326,43 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
         </div>
       </div>
 
-      {(() => {
-        const pendentes = [];
-        for (const v of vendasTodas) {
-          if (v.anulado) continue;
-          for (const c of (v.comprovantes || [])) if (c.confirmado === false) pendentes.push({ v, c });
-        }
-        if (pendentes.length === 0) return null;
-        const somaTotal = pendentes.reduce((a, x) => a + (x.c.valor || 0), 0);
-        // Agrupa pelo destino do depósito para conferir cada forma separadamente
-        const formaDe = (c) => c.formaRecebimentoNome || 'Sem forma informada';
-        const porForma = new Map();
-        for (const { c } of pendentes) {
-          const f = formaDe(c);
-          const atual = porForma.get(f) || { qtd: 0, soma: 0 };
-          atual.qtd += 1; atual.soma += c.valor || 0;
-          porForma.set(f, atual);
-        }
-        const formas = [...porForma.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-        const filtroAtivo = filtroFormaConf !== 'todas' && porForma.has(filtroFormaConf) ? filtroFormaConf : 'todas';
-        const visiveis = filtroAtivo === 'todas' ? pendentes : pendentes.filter(({ c }) => formaDe(c) === filtroAtivo);
-        const soma = visiveis.reduce((a, x) => a + (x.c.valor || 0), 0);
-        return (
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-5">
-            <h3 className="text-sm font-medium text-amber-800 mb-1">Recebimentos aguardando confirmação</h3>
-            <p className="text-[11px] text-amber-700 mb-2">
-              {filtroAtivo === 'todas'
-                ? `${pendentes.length} comprovante(s) somando ${currency(somaTotal)}`
-                : `${visiveis.length} comprovante(s) de ${filtroAtivo} somando ${currency(soma)} — de ${pendentes.length} no total (${currency(somaTotal)})`}
-              {' '}— só entram nos indicadores depois que o usuário autorizado confirmar. A conciliação bancária acelera a conferência.
-            </p>
-            {formas.length > 1 && (
-              <div className="flex gap-1.5 mb-2 flex-wrap">
-                <button onClick={() => setFiltroFormaConf('todas')} className={`text-[11px] px-2.5 py-1 rounded-full border ${filtroAtivo === 'todas' ? 'bg-amber-700 text-white border-amber-700' : 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'}`}>Todas ({pendentes.length})</button>
-                {formas.map(f => {
-                  const info = porForma.get(f);
-                  return (
-                    <button key={f} onClick={() => setFiltroFormaConf(f)} title={`${info.qtd} comprovante(s) somando ${currency(info.soma)}`} className={`text-[11px] px-2.5 py-1 rounded-full border ${filtroAtivo === f ? 'bg-amber-700 text-white border-amber-700' : 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'}`}>{f} ({info.qtd} · {currency(info.soma)})</button>
-                  );
-                })}
-              </div>
-            )}
-            <div className="space-y-1">
-              {visiveis.map(({ v, c }) => (
-                <div key={c.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
-                  <span className="min-w-0 truncate">{v.clienteNome} — <span className="font-medium">{currency(c.valor || 0)}</span>{c.formaRecebimentoNome ? ` · ${c.formaRecebimentoNome}` : ''}{c.pagamentoDireto ? ` · pago direto a ${c.terceiroNome}` : ''} · anexado em {formatDate(c.data)}{c.autor ? ` por ${c.autor}` : ''}</span>
-                  {podeConfirmarRecebimento()
-                    ? <button onClick={() => confirmarRecebimentoFin(v, c)} className="shrink-0 text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
-                    : <span className="shrink-0 text-[10px] text-amber-600">só o usuário autorizado</span>}
-                </div>
-              ))}
-            </div>
+      <div className="flex gap-2 mb-2 flex-wrap">
+        {[['mes', 'Este mês'], ['mesPassado', 'Mês passado'], ['30dias', 'Últimos 30 dias'], ['tudo', 'Tudo'], ['personalizado', 'Período personalizado']].map(([v, l]) => (
+          <button key={v} onClick={() => setPeriodo(v)} className={`text-xs px-3 py-1.5 rounded-full border ${periodo === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
+        ))}
+      </div>
+      {periodo === 'personalizado' && (
+        <div className="flex flex-wrap items-center gap-2 mb-4 bg-white border border-slate-200 rounded-lg p-3">
+          <label className="text-xs text-slate-500">De</label>
+          <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          <label className="text-xs text-slate-500">Até</label>
+          <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
+          {(dataInicio || dataFim) && (
+            <button onClick={() => { setDataInicio(''); setDataFim(''); }} className="text-xs text-slate-400 hover:text-slate-600">Limpar</button>
+          )}
+        </div>
+      )}
+      <div className="mb-2" />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <p className="text-xs text-slate-500">Total vendido no período</p>
+          <p className="text-xl font-semibold">{currency(totais.totalVenda)}</p>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+          <p className="text-xs text-emerald-700">Margem de contribuição (zera todo mês)</p>
+          <p className="text-xl font-semibold text-emerald-700">{currency(totais.margemContribuicao)}</p>
+          <div className="border-t border-emerald-200 mt-2 pt-2">
+            <p className="text-xs text-emerald-700">Saldo da margem de contribuição</p>
+            <p className={`text-lg font-semibold ${saldoMargemContribuicao < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{currency(saldoMargemContribuicao)}</p>
+            <p className="text-[11px] text-emerald-600">Acumulado desde sempre — cresce com cada venda e reduz com cada pagamento. Não zera na virada do mês.</p>
           </div>
-        );
-      })()}
+        </div>
+      </div>
 
       <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
         <h3 className="text-sm font-medium mb-1">Balanço da distribuidora</h3>
-        <p className="text-[11px] text-slate-400 mb-3">Retrato do momento atual (não muda com o filtro de período abaixo)</p>
+        <p className="text-[11px] text-slate-400 mb-3">Retrato do momento atual (não muda com o filtro de período)</p>
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-slate-600">Valor do estoque disponível <span className="text-slate-400">(a custo)</span></span>
@@ -9388,40 +9399,6 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
 
       <GraficoImobilizado indicadores={indicadores} />
 
-      <div className="flex gap-2 mb-2 flex-wrap">
-        {[['mes', 'Este mês'], ['mesPassado', 'Mês passado'], ['30dias', 'Últimos 30 dias'], ['tudo', 'Tudo'], ['personalizado', 'Período personalizado']].map(([v, l]) => (
-          <button key={v} onClick={() => setPeriodo(v)} className={`text-xs px-3 py-1.5 rounded-full border ${periodo === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500'}`}>{l}</button>
-        ))}
-      </div>
-      {periodo === 'personalizado' && (
-        <div className="flex flex-wrap items-center gap-2 mb-4 bg-white border border-slate-200 rounded-lg p-3">
-          <label className="text-xs text-slate-500">De</label>
-          <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
-          <label className="text-xs text-slate-500">Até</label>
-          <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-sm" />
-          {(dataInicio || dataFim) && (
-            <button onClick={() => { setDataInicio(''); setDataFim(''); }} className="text-xs text-slate-400 hover:text-slate-600">Limpar</button>
-          )}
-        </div>
-      )}
-      <div className="mb-2" />
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
-        <div className="bg-white border border-slate-200 rounded-lg p-4">
-          <p className="text-xs text-slate-500">Total vendido no período</p>
-          <p className="text-xl font-semibold">{currency(totais.totalVenda)}</p>
-        </div>
-        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
-          <p className="text-xs text-emerald-700">Margem de contribuição (zera todo mês)</p>
-          <p className="text-xl font-semibold text-emerald-700">{currency(totais.margemContribuicao)}</p>
-          <div className="border-t border-emerald-200 mt-2 pt-2">
-            <p className="text-xs text-emerald-700">Saldo da margem de contribuição</p>
-            <p className={`text-lg font-semibold ${saldoMargemContribuicao < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{currency(saldoMargemContribuicao)}</p>
-            <p className="text-[11px] text-emerald-600">Acumulado desde sempre — cresce com cada venda e reduz com cada pagamento. Não zera na virada do mês.</p>
-          </div>
-        </div>
-      </div>
-
       {custoPorCategoria.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
           <h3 className="text-sm font-medium mb-2">Custo por categoria no período</h3>
@@ -9435,6 +9412,108 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
           </div>
         </div>
       )}
+
+      {recebimentosPorForma.linhas.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 mb-5">
+          <h3 className="text-sm font-medium mb-1">Recebimentos por forma no período</h3>
+          <p className="text-[11px] text-slate-400 mb-2">Comprovantes anexados às vendas, pela data de cada comprovante — dinheiro que entrou, mesmo aguardando confirmação (essa parte aparece destacada).</p>
+          <div className="space-y-1.5">
+            {recebimentosPorForma.linhas.map(([forma, info]) => (
+              <div key={forma} className="flex justify-between items-baseline text-sm gap-2">
+                <span className="text-slate-600 min-w-0 truncate">{forma} <span className="text-slate-400 text-xs">({info.qtd} comprovante{info.qtd > 1 ? 's' : ''})</span></span>
+                <span className="text-right shrink-0">
+                  <span className="font-medium">{currency(info.total)}</span>
+                  {info.aConfirmar > 0 && <span className="text-[11px] text-amber-600 ml-2">({currency(info.aConfirmar)} a confirmar)</span>}
+                </span>
+              </div>
+            ))}
+            <div className="flex justify-between text-sm pt-2 border-t border-slate-200">
+              <span className="text-slate-800 font-medium">Total recebido no período</span>
+              <span className="font-semibold">{currency(recebimentosPorForma.total)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(() => {
+        // Duas esperas distintas, um cartão só: EFETIVAÇÃO (venda com saldo ainda sem
+        // comprovante — o dinheiro nem entrou) e CONFIRMAÇÃO (comprovante anexado
+        // aguardando o usuário autorizado conferir). Pedido do dono em 27/10.
+        const pendentes = [];
+        const emAberto = [];
+        for (const v of vendas) {
+          for (const c of (v.comprovantes || [])) if (c.confirmado === false) pendentes.push({ v, c });
+          const anexado = (v.comprovantes || []).reduce((a, c) => a + (c.valor || 0), 0);
+          const falta = (v.totalVenda || 0) - anexado;
+          if (falta > 0.01) emAberto.push({ v, falta });
+        }
+        if (pendentes.length === 0 && emAberto.length === 0) return null;
+        emAberto.sort((a, b) => String(a.v.data).localeCompare(String(b.v.data)));
+        const somaAberto = emAberto.reduce((a, x) => a + x.falta, 0);
+        const somaTotal = pendentes.reduce((a, x) => a + (x.c.valor || 0), 0);
+        // Agrupa pelo destino do depósito para conferir cada forma separadamente
+        const formaDe = (c) => c.formaRecebimentoNome || 'Sem forma informada';
+        const porForma = new Map();
+        for (const { c } of pendentes) {
+          const f = formaDe(c);
+          const atual = porForma.get(f) || { qtd: 0, soma: 0 };
+          atual.qtd += 1; atual.soma += c.valor || 0;
+          porForma.set(f, atual);
+        }
+        const formas = [...porForma.keys()].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+        const filtroAtivo = filtroFormaConf !== 'todas' && porForma.has(filtroFormaConf) ? filtroFormaConf : 'todas';
+        const visiveis = filtroAtivo === 'todas' ? pendentes : pendentes.filter(({ c }) => formaDe(c) === filtroAtivo);
+        const soma = visiveis.reduce((a, x) => a + (x.c.valor || 0), 0);
+        return (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-5">
+            <h3 className="text-sm font-medium text-amber-800 mb-2">Recebimentos aguardando efetivação e confirmação</h3>
+            {emAberto.length > 0 && (
+              <div className={pendentes.length > 0 ? 'mb-3 pb-3 border-b border-amber-200' : ''}>
+                <p className="text-[11px] text-amber-700 mb-1.5"><span className="font-medium">Aguardando efetivação</span> — {emAberto.length} venda(s) com {currency(somaAberto)} ainda sem comprovante anexado (dinheiro a receber), da mais antiga para a mais nova:</p>
+                <div className="space-y-1 max-h-72 overflow-auto">
+                  {emAberto.map(({ v, falta }) => (
+                    <div key={v.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
+                      <span className="min-w-0 truncate">{v.clienteNome} · venda de {formatDate(v.data)} ({currency(v.totalVenda)})</span>
+                      <span className="shrink-0 font-medium text-amber-700">falta {currency(falta)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {pendentes.length > 0 && (
+              <div>
+                <p className="text-[11px] text-amber-700 mb-2">
+                  <span className="font-medium">Aguardando confirmação</span> — {filtroAtivo === 'todas'
+                    ? `${pendentes.length} comprovante(s) somando ${currency(somaTotal)}`
+                    : `${visiveis.length} comprovante(s) de ${filtroAtivo} somando ${currency(soma)} — de ${pendentes.length} no total (${currency(somaTotal)})`}
+                  {' '}— só entram nos indicadores depois que o usuário autorizado confirmar. A conciliação bancária acelera a conferência.
+                </p>
+                {formas.length > 1 && (
+                  <div className="flex gap-1.5 mb-2 flex-wrap">
+                    <button onClick={() => setFiltroFormaConf('todas')} className={`text-[11px] px-2.5 py-1 rounded-full border ${filtroAtivo === 'todas' ? 'bg-amber-700 text-white border-amber-700' : 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'}`}>Todas ({pendentes.length})</button>
+                    {formas.map(f => {
+                      const info = porForma.get(f);
+                      return (
+                        <button key={f} onClick={() => setFiltroFormaConf(f)} title={`${info.qtd} comprovante(s) somando ${currency(info.soma)}`} className={`text-[11px] px-2.5 py-1 rounded-full border ${filtroAtivo === f ? 'bg-amber-700 text-white border-amber-700' : 'bg-white border-amber-300 text-amber-800 hover:bg-amber-100'}`}>{f} ({info.qtd} · {currency(info.soma)})</button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="space-y-1 max-h-72 overflow-auto">
+                  {visiveis.map(({ v, c }) => (
+                    <div key={c.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
+                      <span className="min-w-0 truncate">{v.clienteNome} — <span className="font-medium">{currency(c.valor || 0)}</span>{c.formaRecebimentoNome ? ` · ${c.formaRecebimentoNome}` : ''}{c.pagamentoDireto ? ` · pago direto a ${c.terceiroNome}` : ''} · anexado em {formatDate(c.data)}{c.autor ? ` por ${c.autor}` : ''}</span>
+                      {podeConfirmarRecebimento()
+                        ? <button onClick={() => confirmarRecebimentoFin(v, c)} className="shrink-0 text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
+                        : <span className="shrink-0 text-[10px] text-amber-600">só o usuário autorizado</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <h3 className="text-sm font-medium text-slate-500 mb-2">Detalhamento por venda (custo x venda)</h3>
       <p className="text-[11px] text-slate-400 mb-2">Pré-venda aguardando mercadoria entra com custo estimado — o do pedido a caminho ou, sem pedido, o maior entre referência e última compra. O custo real substitui a estimativa na baixa.</p>
@@ -9518,11 +9597,11 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
         ))}
       </div>
 
-      {(pedidosCompra || []).length > 0 && (
+      {pedidosFiltrados.length > 0 && (
         <>
-          <h3 className="text-sm font-medium text-slate-500 mb-2 mt-5">Pedidos de compra (abatem o saldo de reposição)</h3>
+          <h3 className="text-sm font-medium text-slate-500 mb-2 mt-5">Pedidos de compra no período (abatem o saldo de reposição)</h3>
           <div className="space-y-2">
-            {pedidosCompra.filter(p => !p.cancelado && !p.anulado).map(p => (
+            {pedidosFiltrados.map(p => (
               <div key={p.id} className="bg-white border border-slate-200 rounded-lg p-3 flex justify-between items-center text-sm">
                 <div>
                   <p className="font-medium">{p.fornecedorNome}</p>
