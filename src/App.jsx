@@ -813,7 +813,15 @@ function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, aju
   const mapa = mapaCustoUnit || mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos);
 
   const totalAjustes = (ajustesReposicao || []).filter(a => !a.anulado).reduce((acc, a) => acc + a.valor, 0);
-  const cmvAcumulado = ativas.reduce((acc, v) => acc + v.totalCusto + custoEstimadoPendenciasMapa(v, mapa), 0);
+  // O custo estimado do que falta entregar cumpre dois papéis: entra no CMV (reposição a
+  // reservar em caixa) e é a dívida de mercadoria com clientes, que ABATE o imobilizado —
+  // a mercadoria pré-vendida está contada no estoque (disponível ou a caminho) mas já tem dono.
+  let cmvAcumulado = 0, custoMercadoriaAEntregar = 0;
+  for (const v of ativas) {
+    const custoPend = custoEstimadoPendenciasMapa(v, mapa);
+    cmvAcumulado += v.totalCusto + custoPend;
+    custoMercadoriaAEntregar += custoPend;
+  }
   const pedidosAcumulado = pedidosValidos.reduce((acc, p) => acc + p.valorTotal, 0);
   const saldoReposicao = cmvAcumulado - pedidosAcumulado + totalAjustes;
 
@@ -852,15 +860,16 @@ function calcularIndicadores({ estoque, pedidosCompra, recebimentos, vendas, aju
     valoresAReceber += Math.max(0, v.totalVenda - comprovado);
   }
 
-  // Mercadoria a entregar = débito de mercadoria com clientes: itens vendidos (muitas vezes
-  // já pagos) ainda pendentes de entrega, a preço de venda. Informativo — não entra no total.
+  // Mercadoria a entregar a preço de venda: informativo (promessa aos clientes). O abate do
+  // total é pelo CUSTO (custoMercadoriaAEntregar) — simetria com o estoque, que conta a custo;
+  // a diferença é margem, que não é dívida (o que o cliente ainda deve está em valoresAReceber).
   const mercadoriaAEntregar = ativas.reduce((acc, v) =>
     acc + (v.itens || []).reduce((a, it) => a + (it.quantidadePendente || 0) * (it.precoVendaUnitario || 0), 0), 0);
 
   return {
     valorEstoqueDisponivel, valorEstoqueAguardando, cmvAcumulado, pedidosAcumulado, totalAjustes,
-    saldoReposicao, valoresAReceber, aguardandoConfirmacao, mercadoriaAEntregar,
-    totalImobilizado: valorEstoqueDisponivel + valorEstoqueAguardando + saldoReposicao + valoresAReceber,
+    saldoReposicao, valoresAReceber, aguardandoConfirmacao, mercadoriaAEntregar, custoMercadoriaAEntregar,
+    totalImobilizado: valorEstoqueDisponivel + valorEstoqueAguardando + saldoReposicao + valoresAReceber - custoMercadoriaAEntregar,
   };
 }
 
@@ -1376,6 +1385,7 @@ function AppInner({ perfil }) {
           valoresAReceber: arred(ind.valoresAReceber),
           aguardandoConfirmacao: arred(ind.aguardandoConfirmacao || 0),
           mercadoriaAEntregar: arred(ind.mercadoriaAEntregar),
+          custoMercadoriaAEntregar: arred(ind.custoMercadoriaAEntregar || 0),
           totalImobilizado: arred(ind.totalImobilizado),
           gravadoEm: agora.toISOString(),
           autor: autorAtual,
@@ -1387,6 +1397,7 @@ function AppInner({ perfil }) {
           existente.valorEstoqueAguardando === registro.valorEstoqueAguardando &&
           existente.saldoReposicao === registro.saldoReposicao &&
           existente.mercadoriaAEntregar === registro.mercadoriaAEntregar &&
+          (existente.custoMercadoriaAEntregar || 0) === registro.custoMercadoriaAEntregar &&
           (existente.aguardandoConfirmacao || 0) === registro.aguardandoConfirmacao &&
           existente.valoresAReceber === registro.valoresAReceber) return;
         const proximos = existente ? indicadores.map(i => (i.id === idDia ? registro : i)) : [...indicadores, registro];
@@ -9387,9 +9398,12 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
             </div>
           )}
           <div className="flex justify-between text-sm">
-            <span className="text-slate-600">Mercadoria a entregar <span className="text-slate-400">(pré-vendas pendentes, a preço de venda — não entra no total)</span></span>
-            <span className="font-medium text-amber-700">{currency(balanco.mercadoriaAEntregar || 0)}</span>
+            <span className="text-slate-600">Mercadoria a entregar <span className="text-slate-400">(pré-vendas pendentes, a custo — já tem dono, abate o total)</span></span>
+            <span className="font-medium text-amber-700">− {currency(balanco.custoMercadoriaAEntregar || 0)}</span>
           </div>
+          {(balanco.custoMercadoriaAEntregar || 0) > 0 && (
+            <p className="text-[11px] text-slate-400 -mt-1">Vendida por {currency(balanco.mercadoriaAEntregar || 0)} — a diferença é a margem dessas vendas, que não é dívida: o que o cliente ainda deve já está em "valores a receber".</p>
+          )}
           <div className="flex justify-between text-sm pt-2 border-t border-slate-200">
             <span className="text-slate-800 font-medium">Total imobilizado</span>
             <span className="font-semibold text-base">{currency(totalImobilizado)}</span>
