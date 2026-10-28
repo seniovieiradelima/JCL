@@ -1788,18 +1788,23 @@ function StatCard({ label, value, highlight, warn }) {
 }
 
 // Barra reutilizável de busca + filtro (opcional) + ordenação (opcional)
-function FiltroBar({ busca, setBusca, buscaPlaceholder, filtroValue, setFiltro, filtroOptions, ordenacaoValue, setOrdenacao, ordenacaoOptions }) {
+function FiltroBar({ busca, setBusca, buscaPlaceholder, filtroValue, setFiltro, filtroOptions, filtro2Value, setFiltro2, filtro2Options, ordenacaoValue, setOrdenacao, ordenacaoOptions }) {
   return (
     <div className="flex flex-col gap-2 mb-3">
       <div className="relative">
         <Search size={15} className="absolute left-2.5 top-2.5 text-slate-400" />
         <input value={busca} onChange={e => setBusca(e.target.value)} placeholder={buscaPlaceholder || 'Buscar...'} className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400" />
       </div>
-      {(filtroOptions || ordenacaoOptions) && (
+      {(filtroOptions || filtro2Options || ordenacaoOptions) && (
         <div className="flex flex-col sm:flex-row gap-2">
           {filtroOptions && (
             <select value={filtroValue} onChange={e => setFiltro(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
               {filtroOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          )}
+          {filtro2Options && (
+            <select value={filtro2Value} onChange={e => setFiltro2(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+              {filtro2Options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           )}
           {ordenacaoOptions && (
@@ -4830,7 +4835,16 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
 
   const [busca, setBusca] = useState('');
   const [filtroComprovante, setFiltroComprovante] = useState('Todos');
+  const [filtroForma, setFiltroForma] = useState('Todas');
   const [ordenacao, setOrdenacao] = useState('recente');
+
+  // Formas de recebimento que aparecem nos comprovantes — o filtro só oferece o que existe
+  const formasUsadas = useMemo(() => {
+    const s = new Set();
+    for (const v of vendas) for (const c of (v.comprovantes || [])) s.add(c.formaRecebimentoNome || 'Sem forma informada');
+    return [...s].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [vendas]);
+  const filtroFormaAtivo = filtroForma !== 'Todas' && formasUsadas.includes(filtroForma) ? filtroForma : 'Todas';
 
   const [filtroAnulado, setFiltroAnulado] = useState('Todas');
   const vendasFiltradas = useMemo(() => {
@@ -4839,6 +4853,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     if (filtroComprovante === 'Sem') lista = lista.filter(v => !(v.comprovantes || []).length);
     if (filtroComprovante === 'AConfirmar') lista = lista.filter(v => (v.comprovantes || []).some(c => c.confirmado === false));
     if (filtroComprovante === 'Direto') lista = lista.filter(v => (v.comprovantes || []).some(c => c.pagamentoDireto));
+    if (filtroFormaAtivo !== 'Todas') lista = lista.filter(v => (v.comprovantes || []).some(c => (c.formaRecebimentoNome || 'Sem forma informada') === filtroFormaAtivo));
     if (filtroAnulado === 'Ativas') lista = lista.filter(v => !v.anulado);
     if (filtroAnulado === 'Anuladas') lista = lista.filter(v => v.anulado);
     if (filtroAnulado === 'Pendentes') lista = lista.filter(v => !v.anulado && (v.itens || []).some(it => (it.quantidadePendente || 0) > 0));
@@ -4852,7 +4867,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
         default: return 0;
       }
     });
-  }, [vendas, busca, filtroComprovante, filtroAnulado, ordenacao]);
+  }, [vendas, busca, filtroComprovante, filtroFormaAtivo, filtroAnulado, ordenacao]);
 
   async function finalizarVenda() {
     if (!clienteId || carrinho.length === 0) return;
@@ -5182,6 +5197,8 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
         busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por cliente..."
         filtroValue={filtroComprovante} setFiltro={setFiltroComprovante}
         filtroOptions={[{ value: 'Todos', label: 'Todas as vendas' }, { value: 'AConfirmar', label: 'Recebimento a confirmar' }, { value: 'Direto', label: 'Pagamento direto a terceiro' }, { value: 'Com', label: 'Com comprovante' }, { value: 'Sem', label: 'Sem comprovante' }]}
+        filtro2Value={filtroFormaAtivo} setFiltro2={setFiltroForma}
+        filtro2Options={formasUsadas.length > 0 ? [{ value: 'Todas', label: 'Todas as formas de recebimento' }, ...formasUsadas.map(f => ({ value: f, label: `Recebido via ${f}` }))] : null}
         ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
         ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }, { value: 'cliente', label: 'Cliente (A-Z)' }]}
       />
