@@ -9480,7 +9480,8 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
         const soma = visiveis.reduce((a, x) => a + (x.c.valor || 0), 0);
         return (
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-5">
-            <h3 className="text-sm font-medium text-amber-800 mb-2">Recebimentos aguardando efetivação e confirmação</h3>
+            <h3 className="text-sm font-medium text-amber-800 mb-1">Recebimentos aguardando efetivação e confirmação</h3>
+            <p className="text-xs text-amber-800 mb-2">Total aguardando: <span className="font-semibold">{currency(somaAberto + somaTotal)}</span>{somaAberto > 0 && somaTotal > 0 ? <span className="text-amber-700"> — {currency(somaAberto)} sem comprovante + {currency(somaTotal)} a confirmar</span> : null}</p>
             {emAberto.length > 0 && (
               <div className={pendentes.length > 0 ? 'mb-3 pb-3 border-b border-amber-200' : ''}>
                 <p className="text-[11px] text-amber-700 mb-1.5"><span className="font-medium">Aguardando efetivação</span> — {emAberto.length} venda(s) com {currency(somaAberto)} ainda sem comprovante anexado (dinheiro a receber), da mais antiga para a mais nova:</p>
