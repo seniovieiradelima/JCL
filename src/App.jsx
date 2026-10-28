@@ -9323,6 +9323,21 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
           <span>Ajustes: {currency(totalAjustes)}</span>
         </div>
         <p className="text-[11px] text-slate-400 mt-1">{saldoReposicao.saldo < 0 ? 'Os pedidos de compra já ultrapassaram o custo do que foi vendido — esse valor negativo indica que foi gasto mais do que a reposição gerada até agora.' : 'Esse valor deve ficar reservado no banco para repor o que já foi vendido.'}</p>
+        {(() => {
+          // A conferência do dono: do valor a manter em caixa, tira o que ainda não entrou
+          // (venda sem comprovante) nem foi conferido (comprovante sem confirmação) — o
+          // resultado é o que deve aparecer no saldo bancário hoje. Mesmo total aguardando
+          // dos outros dois quadros, pelo valor de venda.
+          const aguardandoTotal = (indicadoresAgora.valoresAReceber || 0) + (indicadoresAgora.aguardandoConfirmacao || 0);
+          if (aguardandoTotal <= 0) return null;
+          const noBanco = saldoReposicao.saldo - aguardandoTotal;
+          return (
+            <div className="mt-3 pt-3 border-t border-amber-200 flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs text-slate-600">{currency(saldoReposicao.saldo)} a manter − {currency(aguardandoTotal)} aguardando efetivação e confirmação =</span>
+              <span className={`text-lg font-semibold ${noBanco < 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{currency(noBanco)} <span className="text-[11px] font-normal text-slate-500">a ter no saldo bancário</span></span>
+            </div>
+          );
+        })()}
 
         <div className="mt-3 pt-3 border-t border-amber-200">
           <button onClick={() => setShowAjuste(s => !s)} className="text-xs bg-white border border-amber-300 hover:bg-amber-100 text-amber-700 px-2.5 py-1.5 rounded-md">
@@ -9408,13 +9423,13 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
             <span className="text-slate-600">Valores a receber <span className="text-slate-400">(ainda sem comprovante anexado)</span></span>
             <span className="font-medium">{currency(balanco.valoresAReceber)}</span>
           </div>
-          {(balanco.aguardandoConfirmacao || 0) > 0 && (
+          {((balanco.aguardandoConfirmacao || 0) > 0 || (balanco.valoresAReceber || 0) > 0) && (
             <>
               <div className="flex justify-between text-sm">
-                <span className="text-slate-600">Recebimentos aguardando sua confirmação <span className="text-slate-400">(auditoria — o dinheiro já entrou, não soma no total)</span></span>
-                <span className="font-medium text-amber-700">{currency(balanco.aguardandoConfirmacao)}</span>
+                <span className="text-slate-600">Total aguardando efetivação e confirmação <span className="text-slate-400">(informativo — não soma no total)</span></span>
+                <span className="font-medium text-amber-700">{currency((balanco.valoresAReceber || 0) + (balanco.aguardandoConfirmacao || 0))}</span>
               </div>
-              <p className="text-[11px] text-slate-400 -mt-1">Somando os valores a receber, o total aguardando é {currency((balanco.valoresAReceber || 0) + balanco.aguardandoConfirmacao)} — o mesmo do quadro de recebimentos pendentes.</p>
+              <p className="text-[11px] text-slate-400 -mt-1">{currency(balanco.valoresAReceber || 0)} aguardando efetivação (os valores a receber acima) + {currency(balanco.aguardandoConfirmacao || 0)} aguardando sua confirmação (dinheiro que já entrou, fora da soma) — o mesmo total do quadro de recebimentos pendentes.</p>
             </>
           )}
           <div className="flex justify-between text-sm">
