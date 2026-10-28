@@ -9392,10 +9392,13 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
             <span className="font-medium">{currency(balanco.valoresAReceber)}</span>
           </div>
           {(balanco.aguardandoConfirmacao || 0) > 0 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-600">Recebimentos aguardando sua confirmação <span className="text-slate-400">(auditoria — o dinheiro já entrou, não soma no total)</span></span>
-              <span className="font-medium text-amber-700">{currency(balanco.aguardandoConfirmacao)}</span>
-            </div>
+            <>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Recebimentos aguardando sua confirmação <span className="text-slate-400">(auditoria — o dinheiro já entrou, não soma no total)</span></span>
+                <span className="font-medium text-amber-700">{currency(balanco.aguardandoConfirmacao)}</span>
+              </div>
+              <p className="text-[11px] text-slate-400 -mt-1">Somando os valores a receber, o total aguardando é {currency((balanco.valoresAReceber || 0) + balanco.aguardandoConfirmacao)} — o mesmo do quadro de recebimentos pendentes.</p>
+            </>
           )}
           <div className="flex justify-between text-sm">
             <span className="text-slate-600">Mercadoria a entregar <span className="text-slate-400">(pré-vendas pendentes, a custo — já tem dono, abate o total)</span></span>
