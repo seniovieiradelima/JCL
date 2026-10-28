@@ -1672,7 +1672,7 @@ function AppInner({ perfil }) {
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'fiscal' && <FiscalModule notasFiscais={notasFiscais} setNotasFiscais={persistNotasFiscais} askSenha={askSenha} notify={notify} />}
         {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
-        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
+        {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} formasRecebimento={formasRecebimento} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
       </main>
 
       {toasts.length > 0 && (
@@ -1854,6 +1854,33 @@ let confirmadoresAtual = ['seniovieira@gmail.com'];
 function podeConfirmarRecebimento() {
   const eu = String(autorAtual || '').toLowerCase().trim();
   return !!eu && confirmadoresAtual.some(e => String(e).toLowerCase().trim() === eu);
+}
+
+// Regra do dono (28/10): corrigir a FORMA de recebimento de um comprovante já registrado
+// (ex.: estava "PIX terceiros", era dinheiro) é restrito ao mesmo usuário autorizado da
+// confirmação. A troca fica gravada no próprio comprovante (alteracoesForma: de/para/por/em).
+// ATENÇÃO: `vendas` aqui precisa ser a lista COMPLETA persistida — nunca uma lista filtrada,
+// porque setVendas grava a coleção inteira.
+async function alterarFormaComprovante({ venda, comp, formaId, formasRecebimento, vendas, setVendas, askConfirm, notify }) {
+  if (!podeConfirmarRecebimento()) {
+    notify(`⚠️ Somente o usuário autorizado altera a forma de recebimento (hoje: ${confirmadoresAtual.join(', ')}).`);
+    return;
+  }
+  const forma = formasRecebimento.find(f => f.id === formaId);
+  const novoNome = forma ? forma.nome : '';
+  const anterior = comp.formaRecebimentoNome || '';
+  if (novoNome === anterior) return;
+  const rotulo = (n) => n || 'Sem forma informada';
+  if (!(await askConfirm(`Mudar a forma de recebimento do comprovante de ${currency(comp.valor || 0)} (${venda.clienteNome}) de "${rotulo(anterior)}" para "${rotulo(novoNome)}"?`))) return;
+  const next = vendas.map(v => v.id !== venda.id ? v : {
+    ...v,
+    comprovantes: (v.comprovantes || []).map(c => c.id !== comp.id ? c : {
+      ...c, formaRecebimentoId: forma ? forma.id : null, formaRecebimentoNome: novoNome,
+      alteracoesForma: [...(c.alteracoesForma || []), { de: rotulo(anterior), para: rotulo(novoNome), por: autorAtual, em: new Date().toISOString() }],
+    }),
+  });
+  if (!(await setVendas(next))) return;
+  notify(`Forma de recebimento alterada para ${rotulo(novoNome)}`);
 }
 
 // Detecta se uma venda consome estoque físico que as pré-vendas de outros clientes contavam
@@ -4836,6 +4863,7 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
   const [busca, setBusca] = useState('');
   const [filtroComprovante, setFiltroComprovante] = useState('Todos');
   const [filtroForma, setFiltroForma] = useState('Todas');
+  const [editandoForma, setEditandoForma] = useState(null);
   const [ordenacao, setOrdenacao] = useState('recente');
 
   // Formas de recebimento que aparecem nos comprovantes — o filtro só oferece o que existe
@@ -5267,7 +5295,24 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
                       {v.comprovantes.map(c => (
                         <div key={c.id} className="relative w-16">
                           <ComprovanteArquivo comp={c} className="w-16 h-16 object-cover rounded-md" />
-                          {c.formaRecebimentoNome && <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={c.formaRecebimentoNome}>{c.formaRecebimentoNome}</p>}
+                          {editandoForma === c.id ? (
+                            <select autoFocus defaultValue={c.formaRecebimentoId || ''}
+                              onChange={e => { setEditandoForma(null); alterarFormaComprovante({ venda: v, comp: c, formaId: e.target.value, formasRecebimento, vendas, setVendas, askConfirm, notify }); }}
+                              onBlur={() => setEditandoForma(null)}
+                              className="w-full text-[9px] border border-slate-300 rounded mt-0.5 bg-white">
+                              <option value="">Sem forma informada</option>
+                              {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+                            </select>
+                          ) : (c.formaRecebimentoNome || podeConfirmarRecebimento()) && (
+                            <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={(() => {
+                              const alts = c.alteracoesForma || [];
+                              const ult = alts[alts.length - 1];
+                              return (c.formaRecebimentoNome || 'Sem forma informada') + (ult ? ` — alterada de ${ult.de} por ${ult.por} em ${formatDate(ult.em)}` : '');
+                            })()}>
+                              {c.formaRecebimentoNome || 'sem forma'}
+                              {podeConfirmarRecebimento() && <button onClick={() => setEditandoForma(c.id)} title="Mudar a forma de recebimento (só o usuário autorizado)" className="ml-0.5 inline-flex align-middle"><Pencil size={9} className="text-slate-300 hover:text-slate-600" /></button>}
+                            </p>
+                          )}
                           {c.valor > 0 && <p className="text-[9px] text-emerald-600 text-center leading-tight">{currency(c.valor)}</p>}
                           {c.pagamentoDireto && <p className="text-[9px] text-sky-700 text-center leading-tight truncate" title={`Pago direto a ${c.terceiroNome} — vira despesa (${c.terceiroCategoria}) ao confirmar`}>→ {c.terceiroNome}</p>}
                           {c.confirmado === false
@@ -9064,7 +9109,7 @@ function VisaoGeralModule({ vendas, estoque, pedidosCompra, recebimentos, expedi
   );
 }
 
-function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, setPagamentos, ajustesReposicao, setAjustesReposicao, askConfirm, askSenha, notify }) {
+function FinanceiroModule({ vendas: vendasTodas, setVendas, formasRecebimento, indicadores, estoque, setEstoque, pedidosCompra, recebimentos, pagamentos, setPagamentos, ajustesReposicao, setAjustesReposicao, askConfirm, askSenha, notify }) {
   // Custo estimado das pendências por venda: calculado UMA vez (a auditoria achou a mesma
   // conta cara refeita 5 vezes por render, uma delas por linha da lista).
   const custoUnitEstimadoMapa = useMemo(() => mapaCustoEstimadoUnitario(estoque, pedidosCompra, recebimentos), [estoque, pedidosCompra, recebimentos]);
@@ -9178,6 +9223,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
   const [semIntegradora, setSemIntegradora] = useState(false);
   // Conferência separada por destino do depósito (cartão, PIX JCL, Stone...) — pedido do dono 27/10
   const [filtroFormaConf, setFiltroFormaConf] = useState('todas');
+  const [editandoFormaConf, setEditandoFormaConf] = useState(null);
   const vendas = useMemo(() => vendasTodas.filter(v => !v.anulado && (!semIntegradora || !ehVendaIntegradora(v))), [vendasTodas, semIntegradora]);
   const [periodo, setPeriodo] = useState('mes');
   const [dataInicio, setDataInicio] = useState('');
@@ -9553,9 +9599,22 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, indicadores, estoque
                   {visiveis.map(({ v, c }) => (
                     <div key={c.id} className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-100 rounded-md px-2 py-1.5">
                       <span className="min-w-0 truncate">{v.clienteNome} — <span className="font-medium">{currency(c.valor || 0)}</span>{c.formaRecebimentoNome ? ` · ${c.formaRecebimentoNome}` : ''}{c.pagamentoDireto ? ` · pago direto a ${c.terceiroNome}` : ''} · anexado em {formatDate(c.data)}{c.autor ? ` por ${c.autor}` : ''}</span>
-                      {podeConfirmarRecebimento()
-                        ? <button onClick={() => confirmarRecebimentoFin(v, c)} className="shrink-0 text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
-                        : <span className="shrink-0 text-[10px] text-amber-600">só o usuário autorizado</span>}
+                      <span className="shrink-0 flex items-center gap-1.5">
+                        {podeConfirmarRecebimento() && ((formasRecebimento || []).length > 0) && (editandoFormaConf === c.id ? (
+                          <select autoFocus defaultValue={c.formaRecebimentoId || ''}
+                            onChange={e => { setEditandoFormaConf(null); alterarFormaComprovante({ venda: v, comp: c, formaId: e.target.value, formasRecebimento, vendas: vendasTodas, setVendas, askConfirm, notify }); }}
+                            onBlur={() => setEditandoFormaConf(null)}
+                            className="text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white">
+                            <option value="">Sem forma informada</option>
+                            {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
+                          </select>
+                        ) : (
+                          <button onClick={() => setEditandoFormaConf(c.id)} title="Mudar a forma de recebimento (só o usuário autorizado)"><Pencil size={12} className="text-slate-300 hover:text-slate-600" /></button>
+                        ))}
+                        {podeConfirmarRecebimento()
+                          ? <button onClick={() => confirmarRecebimentoFin(v, c)} className="text-[11px] bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded">Confirmar</button>
+                          : <span className="text-[10px] text-amber-600">só o usuário autorizado</span>}
+                      </span>
                     </div>
                   ))}
                 </div>
