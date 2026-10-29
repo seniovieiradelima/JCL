@@ -5303,16 +5303,20 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
                               <option value="">Sem forma informada</option>
                               {formasRecebimento.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
                             </select>
-                          ) : (c.formaRecebimentoNome || podeConfirmarRecebimento()) && (
-                            <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={(() => {
-                              const alts = c.alteracoesForma || [];
-                              const ult = alts[alts.length - 1];
-                              return (c.formaRecebimentoNome || 'Sem forma informada') + (ult ? ` — alterada de ${ult.de} por ${ult.por} em ${formatDate(ult.em)}` : '');
-                            })()}>
-                              {c.formaRecebimentoNome || 'sem forma'}
-                              {podeConfirmarRecebimento() && <button onClick={() => setEditandoForma(c.id)} title="Mudar a forma de recebimento (só o usuário autorizado)" className="ml-0.5 inline-flex align-middle"><Pencil size={9} className="text-slate-300 hover:text-slate-600" /></button>}
-                            </p>
-                          )}
+                          ) : (c.formaRecebimentoNome || podeConfirmarRecebimento()) && (() => {
+                            const alts = c.alteracoesForma || [];
+                            const ult = alts[alts.length - 1];
+                            const titulo = (c.formaRecebimentoNome || 'Sem forma informada') + (ult ? ` — alterada de ${ult.de} por ${ult.por} em ${formatDate(ult.em)}` : '');
+                            if (!podeConfirmarRecebimento()) return <p className="text-[9px] text-slate-500 text-center mt-0.5 leading-tight truncate" title={titulo}>{c.formaRecebimentoNome}</p>;
+                            // O lápis fica FORA do trecho que corta o texto (shrink-0), senão nomes
+                            // compridos como "PIX terceiros" engolem o botão no cartão de 64px.
+                            return (
+                              <button onClick={() => setEditandoForma(c.id)} title={`${titulo} — clique para mudar a forma de recebimento (só o usuário autorizado)`} className="w-full flex items-center justify-center gap-0.5 mt-0.5 rounded hover:bg-slate-100">
+                                <span className="text-[9px] text-slate-500 leading-tight truncate min-w-0">{c.formaRecebimentoNome || 'definir forma'}</span>
+                                <Pencil size={9} className="text-slate-400 shrink-0" />
+                              </button>
+                            );
+                          })()}
                           {c.valor > 0 && <p className="text-[9px] text-emerald-600 text-center leading-tight">{currency(c.valor)}</p>}
                           {c.pagamentoDireto && <p className="text-[9px] text-sky-700 text-center leading-tight truncate" title={`Pago direto a ${c.terceiroNome} — vira despesa (${c.terceiroCategoria}) ao confirmar`}>→ {c.terceiroNome}</p>}
                           {c.confirmado === false
