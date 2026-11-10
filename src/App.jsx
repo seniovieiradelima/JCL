@@ -1079,6 +1079,7 @@ function AppInner({ perfil }) {
   const [conferencias, setConferencias] = useState([]);
   const [indicadores, setIndicadores] = useState([]);
   const [propostas, setPropostas] = useState([]);
+  const [modelosProposta, setModelosProposta] = useState([]); // ajustes e modelos criados — os 4 de fábrica vivem no código
   const [logomarcas, setLogomarcas] = useState({ integradora: '', distribuidora: '' });
   const [conciliacoes, setConciliacoes] = useState([]);
   const [notasFiscais, setNotasFiscais] = useState([]);
@@ -1117,6 +1118,7 @@ function AppInner({ perfil }) {
       versao: 2, exportadoEm: new Date().toISOString(),
       estoque, clientes, fornecedores, vendas, orcamentos, expedicoes, pedidosCompra, recebimentos, depositos, transferencias,
       formasRecebimento, pagamentos, ajustesReposicao, balancos, conferencias, indicadores, propostas, conciliacoes, notasFiscais,
+      modelosProposta,
     };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1163,6 +1165,7 @@ function AppInner({ perfil }) {
         ['conferências', () => persistConferencias(dados.conferencias || [])],
         ['indicadores', () => persistIndicadores(dados.indicadores || [])],
         ['propostas', () => persistPropostas(dados.propostas || [])],
+        ['modelos de proposta', () => persistModelosProposta(dados.modelosProposta || [])],
         ['conciliações', () => persistConciliacoes(dados.conciliacoes || [])],
         ['notas fiscais', () => persistNotasFiscais(dados.notasFiscais || [])],
       ];
@@ -1191,7 +1194,7 @@ function AppInner({ perfil }) {
     (async () => {
       try {
       await migrarDadosAntigosSeNecessario();
-      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr, cb, nf] = await Promise.all([
+      const [e, c, f, v, or, ex, pc, rc, dp, tr, fr, sa, pg, aj, bl, cf, ind, pr, cb, nf, mp] = await Promise.all([
         loadCollection('estoque', []),
         loadCollection('clientes', []),
         loadCollection('fornecedores', []),
@@ -1212,6 +1215,7 @@ function AppInner({ perfil }) {
         loadCollection('propostas', []),
         loadCollection('conciliacoes', []),
         loadCollection('notasFiscais', []),
+        loadCollection('modelosProposta', []),
       ]);
 
       // Migração: garante que sempre existe ao menos um depósito, e que todo lote/unidade
@@ -1308,6 +1312,7 @@ function AppInner({ perfil }) {
       setPropostas(pr);
       setConciliacoes(cb);
       setNotasFiscais(nf);
+      setModelosProposta(mp);
       const cats = await loadConfig('categoriasPagamento', null);
       if (cats) {
         setCategoriasPagamento({
@@ -1459,6 +1464,7 @@ function AppInner({ perfil }) {
   async function persistConferencias(next) { return persist('conferencias', setConferencias, next, conferencias); }
   async function persistIndicadores(next) { return persist('indicadores', setIndicadores, next, indicadores); }
   async function persistPropostas(next) { return persist('propostas', setPropostas, next, propostas); }
+  async function persistModelosProposta(next) { return persist('modelosProposta', setModelosProposta, next, modelosProposta); }
   async function persistConciliacoes(next) { return persist('conciliacoes', setConciliacoes, next, conciliacoes); }
   async function persistNotasFiscais(next) { return persist('notasFiscais', setNotasFiscais, next, notasFiscais); }
   async function salvarCategoriasPagamento(next) {
@@ -1671,7 +1677,7 @@ function AppInner({ perfil }) {
         {tab === 'equipe' && <EquipeModule askConfirm={askConfirm} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'fiscal' && <FiscalModule notasFiscais={notasFiscais} setNotasFiscais={persistNotasFiscais} askSenha={askSenha} notify={notify} />}
-        {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} notify={notify} askConfirm={askConfirm} />}
+        {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} modelosProposta={modelosProposta} setModelosProposta={persistModelosProposta} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} formasRecebimento={formasRecebimento} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
       </main>
 
@@ -6973,6 +6979,177 @@ const PARAMS_PROPOSTA_PADRAO = {
   precoKitEstrutura: 291,  // kit estrutura de fixação para 4 placas
 };
 
+// ---- Modelos de proposta ----
+// Cada modelo diz O QUE entra na conta e COM QUAL matemática: gerador novo ou ampliação,
+// string ou microinversor. Os quatro abaixo são de fábrica; a aba "Modelos de proposta"
+// deixa ajustar números, desligar itens e criar outros modelos — o que for ajustado é
+// gravado na coleção 'modelosProposta', e o de fábrica fica como ponto de restauração.
+const CHAVES_ITENS_MODELO = ['moPlacas', 'moInversor', 'homologacao', 'comissionamento', 'administrativo', 'materialEletrico', 'frete'];
+const ROTULOS_ITENS_MODELO = {
+  moPlacas: 'Mão de obra — placas',
+  moInversor: 'Mão de obra — inversor',
+  homologacao: 'Homologação',
+  comissionamento: 'Comissionamento',
+  administrativo: 'Administrativo',
+  materialEletrico: 'Material elétrico',
+  frete: 'Frete de entrega',
+};
+
+function modeloPadraoProposta({ id, nome, descricao, tituloDocumento, requerInversor, ajustes }) {
+  const base = {
+    id, nome, descricao, tituloDocumento, requerInversor,
+    itens: {
+      moPlacas: { ativo: true, porPlaca: 70 },
+      moInversor: {
+        ativo: true, modo: 'faixas',
+        faixas: { acima29: 600, acima14: 400, acima3: 300, microFixo: 150, microPorUnidade: 150 },
+        porUnidade: { fixo: 150, porUnidade: 150 },
+      },
+      homologacao: { ativo: true, ate12: 300, acima12: 500 },
+      comissionamento: { ativo: true, valor: 200 },
+      administrativo: { ativo: true, porKwp: 100 },
+      materialEletrico: { ativo: true, fixo: 600, porKwp: 120 },
+      frete: { ativo: true, ate14: 100, ate49: 200, acima: 350 },
+    },
+    kits: {
+      dc: { ativo: true, preco: 300, placasPorKit: 7 },
+      estrutura: { ativo: true, preco: 291, placasPorKit: 4 },
+    },
+    params: { margemEquipamentos: 25, markupInstalacao: 35, fatorGeracao: 130, tarifaKwh: 1.15, percEconomia: 80 },
+  };
+  return ajustes ? ajustes(base) : base;
+}
+
+const MODELOS_PROPOSTA_PADRAO = [
+  modeloPadraoProposta({
+    id: 'gerador-string', nome: 'Gerador solar — string',
+    descricao: 'Primeiro gerador do cliente, com inversor string: a obra completa, da estrutura à homologação. É a conta da planilha de sempre.',
+    tituloDocumento: 'PROPOSTA — SISTEMA SOLAR', requerInversor: true,
+  }),
+  modeloPadraoProposta({
+    id: 'gerador-micro', nome: 'Gerador solar — microinversor',
+    descricao: 'Primeiro gerador do cliente, com microinversores: a mão de obra dos inversores segue a régua por unidade, não por faixa de kW.',
+    tituloDocumento: 'PROPOSTA — SISTEMA SOLAR', requerInversor: true,
+    ajustes: (m) => { m.itens.moInversor.modo = 'porUnidade'; return m; },
+  }),
+  modeloPadraoProposta({
+    id: 'ampliacao-string', nome: 'Ampliação — sem inversor novo',
+    descricao: 'Mais placas num gerador que já existe, aproveitando o inversor: a proposta pode sair sem inversor nenhum.',
+    tituloDocumento: 'PROPOSTA — AMPLIAÇÃO DO SISTEMA SOLAR', requerInversor: false,
+  }),
+  modeloPadraoProposta({
+    id: 'ampliacao-micro', nome: 'Ampliação — microinversor',
+    descricao: 'Mais placas e mais microinversores num sistema que já é micro: a infraestrutura elétrica está pronta, então material elétrico e kit DC nascem desligados — religue se a obra pedir.',
+    tituloDocumento: 'PROPOSTA — AMPLIAÇÃO DO SISTEMA SOLAR', requerInversor: true,
+    ajustes: (m) => {
+      m.itens.moInversor.modo = 'porUnidade';
+      m.itens.materialEletrico.ativo = false;
+      m.kits.dc.ativo = false;
+      return m;
+    },
+  }),
+];
+
+// Completa um modelo gravado (ou de proposta antiga) com todos os campos que a versão
+// atual conhece — modelo salvo antes de um campo existir ganha o valor de fábrica.
+function normalizarModelo(m) {
+  const base = MODELOS_PROPOSTA_PADRAO[0];
+  if (!m) return base;
+  const itens = {};
+  for (const ch of CHAVES_ITENS_MODELO) itens[ch] = { ...base.itens[ch], ...(m.itens?.[ch] || {}) };
+  itens.moInversor = {
+    ...base.itens.moInversor, ...(m.itens?.moInversor || {}),
+    faixas: { ...base.itens.moInversor.faixas, ...(m.itens?.moInversor?.faixas || {}) },
+    porUnidade: { ...base.itens.moInversor.porUnidade, ...(m.itens?.moInversor?.porUnidade || {}) },
+  };
+  return {
+    ...base, ...m, itens,
+    kits: {
+      dc: { ...base.kits.dc, ...(m.kits?.dc || {}) },
+      estrutura: { ...base.kits.estrutura, ...(m.kits?.estrutura || {}) },
+    },
+    params: { ...base.params, ...(m.params || {}) },
+  };
+}
+
+// Os modelos em vigor: os 4 de fábrica (substituídos pelos ajustes gravados, quando
+// houver) + os criados pela equipe, em ordem alfabética.
+function modelosEfetivos(salvos) {
+  const sv = Array.isArray(salvos) ? salvos : [];
+  const padrao = MODELOS_PROPOSTA_PADRAO.map(m => {
+    const ajustado = sv.find(x => x.id === m.id);
+    return ajustado ? normalizarModelo(ajustado) : m;
+  });
+  const extras = sv.filter(x => !MODELOS_PROPOSTA_PADRAO.some(m => m.id === x.id))
+    .map(normalizarModelo)
+    .sort((a, b) => String(a.nome).localeCompare(String(b.nome), 'pt-BR'));
+  return [...padrao, ...extras];
+}
+
+// O modelo manda nos padrões dos parâmetros da proposta (a tela ainda deixa ajustar caso a caso).
+function paramsDoModelo(m) {
+  const n = normalizarModelo(m);
+  return {
+    ...n.params,
+    moPorPlaca: n.itens.moPlacas.porPlaca,
+    comissionamento: n.itens.comissionamento.valor,
+    admPorKwp: n.itens.administrativo.porKwp,
+    precoKitDc: n.kits.dc.preco,
+    precoKitEstrutura: n.kits.estrutura.preco,
+  };
+}
+function paramsCompletos(m) { return { ...PARAMS_PROPOSTA_PADRAO, ...paramsDoModelo(m) }; }
+
+// A matemática de cada item do modelo, em palavras — aparece no cadastro de modelos,
+// na prévia da proposta e no resumo interno do vendedor.
+function explicarItemModelo(m, chave, pe) {
+  const n = normalizarModelo(m);
+  const it = n.itens;
+  const fr = (v) => (v ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+  switch (chave) {
+    case 'moPlacas': return `R$ ${fr(pe?.moPorPlaca ?? it.moPlacas.porPlaca)} × quantidade de placas`;
+    case 'moInversor': {
+      if (it.moInversor.modo === 'porUnidade') {
+        const pu = it.moInversor.porUnidade;
+        return `régua de microinversor: R$ ${fr(pu.fixo)} fixo + R$ ${fr(pu.porUnidade)} × unidade`;
+      }
+      const f = it.moInversor.faixas;
+      return `por faixa: acima de 29 kW R$ ${fr(f.acima29)}/un · 14–29 kW R$ ${fr(f.acima14)}/un · 3–14 kW R$ ${fr(f.acima3)}/un · até 3 kW R$ ${fr(f.microFixo)} + R$ ${fr(f.microPorUnidade)}/un`;
+    }
+    case 'homologacao': return `até 12 kWp R$ ${fr(it.homologacao.ate12)} · acima de 12 kWp R$ ${fr(it.homologacao.acima12)}`;
+    case 'comissionamento': return `valor fixo de R$ ${fr(pe?.comissionamento ?? it.comissionamento.valor)}`;
+    case 'administrativo': return `R$ ${fr(pe?.admPorKwp ?? it.administrativo.porKwp)} × kWp do sistema`;
+    case 'materialEletrico': return `R$ ${fr(it.materialEletrico.fixo)} fixo + R$ ${fr(it.materialEletrico.porKwp)} × kWp`;
+    case 'frete': return `até 14 placas R$ ${fr(it.frete.ate14)} · 15 a 49 R$ ${fr(it.frete.ate49)} · 50 ou mais R$ ${fr(it.frete.acima)}`;
+    case 'kitDc': return `1 kit de R$ ${fr(pe?.precoKitDc ?? n.kits.dc.preco)} a cada ${n.kits.dc.placasPorKit} placas — soma aos equipamentos, com margem`;
+    case 'kitEstrutura': return `1 kit de R$ ${fr(pe?.precoKitEstrutura ?? n.kits.estrutura.preco)} a cada ${n.kits.estrutura.placasPorKit} placas — soma aos equipamentos, com margem`;
+    default: return '';
+  }
+}
+
+// As linhas da previsão de custos de uma proposta, já com a matemática de cada uma —
+// só o que está ligado no modelo. Alimenta a prévia, o resumo do vendedor e o termo.
+function linhasCustoInstalacao(p) {
+  const m = normalizarModelo(p.modelo);
+  const inst = p.calculos?.instalacao || {};
+  const pe = { ...PARAMS_PROPOSTA_PADRAO, ...paramsDoModelo(m), ...(p.params || {}) };
+  const qtdPlacas = p.placa?.quantidade || 0;
+  const unInv = inversoresDaProposta(p).reduce((a, i) => a + (i.quantidade || 0), 0);
+  const rotulos = {
+    ...ROTULOS_ITENS_MODELO,
+    moPlacas: `Mão de obra — placas (${qtdPlacas} un.)`,
+    moInversor: `Mão de obra — inversor (${unInv} un.)`,
+  };
+  const valores = {
+    moPlacas: inst.moPlacas, moInversor: inst.moInversor, homologacao: inst.homologacao,
+    comissionamento: inst.comissionamento, administrativo: inst.administrativo,
+    materialEletrico: inst.materialEletrico, frete: inst.frete,
+  };
+  return CHAVES_ITENS_MODELO
+    .filter(ch => m.itens[ch].ativo)
+    .map(ch => [rotulos[ch], valores[ch] || 0, explicarItemModelo(m, ch, pe)]);
+}
+
 // Extrai o primeiro número de um texto de potência ("590wp" → 590, "7,5 kW" → 7.5)
 function numeroDe(texto) {
   const m = String(texto || '').replace(',', '.').match(/\d+(\.\d+)?/);
@@ -6986,39 +7163,49 @@ function inversoresDaProposta(p) {
   return p?.inversor ? [p.inversor] : [];
 }
 
-function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto, inversores }) {
-  const p = { ...PARAMS_PROPOSTA_PADRAO, ...(params || {}) };
+function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valorEquipamentos, params, entrada, desconto, inversores, modelo, avulsos }) {
+  const m = normalizarModelo(modelo);
+  const it = m.itens;
+  const p = { ...PARAMS_PROPOSTA_PADRAO, ...paramsDoModelo(m), ...(params || {}) };
   const kwp = qtdPlacas * wpPlaca / 1000;
   const geracaoMensal = kwp * p.fatorGeracao;
   const contaAtual = geracaoMensal * p.tarifaKwh;
   const economiaMensal = contaAtual * (p.percEconomia / 100);
   const contaResidual = contaAtual - economiaMensal;
 
-  // Custos de instalação — as mesmas faixas da planilha
-  const moPlacas = p.moPorPlaca * qtdPlacas;
+  // Custos de instalação — cada item obedece ao MODELO da proposta: item desligado não
+  // cobra, e a matemática (faixas, fixos, por kWp) vem do cadastro de modelos.
+  const moPlacas = it.moPlacas.ativo ? p.moPorPlaca * qtdPlacas : 0;
   const listaInversores = (inversores && inversores.length > 0)
     ? inversores
     : (qtdInversores > 0 ? [{ quantidade: qtdInversores, kw: kwInversor }] : []);
-  const moInversor = listaInversores.reduce((acc, inv) => {
-    const kw = inv.kw || 0, q = inv.quantidade || 0;
-    if (q <= 0) return acc;
-    return acc + (kw > 29 ? 600 * q : kw > 14 ? 400 * q : kw > 2.99 ? 300 * q : 150 + 150 * q);
-  }, 0);
-  const homologacao = kwp > 12 ? 500 : 300;
-  const comissionamento = p.comissionamento;
-  const administrativo = p.admPorKwp * kwp;
-  const materialEletrico = 600 + 120 * kwp;
-  const frete = qtdPlacas < 15 ? 100 : qtdPlacas < 50 ? 200 : 350;
+  const unidadesInversor = listaInversores.reduce((a, i) => a + (i.quantidade || 0), 0);
+  const fx = it.moInversor.faixas, pu = it.moInversor.porUnidade;
+  const moInversor = !it.moInversor.ativo ? 0
+    : it.moInversor.modo === 'porUnidade'
+      ? (unidadesInversor > 0 ? pu.fixo + pu.porUnidade * unidadesInversor : 0)
+      : listaInversores.reduce((acc, inv) => {
+          const kw = inv.kw || 0, q = inv.quantidade || 0;
+          if (q <= 0) return acc;
+          return acc + (kw > 29 ? fx.acima29 * q : kw > 14 ? fx.acima14 * q : kw > 2.99 ? fx.acima3 * q : fx.microFixo + fx.microPorUnidade * q);
+        }, 0);
+  const homologacao = it.homologacao.ativo ? (kwp > 12 ? it.homologacao.acima12 : it.homologacao.ate12) : 0;
+  const comissionamento = it.comissionamento.ativo ? p.comissionamento : 0;
+  const administrativo = it.administrativo.ativo ? p.admPorKwp * kwp : 0;
+  const materialEletrico = it.materialEletrico.ativo ? it.materialEletrico.fixo + it.materialEletrico.porKwp * kwp : 0;
+  const frete = it.frete.ativo ? (qtdPlacas < 15 ? it.frete.ate14 : qtdPlacas < 50 ? it.frete.ate49 : it.frete.acima) : 0;
   const custoInstalacao = moPlacas + moInversor + homologacao + comissionamento + administrativo + materialEletrico + frete;
   const valorInstalacao = custoInstalacao * (1 + p.markupInstalacao / 100);
 
   const valorEquipamentosCliente = valorEquipamentos * (1 + p.margemEquipamentos / 100);
   // Desconto do vendedor: SÓ nos equipamentos e limitado à margem — o preço final nunca
-  // desce abaixo do valor da distribuidora. A instalação não tem desconto.
+  // desce abaixo do valor da distribuidora. Instalação e itens personalizados não têm desconto.
   const descontoMaximo = Math.max(0, valorEquipamentosCliente - valorEquipamentos);
   const descontoAplicado = Math.min(Math.max(0, desconto || 0), descontoMaximo);
   const valorEquipamentosFinal = valorEquipamentosCliente - descontoAplicado;
-  const totalAVista = valorEquipamentosFinal + valorInstalacao;
+  // Itens personalizados: o valor digitado É o valor final de venda — sem margem e sem custo.
+  const totalAvulsos = (avulsos || []).reduce((a, x) => a + (x.valor || 0), 0);
+  const totalAVista = valorEquipamentosFinal + valorInstalacao + totalAvulsos;
   const roiMeses = economiaMensal > 0 ? totalAVista / economiaMensal : 0;
 
   const saldo = Math.max(0, totalAVista - (entrada || 0));
@@ -7037,7 +7224,7 @@ function calcularProposta({ qtdPlacas, wpPlaca, qtdInversores, kwInversor, valor
     kwp, geracaoMensal, contaAtual, economiaMensal, contaResidual,
     instalacao: { moPlacas, moInversor, homologacao, comissionamento, administrativo, materialEletrico, frete, custo: custoInstalacao, valor: valorInstalacao },
     valorEquipamentosDistribuidora: valorEquipamentos, valorEquipamentosCliente,
-    desconto: descontoAplicado, descontoMaximo, valorEquipamentosFinal, totalAVista, roiMeses,
+    desconto: descontoAplicado, descontoMaximo, valorEquipamentosFinal, totalAvulsos, totalAVista, roiMeses,
     entrada: entrada || 0, parcelamentos,
   };
 }
@@ -7063,6 +7250,7 @@ function desenharProposta(p, logo) {
     ...(p.kits?.dc?.quantidade > 0 ? [`${p.kits.dc.quantidade}x kit cabeamento DC 50m + 4 pares MC4`] : []),
     ...(p.kits?.estrutura?.quantidade > 0 ? [`${p.kits.estrutura.quantidade}x kit estrutura de fixação (4 placas)`] : []),
     ...(p.adicionais || []).map(a => `${a.quantidade}x ${a.descricao}`),
+    ...(p.avulsos || []).map(a => a.descricao),
     'Instalação completa, homologação junto à concessionária e comissionamento',
   ];
   const pagamentos = (c.parcelamentos || []).map(x => [x.rotulo, `${x.parcelas}x de ${currency(x.valorParcela)}`]);
@@ -7081,7 +7269,7 @@ function desenharProposta(p, logo) {
   }
 
   const altura = 100 + 60 + (30 + sistema.length * 22 + 14) + (30 + equipamentos.length * 20 + 14)
-    + (30 + 44 + (c.desconto > 0 ? 22 : 0) + 64 + (c.entrada > 0 ? 20 : 0) + 14) + (30 + pagamentos.length * 20 + 14)
+    + (30 + 44 + (p.avulsos || []).length * 22 + (c.desconto > 0 ? 22 : 0) + 64 + (c.entrada > 0 ? 20 : 0) + 14) + (30 + pagamentos.length * 20 + 14)
     + (obsLinhas.length > 0 ? 30 + obsLinhas.length * 18 + 14 : 0) + 70 + margem;
 
   const canvas = document.createElement('canvas');
@@ -7100,7 +7288,7 @@ function desenharProposta(p, logo) {
     ctx.fillText('Energia Solar · Projeto e Instalação', margem + 55, y + 34);
   }
   ctx.textAlign = 'right'; ctx.font = 'bold 16px Arial'; ctx.fillStyle = '#0f172a';
-  ctx.fillText('PROPOSTA — SISTEMA SOLAR', largura - margem, y + 16);
+  ctx.fillText(p.modelo?.tituloDocumento || 'PROPOSTA — SISTEMA SOLAR', largura - margem, y + 16);
   ctx.font = '12px Arial'; ctx.fillStyle = '#64748b';
   ctx.fillText(`Data: ${formatDate(p.data)}`, largura - margem, y + 34);
   ctx.fillText('Validade: 7 dias', largura - margem, y + 50);
@@ -7150,6 +7338,10 @@ function desenharProposta(p, logo) {
   linhaDupla('Equipamentos (à vista)', currency(c.valorEquipamentosCliente || 0), false);
   if (c.desconto > 0) linhaDupla('Desconto nos equipamentos', `− ${currency(c.desconto)}`, true);
   linhaDupla('Instalação', currency(c.instalacao?.valor || 0), false);
+  (p.avulsos || []).forEach(a => {
+    const d = String(a.descricao || '');
+    linhaDupla(d.length > 70 ? d.slice(0, 67) + '...' : d, currency(a.valor || 0), false);
+  });
   ctx.fillStyle = '#fef8ec';
   ctx.fillRect(margem, y - 12, larguraUtil, 56);
   ctx.strokeStyle = '#f0d9a8'; ctx.strokeRect(margem, y - 12, larguraUtil, 56);
@@ -7207,6 +7399,7 @@ function desenharCustosInstalacao(p, logo) {
     ['Equipamentos (à vista)', currency(c.valorEquipamentosCliente || 0)],
     ...(c.desconto > 0 ? [['Desconto nos equipamentos', `− ${currency(c.desconto)}`]] : []),
     ['Instalação', currency(inst.valor || 0)],
+    ...((p.avulsos || []).length > 0 ? [['Itens personalizados (valor final)', currency(c.totalAvulsos || 0)]] : []),
     ['TOTAL À VISTA', currency(c.totalAVista || 0)],
   ];
 
@@ -7218,20 +7411,15 @@ function desenharCustosInstalacao(p, logo) {
     ...(p.adicionais || []),
   ];
 
-  const custosInst = [
-    [`Mão de obra — placas (${p.placa?.quantidade || 0} un.)`, inst.moPlacas],
-    [`Mão de obra — inversor (${inversoresDaProposta(p).reduce((a, i) => a + (i.quantidade || 0), 0)} un.)`, inst.moInversor],
-    ['Homologação', inst.homologacao],
-    ['Comissionamento', inst.comissionamento],
-    [`Administrativo (R$ ${p.params?.admPorKwp ?? 100}/kWp)`, inst.administrativo],
-    ['Material elétrico', inst.materialEletrico],
-    ['Frete de entrega', inst.frete],
-  ];
+  // Só os itens LIGADOS no modelo da proposta, cada um com a matemática por extenso.
+  const custosInst = linhasCustoInstalacao(p);
+  const avulsosP = p.avulsos || [];
 
   const altura = 100 + 60
     + (30 + resumo.length * 22 + 14)
     + (30 + 26 + itensDistribuidora.length * 26 + 26 + 22 + 22 + (c.desconto > 0 ? 44 : 0) + 14)
-    + (30 + custosInst.length * 24 + 24 * 3 + 14)
+    + (30 + custosInst.length * 38 + 24 * 3 + 14)
+    + (avulsosP.length > 0 ? 36 + avulsosP.length * 22 + 22 + 14 : 0)
     + 30 + 24 + 60 + margem;
 
   const canvas = document.createElement('canvas');
@@ -7257,6 +7445,7 @@ function desenharCustosInstalacao(p, logo) {
   ctx.font = '12px Arial'; ctx.fillStyle = '#64748b';
   ctx.fillText(`Cliente: ${p.clienteNome || ''}`, largura - margem, y + 34);
   ctx.fillText(`Data: ${formatDate(p.data)}`, largura - margem, y + 50);
+  if (p.modeloNome) ctx.fillText(`Modelo: ${p.modeloNome}`, largura - margem, y + 66);
   ctx.textAlign = 'left';
   y += 100;
 
@@ -7321,7 +7510,14 @@ function desenharCustosInstalacao(p, logo) {
   }
 
   secao('Previsão de custos da instalação');
-  custosInst.forEach(([e, d]) => linhaDupla(e, currency(d || 0), false));
+  custosInst.forEach(([e, d, formula]) => {
+    linhaDupla(e, currency(d || 0), false);
+    if (formula) {
+      ctx.font = '10px Arial'; ctx.fillStyle = '#94a3b8';
+      ctx.fillText(formula.length > 110 ? formula.slice(0, 107) + '...' : formula, margem + 14, y - 8);
+      y += 16;
+    }
+  });
   ctx.strokeStyle = '#e2e8f0';
   ctx.beginPath(); ctx.moveTo(margem, y - 14); ctx.lineTo(largura - margem, y - 14); ctx.stroke();
   y += 8;
@@ -7329,11 +7525,20 @@ function desenharCustosInstalacao(p, logo) {
   linhaDupla(`Cobrado do cliente (+${p.params?.markupInstalacao ?? 35}%)`, currency(inst.valor || 0), false);
   linhaDupla('Saldo operacional da instalação', currency((inst.valor || 0) - (inst.custo || 0)), false, '#047857');
 
+  if (avulsosP.length > 0) {
+    secao('Itens personalizados — valor final, sem custo lançado');
+    avulsosP.forEach(a => {
+      const d = String(a.descricao || '');
+      linhaDupla(d.length > 70 ? d.slice(0, 67) + '...' : d, currency(a.valor || 0), false);
+    });
+    linhaDupla('Total dos itens personalizados', currency(c.totalAvulsos || 0), true);
+  }
+
   y += 10;
   ctx.font = 'bold 13px Arial'; ctx.fillStyle = '#047857';
-  ctx.fillText('Resultado bruto estimado (margem equip. + saldo instalação)', margem, y);
+  ctx.fillText(`Resultado bruto estimado (margem equip. + saldo instalação${avulsosP.length > 0 ? ' + itens personalizados' : ''})`, margem, y);
   ctx.textAlign = 'right';
-  ctx.fillText(currency((((c.valorEquipamentosFinal ?? c.valorEquipamentosCliente) || 0) - (c.valorEquipamentosDistribuidora || 0)) + ((inst.valor || 0) - (inst.custo || 0))), largura - margem, y);
+  ctx.fillText(currency((((c.valorEquipamentosFinal ?? c.valorEquipamentosCliente) || 0) - (c.valorEquipamentosDistribuidora || 0)) + ((inst.valor || 0) - (inst.custo || 0)) + (c.totalAvulsos || 0)), largura - margem, y);
   ctx.textAlign = 'left';
   y += 24;
 
@@ -7363,6 +7568,7 @@ function exportarParaTermo(p) {
     dataProposta: p.data,
     cliente: { nome: p.clienteNome || '', contato: p.clienteContato || '' },
     vendedor: p.autor || '',
+    modeloProposta: p.modeloNome || p.modelo?.nome || '',
     kwp: c.kwp || 0,
     placa: p.placa ? { descricao: p.placa.descricao, quantidade: p.placa.quantidade, wp: p.placa.wp } : null,
     inversor: (() => {
@@ -7377,23 +7583,20 @@ function exportarParaTermo(p) {
       estrutura: { quantidade: p.kits?.estrutura?.quantidade || 0 },
     },
     adicionais: (p.adicionais || []).map(a => ({ descricao: a.descricao, quantidade: a.quantidade })),
+    // Itens personalizados: texto livre com valor FINAL de venda — não têm custo lançado.
+    avulsos: (p.avulsos || []).map(a => ({ descricao: a.descricao, valor: a.valor })),
     financeiro: {
       custoEquipamentosDistribuidora: c.valorEquipamentosDistribuidora ?? null,
       vendaEquipamentos: (c.valorEquipamentosFinal ?? c.valorEquipamentosCliente) ?? null,
       valorInstalacao: c.instalacao?.valor ?? null,
+      itensAvulsos: c.totalAvulsos ?? 0,
       totalAVista: c.totalAVista ?? null,
     },
     // Previsão de despesas linha a linha, com os parâmetros REAIS desta proposta —
     // no termo elas entram como Previsto, para confrontar com o Realizado da obra.
-    previsaoInstalacao: c.instalacao ? [
-      { item: `MO Placas (R$ ${p.params?.moPorPlaca ?? 70} x ${p.placa?.quantidade ?? 0} placas)`, previsto: c.instalacao.moPlacas },
-      { item: 'MO Inversor (por faixa de kW)', previsto: c.instalacao.moInversor },
-      { item: 'Homologação', previsto: c.instalacao.homologacao },
-      { item: 'Comissionamento', previsto: c.instalacao.comissionamento },
-      { item: `Administrativo (R$ ${p.params?.admPorKwp ?? 100} x ${(c.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp)`, previsto: c.instalacao.administrativo },
-      { item: 'Material Elétrico (600 + 120 x kWp)', previsto: c.instalacao.materialEletrico },
-      { item: 'Frete entrega', previsto: c.instalacao.frete },
-    ] : [],
+    previsaoInstalacao: c.instalacao
+      ? linhasCustoInstalacao(p).map(([item, previsto, formula]) => ({ item: formula ? `${item} (${formula})` : item, previsto }))
+      : [],
   };
   const nomeBase = `termo-${String(p.clienteNome || 'cliente').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cliente'}`;
   baixarBlob(new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' }), `${nomeBase}.json`);
@@ -7409,7 +7612,239 @@ async function baixarProposta(p, formato) {
   }
 }
 
-function PropostasModule({ propostas, setPropostas, estoque, clientes, setClientes, vendas, setVendas, notify, askConfirm }) {
+// ---- Aba de cadastro dos modelos de proposta ----
+// É aqui que se marca o que cada tipo de proposta cobra e com qual matemática. Editar
+// exige a permissão de preços e margens; quem não tem, vê tudo mas não mexe. Mudar um
+// modelo vale para as PRÓXIMAS propostas — as já salvas guardam o retrato das regras.
+function ModelosPropostaTab({ modelosSalvos, setModelosSalvos, notify, askConfirm }) {
+  const [rascunho, setRascunho] = useState(null); // cópia de trabalho do modelo aberto para edição
+  const [expandido, setExpandido] = useState({});
+  const podeEditar = podeAcao('precos');
+  const lista = useMemo(() => modelosEfetivos(modelosSalvos), [modelosSalvos]);
+  const ehPadrao = (id) => MODELOS_PROPOSTA_PADRAO.some(m => m.id === id);
+  const foiAjustado = (id) => ehPadrao(id) && (modelosSalvos || []).some(m => m.id === id);
+  const fr = (v) => (v ?? 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+
+  function getIn(obj, caminho) { return caminho.split('.').reduce((o, c) => (o == null ? o : o[c]), obj); }
+  function setIn(obj, caminho, valor) {
+    const chaves = caminho.split('.');
+    const novo = JSON.parse(JSON.stringify(obj));
+    let alvo = novo;
+    for (let i = 0; i < chaves.length - 1; i++) alvo = alvo[chaves[i]];
+    alvo[chaves[chaves.length - 1]] = valor;
+    return novo;
+  }
+
+  function exigirPermissao() {
+    notify('⚠️ Seu perfil não permite editar preços e margens — os modelos ficam só para consulta.');
+  }
+  function abrirEdicao(m) {
+    if (!podeEditar) { exigirPermissao(); return; }
+    setRascunho(JSON.parse(JSON.stringify(normalizarModelo(m))));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function duplicar(m, nome) {
+    if (!podeEditar) { exigirPermissao(); return; }
+    const copia = JSON.parse(JSON.stringify(normalizarModelo(m)));
+    copia.id = uid();
+    copia.nome = nome || `${m.nome} (cópia)`;
+    setRascunho(copia);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  async function salvar() {
+    if (!String(rascunho.nome || '').trim()) { notify('Dê um nome ao modelo'); return; }
+    const registro = { ...rascunho, nome: rascunho.nome.trim(), atualizadoEm: new Date().toISOString(), autor: autorAtual };
+    const jaExiste = (modelosSalvos || []).some(m => m.id === registro.id);
+    const next = jaExiste ? modelosSalvos.map(m => (m.id === registro.id ? registro : m)) : [...(modelosSalvos || []), registro];
+    if (!(await setModelosSalvos(next))) return;
+    notify('Modelo de proposta salvo — vale para as próximas propostas; as já salvas não mudam.');
+    setRascunho(null);
+  }
+  async function restaurarPadrao(m) {
+    if (!podeEditar) { exigirPermissao(); return; }
+    if (!(await askConfirm(`Voltar o modelo "${m.nome}" para os números de fábrica? Os ajustes feitos aqui se perdem (propostas já salvas não mudam).`))) return;
+    if (!(await setModelosSalvos(modelosSalvos.filter(x => x.id !== m.id)))) return;
+    notify('Modelo restaurado para o padrão de fábrica');
+  }
+  async function apagar(m) {
+    if (!podeEditar) { exigirPermissao(); return; }
+    if (!(await askConfirm(`Apagar o modelo "${m.nome}"? Propostas já salvas com ele não mudam — ele só deixa de aparecer para propostas novas.`))) return;
+    if (!(await setModelosSalvos(modelosSalvos.filter(x => x.id !== m.id)))) return;
+    notify('Modelo apagado');
+  }
+
+  const inputCls = 'border border-slate-200 rounded-md px-2 py-1.5 text-xs';
+  const rotuloCls = 'text-[10px] text-slate-500 mb-0.5 block';
+
+  // Funções (não componentes!) que devolvem JSX: componente definido dentro do render
+  // seria recriado a cada tecla e o campo perderia o foco.
+  function campoNum(caminho, largura) {
+    return (
+      <input type="text" inputMode="decimal"
+        value={String(getIn(rascunho, caminho) ?? '').replace('.', ',')}
+        onChange={e => setRascunho(r => setIn(r, caminho, parseFloat(e.target.value.replace(',', '.')) || 0))}
+        className={`${inputCls} ${largura || 'w-20'}`} />
+    );
+  }
+  function liga(caminho, rotulo) {
+    return (
+      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+        <input type="checkbox" checked={!!getIn(rascunho, caminho)} onChange={e => setRascunho(r => setIn(r, caminho, e.target.checked))} />
+        {rotulo} {getIn(rascunho, caminho) ? '' : <span className="text-slate-400 font-normal">(não cobrado)</span>}
+      </label>
+    );
+  }
+  const linhaMat = 'flex items-center gap-1.5 text-xs text-slate-500 mt-1 flex-wrap';
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">Modelos de proposta</h2>
+          <p className="text-xs text-slate-400">Cada modelo diz o que entra na conta e com qual matemática — gerador novo ou ampliação, string ou microinversor. A proposta escolhe o modelo e herda as regras; mudar aqui vale só para as próximas.</p>
+        </div>
+        {!rascunho && podeEditar && <button onClick={() => duplicar(MODELOS_PROPOSTA_PADRAO[0], 'Novo modelo')} className="flex items-center gap-1 text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-md shrink-0"><Plus size={16} /> Novo modelo</button>}
+      </div>
+
+      {rascunho && (
+        <div className="bg-white border border-amber-300 rounded-lg p-4 mb-5">
+          <h3 className="text-sm font-medium mb-3">{lista.some(m => m.id === rascunho.id) ? `Editar modelo — ${rascunho.nome}` : 'Novo modelo de proposta'}</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            <div><label className={rotuloCls}>Nome do modelo</label><input value={rascunho.nome || ''} onChange={e => setRascunho(r => ({ ...r, nome: e.target.value }))} className={inputCls + ' w-full'} /></div>
+            <div><label className={rotuloCls}>Título que sai no documento do cliente</label><input value={rascunho.tituloDocumento || ''} onChange={e => setRascunho(r => ({ ...r, tituloDocumento: e.target.value }))} className={inputCls + ' w-full'} /></div>
+          </div>
+          <div className="mb-3">
+            <label className={rotuloCls}>Descrição (aparece ao escolher o modelo na proposta)</label>
+            <textarea value={rascunho.descricao || ''} onChange={e => setRascunho(r => ({ ...r, descricao: e.target.value }))} rows={2} className={inputCls + ' w-full'} />
+          </div>
+          <label className="flex items-center gap-1.5 text-xs text-slate-700 mb-3 cursor-pointer">
+            <input type="checkbox" checked={!!rascunho.requerInversor} onChange={e => setRascunho(r => ({ ...r, requerInversor: e.target.checked }))} />
+            A proposta exige pelo menos um inversor <span className="text-slate-400">(desmarque para ampliação que aproveita o inversor que já existe)</span>
+          </label>
+
+          <p className="text-xs font-medium text-slate-600 mb-1">O que entra na conta da instalação — e com qual matemática</p>
+          <div className="space-y-2 mb-3">
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.moPlacas.ativo', 'Mão de obra — placas')}
+              <div className={linhaMat}>R$ {campoNum('itens.moPlacas.porPlaca')} × quantidade de placas</div>
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.moInversor.ativo', 'Mão de obra — inversor')}
+              <div className="flex items-center gap-3 mt-1 text-xs text-slate-600 flex-wrap">
+                <label className="flex items-center gap-1 cursor-pointer"><input type="radio" checked={rascunho.itens.moInversor.modo !== 'porUnidade'} onChange={() => setRascunho(r => setIn(r, 'itens.moInversor.modo', 'faixas'))} /> por faixa de potência (string)</label>
+                <label className="flex items-center gap-1 cursor-pointer"><input type="radio" checked={rascunho.itens.moInversor.modo === 'porUnidade'} onChange={() => setRascunho(r => setIn(r, 'itens.moInversor.modo', 'porUnidade'))} /> por unidade (microinversor)</label>
+              </div>
+              {rascunho.itens.moInversor.modo === 'porUnidade' ? (
+                <div className={linhaMat}>R$ {campoNum('itens.moInversor.porUnidade.fixo')} fixo + R$ {campoNum('itens.moInversor.porUnidade.porUnidade')} × cada microinversor</div>
+              ) : (
+                <div className={linhaMat}>acima de 29 kW R$ {campoNum('itens.moInversor.faixas.acima29', 'w-16')}/un · 14–29 kW R$ {campoNum('itens.moInversor.faixas.acima14', 'w-16')}/un · 3–14 kW R$ {campoNum('itens.moInversor.faixas.acima3', 'w-16')}/un · até 3 kW R$ {campoNum('itens.moInversor.faixas.microFixo', 'w-16')} fixo + R$ {campoNum('itens.moInversor.faixas.microPorUnidade', 'w-16')}/un</div>
+              )}
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.homologacao.ativo', 'Homologação')}
+              <div className={linhaMat}>até 12 kWp R$ {campoNum('itens.homologacao.ate12')} · acima de 12 kWp R$ {campoNum('itens.homologacao.acima12')}</div>
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.comissionamento.ativo', 'Comissionamento')}
+              <div className={linhaMat}>valor fixo de R$ {campoNum('itens.comissionamento.valor')}</div>
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.administrativo.ativo', 'Administrativo')}
+              <div className={linhaMat}>R$ {campoNum('itens.administrativo.porKwp')} × kWp do sistema</div>
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.materialEletrico.ativo', 'Material elétrico')}
+              <div className={linhaMat}>R$ {campoNum('itens.materialEletrico.fixo')} fixo + R$ {campoNum('itens.materialEletrico.porKwp')} × kWp <span className="text-slate-400">(na ampliação com micro a infra costuma estar pronta — desligue)</span></div>
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('itens.frete.ativo', 'Frete de entrega')}
+              <div className={linhaMat}>até 14 placas R$ {campoNum('itens.frete.ate14', 'w-16')} · 15 a 49 R$ {campoNum('itens.frete.ate49', 'w-16')} · 50 ou mais R$ {campoNum('itens.frete.acima', 'w-16')}</div>
+            </div>
+          </div>
+
+          <p className="text-xs font-medium text-slate-600 mb-1">Kits automáticos — somam aos equipamentos, com margem</p>
+          <div className="space-y-2 mb-3">
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('kits.dc.ativo', 'Kit cabeamento DC (50m + 4 pares MC4)')}
+              <div className={linhaMat}>1 kit de R$ {campoNum('kits.dc.preco')} a cada {campoNum('kits.dc.placasPorKit', 'w-14')} placas</div>
+            </div>
+            <div className="border border-slate-200 rounded-md p-2">
+              {liga('kits.estrutura.ativo', 'Kit estrutura de fixação')}
+              <div className={linhaMat}>1 kit de R$ {campoNum('kits.estrutura.preco')} a cada {campoNum('kits.estrutura.placasPorKit', 'w-14')} placas</div>
+            </div>
+          </div>
+
+          <p className="text-xs font-medium text-slate-600 mb-1">Parâmetros comerciais que o modelo sugere <span className="text-slate-400 font-normal">(a proposta ainda pode ajustar caso a caso)</span></p>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
+            <div><label className={rotuloCls}>Margem equipamentos (%)</label>{campoNum('params.margemEquipamentos', 'w-full')}</div>
+            <div><label className={rotuloCls}>Margem instalação (%)</label>{campoNum('params.markupInstalacao', 'w-full')}</div>
+            <div><label className={rotuloCls}>Geração (kWh/kWp/mês)</label>{campoNum('params.fatorGeracao', 'w-full')}</div>
+            <div><label className={rotuloCls}>Tarifa (R$/kWh)</label>{campoNum('params.tarifaKwh', 'w-full')}</div>
+            <div><label className={rotuloCls}>Economia da geração (%)</label>{campoNum('params.percEconomia', 'w-full')}</div>
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={salvar} className="text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-md">Salvar modelo</button>
+            <button onClick={() => setRascunho(null)} className="text-sm text-slate-500 px-3 py-2">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {lista.map(m => (
+          <div key={m.id} className="bg-white border border-slate-200 rounded-lg">
+            <div className="flex justify-between items-center p-3 cursor-pointer" onClick={() => setExpandido(x => ({ ...x, [m.id]: !x[m.id] }))}>
+              <div className="flex items-center gap-2 min-w-0">
+                <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expandido[m.id] ? 'rotate-90' : ''}`} />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium flex items-center gap-1.5 flex-wrap">{m.nome}
+                    {ehPadrao(m.id) && !foiAjustado(m.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0">de fábrica</span>}
+                    {foiAjustado(m.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">de fábrica · ajustado</span>}
+                    {!ehPadrao(m.id) && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 shrink-0">criado pela equipe</span>}
+                    {!m.requerInversor && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 shrink-0">aceita proposta sem inversor</span>}
+                  </p>
+                  <p className="text-xs text-slate-400">{m.descricao}</p>
+                </div>
+              </div>
+            </div>
+            {expandido[m.id] && (
+              <div className="border-t border-slate-100 px-3 py-2 bg-slate-50 text-xs space-y-1">
+                {CHAVES_ITENS_MODELO.map(ch => (
+                  <div key={ch} className="flex gap-2 items-baseline">
+                    <span className={`w-3 shrink-0 ${m.itens[ch].ativo ? 'text-emerald-600' : 'text-slate-300'}`}>{m.itens[ch].ativo ? '✓' : '—'}</span>
+                    <span className="w-44 shrink-0 text-slate-600">{ROTULOS_ITENS_MODELO[ch]}</span>
+                    <span className={m.itens[ch].ativo ? 'text-slate-500' : 'text-slate-400 italic'}>{m.itens[ch].ativo ? explicarItemModelo(m, ch) : 'não cobrado neste modelo'}</span>
+                  </div>
+                ))}
+                {[['dc', 'Kit cabeamento DC', 'kitDc'], ['estrutura', 'Kit estrutura', 'kitEstrutura']].map(([k, rotulo, chaveExp]) => (
+                  <div key={k} className="flex gap-2 items-baseline">
+                    <span className={`w-3 shrink-0 ${m.kits[k].ativo ? 'text-emerald-600' : 'text-slate-300'}`}>{m.kits[k].ativo ? '✓' : '—'}</span>
+                    <span className="w-44 shrink-0 text-slate-600">{rotulo}</span>
+                    <span className={m.kits[k].ativo ? 'text-slate-500' : 'text-slate-400 italic'}>{m.kits[k].ativo ? explicarItemModelo(m, chaveExp) : 'não entra neste modelo'}</span>
+                  </div>
+                ))}
+                <p className="text-slate-500 pt-1 border-t border-slate-200">Comercial: margem de equipamentos {fr(m.params.margemEquipamentos)}% · margem da instalação {fr(m.params.markupInstalacao)}% · geração {fr(m.params.fatorGeracao)} kWh/kWp/mês · tarifa R$ {fr(m.params.tarifaKwh)}/kWh · {fr(m.params.percEconomia)}% da geração vira economia</p>
+                <p className="text-slate-400">O desconto do vendedor continua limitado à margem dos equipamentos; itens personalizados entram pelo valor final, sem margem.</p>
+                {podeEditar ? (
+                  <div className="flex gap-2 pt-1 flex-wrap">
+                    <button onClick={() => abrirEdicao(m)} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md">Editar</button>
+                    <button onClick={() => duplicar(m)} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md">Duplicar</button>
+                    {foiAjustado(m.id) && <button onClick={() => restaurarPadrao(m)} className="text-xs text-amber-700 border border-amber-300 px-2.5 py-1.5 rounded-md hover:bg-amber-50">Restaurar padrão de fábrica</button>}
+                    {!ehPadrao(m.id) && <button onClick={() => apagar(m)} className="text-xs text-red-500 hover:bg-red-50 px-2.5 py-1.5 rounded-md">Apagar</button>}
+                  </div>
+                ) : (
+                  <p className="text-slate-400 italic">Só consulta — editar modelos exige a permissão de preços e margens.</p>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PropostasModule({ propostas, setPropostas, estoque, clientes, setClientes, vendas, setVendas, modelosProposta, setModelosProposta, notify, askConfirm }) {
   const statusDe = (p) => p.status || 'aberta';
   const [showForm, setShowForm] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
@@ -7435,8 +7870,37 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
   const [mostrarParams, setMostrarParams] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [filtroStatus, setFiltroStatus] = useState('todas');
+  const [abaInterna, setAbaInterna] = useState('propostas');
+  const [modeloId, setModeloId] = useState(MODELOS_PROPOSTA_PADRAO[0].id);
+  const [modeloSnapshot, setModeloSnapshot] = useState(null); // regras gravadas na proposta em edição (vale se o modelo sumiu do cadastro)
+  const [avulsos, setAvulsos] = useState([]);
+  const [avDescricao, setAvDescricao] = useState('');
+  const [avValor, setAvValor] = useState('');
 
   const num = (x) => parseFloat(String(x ?? '').replace(',', '.')) || 0;
+
+  const listaModelos = useMemo(() => modelosEfetivos(modelosProposta), [modelosProposta]);
+  const modelo = useMemo(() => {
+    const achado = listaModelos.find(x => x.id === modeloId);
+    if (achado) return achado;
+    return modeloSnapshot ? normalizarModelo(modeloSnapshot) : listaModelos[0];
+  }, [listaModelos, modeloId, modeloSnapshot]);
+  function escolherModelo(id) {
+    setModeloId(id);
+    const novo = listaModelos.find(x => x.id === id);
+    if (novo) setParams(paramsCompletos(novo)); // o modelo manda nos padrões; dá para ajustar caso a caso depois
+  }
+  function adicionarAvulso() {
+    if (!avDescricao.trim() || num(avValor) <= 0) { notify('Descreva o item e informe o valor final de venda'); return; }
+    setAvulsos(l => [...l, { id: uid(), descricao: avDescricao.trim(), valor: num(avValor) }]);
+    setAvDescricao(''); setAvValor('');
+  }
+  const itensDesligadosDoModelo = useMemo(() => {
+    const nomes = CHAVES_ITENS_MODELO.filter(ch => !modelo.itens[ch].ativo).map(ch => ROTULOS_ITENS_MODELO[ch].toLowerCase());
+    if (!modelo.kits.dc.ativo) nomes.push('kit cabeamento DC');
+    if (!modelo.kits.estrutura.ativo) nomes.push('kit estrutura');
+    return nomes;
+  }, [modelo]);
 
   const opcoesTodas = useMemo(() =>
     estoque.slice().sort((a, b) => descricaoProduto(a).localeCompare(descricaoProduto(b), 'pt-BR'))
@@ -7506,10 +7970,10 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
   const kwpDigitado = (num(qtdPlacas) * num(wpPlaca)) / 1000;
   const kwMinDigitado = kwpDigitado / 1.4;
   const fmt2 = (v) => (v || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-  // Cabos, MC4 e estrutura entram sozinhos, pela regra da planilha:
-  // 1 kit DC (50m + 4 pares MC4) a cada 7 placas; 1 kit de estrutura a cada 4 placas.
-  const qtdKitsDc = num(qtdPlacas) > 0 ? Math.ceil(num(qtdPlacas) / 7) : 0;
-  const qtdKitsEstrutura = num(qtdPlacas) > 0 ? Math.ceil(num(qtdPlacas) / 4) : 0;
+  // Cabos, MC4 e estrutura entram sozinhos, pela régua do MODELO escolhido
+  // (se o kit entra neste tipo de proposta, e quantas placas por kit).
+  const qtdKitsDc = modelo.kits.dc.ativo && num(qtdPlacas) > 0 ? Math.ceil(num(qtdPlacas) / (modelo.kits.dc.placasPorKit || 7)) : 0;
+  const qtdKitsEstrutura = modelo.kits.estrutura.ativo && num(qtdPlacas) > 0 ? Math.ceil(num(qtdPlacas) / (modelo.kits.estrutura.placasPorKit || 4)) : 0;
   const valorKits = qtdKitsDc * (params.precoKitDc || 0) + qtdKitsEstrutura * (params.precoKitEstrutura || 0);
   const valorEquipamentos = num(precoPlaca) * num(qtdPlacas)
     + inversoresEfetivos.reduce((acc, i) => acc + (i.precoUnit || 0) * (i.quantidade || 0), 0)
@@ -7520,7 +7984,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     qtdInversores: num(qtdInversores), kwInversor: num(kwInversor),
     inversores: inversoresEfetivos.map(i => ({ quantidade: i.quantidade, kw: i.kw })),
     valorEquipamentos, params, entrada: num(entrada), desconto: num(desconto),
-  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, inversores, inversorId, precoInversor, valorEquipamentos, params, entrada, desconto]);
+    modelo, avulsos,
+  }), [qtdPlacas, wpPlaca, qtdInversores, kwInversor, inversores, inversorId, precoInversor, valorEquipamentos, params, entrada, desconto, modelo, avulsos]);
 
   function limparForm() {
     setEditandoId(null); setClienteNome(''); setClienteContato('');
@@ -7528,8 +7993,9 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
     setInversores([]); setGeracaoDesejada('');
     setAdicionais([]); setAddProdutoId(''); setAddQtd('1');
-    setParams({ ...PARAMS_PROPOSTA_PADRAO }); setEntrada('');
+    setParams(paramsCompletos(modelo)); setEntrada('');
     setDesconto(''); setObservacoes('');
+    setAvulsos([]); setAvDescricao(''); setAvValor(''); setModeloSnapshot(null);
     setShowForm(false);
   }
 
@@ -7537,7 +8003,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     if (!clienteNome.trim()) { notify('Informe o nome do cliente'); return; }
     if (!placaSel || num(qtdPlacas) <= 0) { notify('Escolha a placa e a quantidade'); return; }
     if (num(wpPlaca) <= 0) { notify('Informe a potência da placa em Wp'); return; }
-    if (inversoresEfetivos.length === 0) { notify('Escolha pelo menos um inversor (pode combinar mais de um modelo)'); return; }
+    if (modelo.requerInversor && inversoresEfetivos.length === 0) { notify('Escolha pelo menos um inversor (pode combinar mais de um modelo) — ou use um modelo de proposta de ampliação sem inversor.'); return; }
     if (inversoresEfetivos.some(i => (i.quantidade || 0) <= 0 || (i.kw || 0) <= 0)) { notify('Confira a quantidade e a potência (kW) de cada inversor'); return; }
     if (num(desconto) > calc.descontoMaximo + 0.009) {
       notify(`⚠️ O desconto máximo desta proposta é ${currency(calc.descontoMaximo)} — a margem entre a distribuidora e o valor de venda dos equipamentos. Acima disso venderia abaixo do preço da distribuidora.`);
@@ -7549,8 +8015,10 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
       data: existente?.data || new Date().toISOString(),
       atualizadoEm: editandoId ? new Date().toISOString() : undefined,
       clienteNome: clienteNome.trim(), clienteContato: clienteContato.trim(),
+      modeloId: modelo.id, modeloNome: modelo.nome,
+      modelo: JSON.parse(JSON.stringify(modelo)), // retrato das regras usadas — o cadastro pode mudar depois sem mexer nesta proposta
       placa: { produtoId: placaSel.id, descricao: descricaoProduto(placaSel), quantidade: num(qtdPlacas), wp: num(wpPlaca), precoUnit: num(precoPlaca) },
-      inversor: (({ id, ...i }) => i)(inversoresEfetivos[0]),
+      inversor: inversoresEfetivos[0] ? (({ id, ...i }) => i)(inversoresEfetivos[0]) : null,
       inversores: inversoresEfetivos.map(({ id, ...i }) => i),
       dimensionamento: kwpAlvo > 0 ? {
         geracaoDesejada: num(geracaoDesejada), fatorGeracao: fatorG, kwpAlvo,
@@ -7560,7 +8028,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
         dc: { quantidade: qtdKitsDc, precoUnit: params.precoKitDc || 0 },
         estrutura: { quantidade: qtdKitsEstrutura, precoUnit: params.precoKitEstrutura || 0 },
       },
-      adicionais, params: { ...params }, entrada: num(entrada),
+      adicionais, avulsos, params: { ...params }, entrada: num(entrada),
       desconto: num(desconto), observacoes: observacoes.trim(),
       calculos: calc,
       autor: autorAtual,
@@ -7579,7 +8047,9 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     setInversores(inversoresDaProposta(p).map(i => ({ id: uid(), produtoId: i.produtoId, descricao: i.descricao, quantidade: i.quantidade, kw: i.kw, precoUnit: i.precoUnit || 0 })));
     setInversorId(''); setQtdInversores('1'); setKwInversor(''); setPrecoInversor('');
     setGeracaoDesejada(p.dimensionamento?.geracaoDesejada ? String(p.dimensionamento.geracaoDesejada).replace('.', ',') : '');
-    setAdicionais(p.adicionais || []); setParams({ ...PARAMS_PROPOSTA_PADRAO, ...(p.params || {}) });
+    setModeloId(p.modeloId || MODELOS_PROPOSTA_PADRAO[0].id); setModeloSnapshot(p.modelo || null);
+    setAvulsos(p.avulsos || []); setAvDescricao(''); setAvValor('');
+    setAdicionais(p.adicionais || []); setParams({ ...paramsCompletos(p.modelo || null), ...(p.params || {}) });
     setEntrada(p.entrada ? String(p.entrada).replace('.', ',') : '');
     setDesconto(p.desconto ? String(p.desconto).replace('.', ',') : '');
     setObservacoes(p.observacoes || '');
@@ -7610,8 +8080,9 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     ].filter(x => x && x.produtoId && x.quantidade > 0);
     if (itensBrutos.length === 0) { notify('A proposta não tem itens ligados a produtos do estoque.'); return; }
     const temKits = (p.kits?.dc?.quantidade || 0) > 0 || (p.kits?.estrutura?.quantidade || 0) > 0;
+    const temAvulsos = (p.avulsos || []).length > 0;
     if (!(await askConfirm(
-      `Aceitar a proposta e gerar a venda da distribuidora para ${p.clienteNome}? Os itens entram como PRÉ-VENDA (nada baixa do estoque agora — a baixa é feita na aba Vendas quando separar).${temKits ? ' Os kits de cabo/MC4 e estrutura NÃO entram na venda (não são produtos do estoque) — lance manualmente se a distribuidora for fornecer.' : ''}`
+      `Aceitar a proposta e gerar a venda da distribuidora para ${p.clienteNome}? Os itens entram como PRÉ-VENDA (nada baixa do estoque agora — a baixa é feita na aba Vendas quando separar).${temKits ? ' Os kits de cabo/MC4 e estrutura NÃO entram na venda (não são produtos do estoque) — lance manualmente se a distribuidora for fornecer.' : ''}${temAvulsos ? ' Os itens personalizados (texto livre, sem produto no estoque) também NÃO entram na venda.' : ''}`
     ))) return;
 
     // Cliente da distribuidora: reaproveita pelo nome ou cria na hora
@@ -7660,12 +8131,14 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
     const esc = t => String(t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     const c = p.calculos || {};
     const inst = c.instalacao || {};
+    const tituloDoc = p.modelo?.tituloDocumento || 'Proposta — Sistema Solar Fotovoltaico';
     const linhasEquip = [
       `${p.placa.quantidade}x ${esc(p.placa.descricao)}`,
       ...inversoresDaProposta(p).map(i => `${i.quantidade}x ${esc(i.descricao)}`),
       ...(p.kits?.dc?.quantidade > 0 ? [`${p.kits.dc.quantidade}x kit cabeamento DC 50m + 4 pares MC4`] : ['Cabeamento e proteções']),
       ...(p.kits?.estrutura?.quantidade > 0 ? [`${p.kits.estrutura.quantidade}x kit estrutura de fixação (4 placas)`] : ['Estrutura de fixação']),
       ...(p.adicionais || []).map(a => `${a.quantidade}x ${esc(a.descricao)}`),
+      ...(p.avulsos || []).map(a => esc(a.descricao)),
       'Instalação completa, homologação junto à concessionária e comissionamento',
     ].map(t => `<li>${t}</li>`).join('');
     const linhasParc = (c.parcelamentos || []).map(x =>
@@ -7687,7 +8160,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
         @media print { body { margin: 12mm; } }
       </style></head><body>
       ${logomarcasAtual.integradora ? `<img src="${logomarcasAtual.integradora.replace(/"/g, '&quot;')}" style="height:52px;max-width:260px;object-fit:contain;display:block;margin-bottom:8px;">` : ''}
-      <h1>Proposta — Sistema Solar Fotovoltaico</h1>
+      <h1>${esc(tituloDoc)}</h1>
       <p class="meta">Estação Mossoró · ${formatDate(p.data)}${p.clienteNome ? ` · Cliente: <strong>${esc(p.clienteNome)}</strong>` : ''}${p.clienteContato ? ` · ${esc(p.clienteContato)}` : ''}</p>
 
       <h2>O sistema</h2>
@@ -7708,6 +8181,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
         <tr><td>Equipamentos (à vista)</td><td class="dir">${currency(c.valorEquipamentosCliente || 0)}</td></tr>
         ${c.desconto > 0 ? `<tr><td><strong>Desconto nos equipamentos</strong></td><td class="dir"><strong>− ${currency(c.desconto)}</strong></td></tr>` : ''}
         <tr><td>Instalação</td><td class="dir">${currency(c.instalacao?.valor || 0)}</td></tr>
+        ${(p.avulsos || []).map(a => `<tr><td>${esc(a.descricao)} <span class="meta">(item personalizado — valor final)</span></td><td class="dir">${currency(a.valor || 0)}</td></tr>`).join('')}
       </table>
       <div class="caixa">
         <div>Valor total à vista</div>
@@ -7733,10 +8207,19 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
 
   return (
     <div>
+      <div className="flex items-center gap-2 mb-4">
+        {[['propostas', 'Propostas'], ['modelos', 'Modelos de proposta']].map(([v, l]) => (
+          <button key={v} onClick={() => setAbaInterna(v)} className={`text-sm px-3 py-1.5 rounded-md border ${abaInterna === v ? 'bg-slate-900 text-white border-slate-900' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
+        ))}
+      </div>
+      {abaInterna === 'modelos' ? (
+        <ModelosPropostaTab modelosSalvos={modelosProposta || []} setModelosSalvos={setModelosProposta} notify={notify} askConfirm={askConfirm} />
+      ) : (
+      <>
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-lg font-semibold">Propostas — Integradora</h2>
-          <p className="text-xs text-slate-400">Sistema instalado para o cliente final. Equipamentos saem do preço de venda da distribuidora + margem; a instalação é calculada pelas fórmulas da planilha.</p>
+          <p className="text-xs text-slate-400">Sistema instalado para o cliente final. Equipamentos saem do preço de venda da distribuidora + margem; a instalação segue a matemática do modelo de proposta escolhido.</p>
         </div>
         {!showForm && <button onClick={() => setShowForm(true)} className="flex items-center gap-1 text-sm bg-emerald-500 hover:bg-emerald-600 text-white px-3 py-2 rounded-md shrink-0"><Plus size={16} /> Nova proposta</button>}
       </div>
@@ -7748,6 +8231,22 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
             <div><label className={rotuloCls}>Cliente</label><input value={clienteNome} onChange={e => setClienteNome(e.target.value)} placeholder="Nome do cliente" className={inputCls} /></div>
             <div><label className={rotuloCls}>Contato / cidade (opcional)</label><input value={clienteContato} onChange={e => setClienteContato(e.target.value)} placeholder="Telefone, cidade..." className={inputCls} /></div>
+          </div>
+
+          <div className="border border-amber-200 bg-amber-50 rounded-md p-3 mb-3">
+            <p className="text-xs font-medium text-amber-800 mb-2">Modelo de proposta — o que entra na conta e com qual matemática</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-start">
+              <select value={modelo.id} onChange={e => escolherModelo(e.target.value)} className={inputCls}>
+                {listaModelos.map(mo => <option key={mo.id} value={mo.id}>{mo.nome}</option>)}
+                {!listaModelos.some(mo => mo.id === modelo.id) && <option value={modelo.id}>{modelo.nome} (modelo desta proposta — saiu do cadastro)</option>}
+              </select>
+              <div className="text-xs text-amber-800 space-y-0.5">
+                <p>{modelo.descricao}</p>
+                {!modelo.requerInversor && <p className="text-amber-700 font-medium">Este modelo aceita proposta sem inversor nenhum.</p>}
+                {itensDesligadosDoModelo.length > 0 && <p className="text-amber-700">Não cobrados neste modelo: {itensDesligadosDoModelo.join(', ')}.</p>}
+                <p className="text-amber-600">A matemática de cada item está na aba “Modelos de proposta” — e aparece na prévia, aqui embaixo.</p>
+              </div>
+            </div>
           </div>
 
           <div className="border border-sky-200 bg-sky-50 rounded-md p-3 mb-3">
@@ -7788,7 +8287,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
           </div>
 
           <div className="border border-slate-200 rounded-md p-3 mb-3">
-            <p className="text-xs font-medium text-slate-600 mb-2">Inversores{kwMinSugerido > 0 ? ` — mínimo recomendado: ${fmt2(kwMinSugerido)} kW` : ''}</p>
+            <p className="text-xs font-medium text-slate-600 mb-2">Inversores{!modelo.requerInversor ? ' — opcional neste modelo (a ampliação pode aproveitar o que já existe)' : ''}{kwMinSugerido > 0 ? ` — mínimo recomendado: ${fmt2(kwMinSugerido)} kW` : ''}</p>
             {inversores.length > 0 && (
               <div className="space-y-1 mb-2">
                 {inversores.map(inv => (
@@ -7820,11 +8319,16 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
           </div>
 
           <div className="border border-slate-200 rounded-md p-3 mb-3 bg-slate-50">
-            <p className="text-xs font-medium text-slate-600 mb-1">Cabos, MC4 e estrutura — automático</p>
+            <p className="text-xs font-medium text-slate-600 mb-1">Cabos, MC4 e estrutura — automático, pela régua do modelo</p>
             <p className="text-xs text-slate-500">
-              {qtdKitsDc > 0
-                ? `${qtdKitsDc}x kit DC 50m + 4 pares MC4 (${currency(params.precoKitDc || 0)} un.) · ${qtdKitsEstrutura}x kit estrutura para 4 placas (${currency(params.precoKitEstrutura || 0)} un.) = ${currency(valorKits)}`
-                : 'Informe a quantidade de placas — os kits entram sozinhos (1 kit DC a cada 7 placas, 1 kit de estrutura a cada 4).'}
+              {(qtdKitsDc > 0 || qtdKitsEstrutura > 0)
+                ? [
+                    qtdKitsDc > 0 ? `${qtdKitsDc}x kit DC 50m + 4 pares MC4 (${currency(params.precoKitDc || 0)} un.)` : null,
+                    qtdKitsEstrutura > 0 ? `${qtdKitsEstrutura}x kit estrutura para ${modelo.kits.estrutura.placasPorKit} placas (${currency(params.precoKitEstrutura || 0)} un.)` : null,
+                  ].filter(Boolean).join(' · ') + ` = ${currency(valorKits)}`
+                : !modelo.kits.dc.ativo && !modelo.kits.estrutura.ativo
+                  ? 'Este modelo não inclui kit automático nenhum — religue na aba “Modelos de proposta” se a obra pedir.'
+                  : `Informe a quantidade de placas — os kits ligados no modelo entram sozinhos${modelo.kits.dc.ativo ? ` (1 kit DC a cada ${modelo.kits.dc.placasPorKit} placas` : ''}${modelo.kits.estrutura.ativo ? `${modelo.kits.dc.ativo ? ', ' : ' ('}1 kit de estrutura a cada ${modelo.kits.estrutura.placasPorKit}` : ''}).`}
             </p>
           </div>
 
@@ -7844,6 +8348,26 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
               <div className="col-span-2 sm:col-span-2"><SelectPesquisavel opcoes={opcoesTodas} value={addProdutoId} onChange={setAddProdutoId} placeholder="Buscar produto..." compacto /></div>
               <div><input type="text" inputMode="numeric" value={addQtd} onChange={e => setAddQtd(e.target.value)} placeholder="Qtd" className={inputCls} /></div>
               <div><button onClick={adicionarItem} className="text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2.5 rounded-md w-full">+ Adicionar</button></div>
+            </div>
+          </div>
+
+          <div className="border border-violet-200 rounded-md p-3 mb-3">
+            <p className="text-xs font-medium text-violet-700 mb-1">Itens personalizados — fora do estoque, pelo valor final</p>
+            <p className="text-[11px] text-slate-400 mb-2">Para o que o cliente pediu e não é produto cadastrado: sinalização, placa, decoração... O valor digitado é o valor FINAL de venda — entra direto no total, sem margem e sem custo lançado.</p>
+            {avulsos.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {avulsos.map(a => (
+                  <div key={a.id} className="flex items-center justify-between text-xs bg-violet-50 border border-violet-100 rounded px-2 py-1.5">
+                    <span>{a.descricao} — <span className="font-medium">{currency(a.valor)}</span></span>
+                    <button onClick={() => setAvulsos(l => l.filter(x => x.id !== a.id))} className="text-slate-400 hover:text-red-500 ml-2"><X size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 items-end">
+              <div className="col-span-2 sm:col-span-2"><input value={avDescricao} onChange={e => setAvDescricao(e.target.value)} placeholder="Ex: placa de sinalização iluminada no telhado" className={inputCls} /></div>
+              <div><input type="text" inputMode="decimal" value={avValor} onChange={e => setAvValor(e.target.value)} placeholder="Valor final (R$)" className={inputCls} /></div>
+              <div><button onClick={adicionarAvulso} className="text-xs bg-violet-100 hover:bg-violet-200 text-violet-700 border border-violet-200 px-3 py-2.5 rounded-md w-full">+ Adicionar</button></div>
             </div>
           </div>
 
@@ -7904,22 +8428,19 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
               <div className="pt-1">
                 <p className="text-[11px] font-medium text-slate-600 mb-1">Previsão de custos da instalação (tabela — uso do vendedor)</p>
                 <div className="bg-white border border-slate-200 rounded-md px-2 py-1">
-                  {[
-                    ['M.O. placas', calc.instalacao.moPlacas],
-                    ['M.O. inversor', calc.instalacao.moInversor],
-                    ['Homologação', calc.instalacao.homologacao],
-                    ['Comissionamento', calc.instalacao.comissionamento],
-                    ['Administrativo', calc.instalacao.administrativo],
-                    ['Material elétrico', calc.instalacao.materialEletrico],
-                    ['Frete de entrega', calc.instalacao.frete],
-                  ].map(([nome, valor]) => (
-                    <div key={nome} className="flex justify-between py-0.5 border-b border-slate-50 last:border-0"><span className="text-slate-500">{nome}</span><span>{currency(valor)}</span></div>
+                  {linhasCustoInstalacao({ modelo, params, calculos: calc, placa: { quantidade: num(qtdPlacas) }, inversores: inversoresEfetivos }).map(([nome, valor, formula]) => (
+                    <div key={nome} className="py-0.5 border-b border-slate-50 last:border-0">
+                      <div className="flex justify-between"><span className="text-slate-500">{nome}</span><span>{currency(valor)}</span></div>
+                      {formula && <p className="text-[10px] text-slate-400">{formula}</p>}
+                    </div>
                   ))}
+                  {itensDesligadosDoModelo.length > 0 && <p className="text-[10px] text-slate-400 italic py-0.5">Não cobrados neste modelo: {itensDesligadosDoModelo.join(', ')}.</p>}
                   <div className="flex justify-between py-0.5 border-t border-slate-200 mt-0.5"><span className="text-slate-600 font-medium">Custo total estimado</span><span className="font-medium">{currency(calc.instalacao.custo)}</span></div>
                   <div className="flex justify-between py-0.5"><span className="text-slate-600 font-medium">Cobrado do cliente (+{params.markupInstalacao}%)</span><span className="font-medium">{currency(calc.instalacao.valor)}</span></div>
                   <div className="flex justify-between py-0.5 text-emerald-700"><span>Saldo operacional</span><span>{currency(calc.instalacao.valor - calc.instalacao.custo)}</span></div>
                 </div>
               </div>
+              {calc.totalAvulsos > 0 && <div className="flex justify-between"><span className="text-slate-500">Itens personalizados (valor final — sem margem, sem custo)</span><span className="font-medium">{currency(calc.totalAvulsos)}</span></div>}
               <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-800 font-medium">Total à vista</span><span className="font-semibold text-base">{currency(calc.totalAVista)}</span></div>
             </div>
           </div>
@@ -7949,7 +8470,7 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
                     {statusDe(p) === 'aceita' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 shrink-0">Aceita{p.vendaId ? ' · venda gerada' : ''}</span>}
                     {statusDe(p) === 'perdida' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-500 shrink-0">Perdida</span>}
                   </p>
-                  <p className="text-xs text-slate-400">{formatDate(p.data)} · {(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · {p.placa?.quantidade}x placa + {inversoresDaProposta(p).reduce((a, i) => a + (i.quantidade || 0), 0)}x inversor</p>
+                  <p className="text-xs text-slate-400">{formatDate(p.data)} · {(p.calculos?.kwp || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kWp · {p.placa?.quantidade}x placa + {inversoresDaProposta(p).reduce((a, i) => a + (i.quantidade || 0), 0)}x inversor{p.modeloNome ? ` · ${p.modeloNome}` : ''}</p>
                 </div>
               </div>
               <span className="text-sm font-semibold shrink-0">{currency(p.calculos?.totalAVista || 0)}</span>
@@ -7962,20 +8483,16 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
                 )}
                 <p className="text-slate-500">Geração {Math.round(p.calculos?.geracaoMensal || 0)} kWh/mês · economia {currency(p.calculos?.economiaMensal || 0)}/mês · payback {Math.round(p.calculos?.roiMeses || 0)} meses</p>
                 <p className="text-slate-500">Equipamentos {currency(p.calculos?.valorEquipamentosFinal ?? p.calculos?.valorEquipamentosCliente ?? 0)}{(p.calculos?.desconto || 0) > 0 ? ` (desconto de ${currency(p.calculos.desconto)} já aplicado)` : ''} + instalação {currency(p.calculos?.instalacao?.valor || 0)}{p.entrada > 0 ? ` · entrada ${currency(p.entrada)}` : ''}</p>
+                {(p.avulsos || []).length > 0 && <p className="text-violet-700">Itens personalizados (valor final, sem custo): {(p.avulsos || []).map(a => `${a.descricao} — ${currency(a.valor || 0)}`).join(' · ')}</p>}
                 {p.observacoes && <p className="text-slate-500 italic">Obs: {p.observacoes}</p>}
                 {p.calculos?.instalacao && (
                   <div className="bg-white border border-slate-200 rounded-md px-2 py-1 mt-1 max-w-md">
                     <p className="text-[11px] font-medium text-slate-600 py-0.5">Previsão de custos da instalação (uso do vendedor)</p>
-                    {[
-                      ['M.O. placas', p.calculos.instalacao.moPlacas],
-                      ['M.O. inversor', p.calculos.instalacao.moInversor],
-                      ['Homologação', p.calculos.instalacao.homologacao],
-                      ['Comissionamento', p.calculos.instalacao.comissionamento],
-                      ['Administrativo', p.calculos.instalacao.administrativo],
-                      ['Material elétrico', p.calculos.instalacao.materialEletrico],
-                      ['Frete de entrega', p.calculos.instalacao.frete],
-                    ].map(([nome, valor]) => (
-                      <div key={nome} className="flex justify-between py-0.5 border-b border-slate-50 last:border-0"><span className="text-slate-500">{nome}</span><span>{currency(valor)}</span></div>
+                    {linhasCustoInstalacao(p).map(([nome, valor, formula]) => (
+                      <div key={nome} className="py-0.5 border-b border-slate-50 last:border-0">
+                        <div className="flex justify-between"><span className="text-slate-500">{nome}</span><span>{currency(valor)}</span></div>
+                        {formula && <p className="text-[10px] text-slate-400">{formula}</p>}
+                      </div>
                     ))}
                     <div className="flex justify-between py-0.5 border-t border-slate-200 mt-0.5"><span className="text-slate-600 font-medium">Custo total estimado</span><span className="font-medium">{currency(p.calculos.instalacao.custo)}</span></div>
                     <div className="flex justify-between py-0.5"><span className="text-slate-600 font-medium">Cobrado do cliente</span><span className="font-medium">{currency(p.calculos.instalacao.valor)}</span></div>
@@ -8008,6 +8525,8 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
           </div>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }
