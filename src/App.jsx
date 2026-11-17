@@ -4,8 +4,27 @@ import { loadCollection, saveCollectionDelta, saveCollectionFull, loadConfig, sa
 import { supabase } from './lib/supabaseClient';
 import LoginScreen from './LoginScreen';
 
-const CATEGORIAS = ['Inversor', 'Painel', 'Estrutura', 'Cabo', 'Outro'];
-const SERIALIZAVEL_PADRAO = { Inversor: true, Painel: false, Estrutura: false, Cabo: false, Outro: false };
+// Grupos de produto: cadastro editável (Estoque -> Grupos). O 'papel' é interno
+// e sobrevive a renomeações — é por ele que a proposta acha placas e inversores.
+const GRUPOS_PRODUTO_PADRAO = [
+  { nome: 'Inversor', serializado: true, papel: 'inversor' },
+  { nome: 'Painel', serializado: false, papel: 'painel' },
+  { nome: 'Estrutura', serializado: false },
+  { nome: 'Cabo', serializado: false },
+  { nome: 'Outro', serializado: false },
+];
+function normalizarGruposProduto(lista) {
+  const grupos = (Array.isArray(lista) ? lista : [])
+    .map(g => ({ nome: String(g?.nome || '').trim(), serializado: !!g?.serializado, ...(g?.papel ? { papel: g.papel } : {}) }))
+    .filter(g => g.nome);
+  for (const padrao of [...GRUPOS_PRODUTO_PADRAO].reverse()) {
+    if (padrao.papel && !grupos.some(g => g.papel === padrao.papel)) grupos.unshift({ ...padrao });
+  }
+  return grupos.length ? grupos : GRUPOS_PRODUTO_PADRAO.map(g => ({ ...g }));
+}
+function nomeDoPapel(grupos, papel) {
+  return (grupos || []).find(g => g.papel === papel)?.nome || (papel === 'painel' ? 'Painel' : 'Inversor');
+}
 const CADASTRO_TABS = ['estoque', 'depositos', 'fornecedores', 'clientes', 'formasRecebimento', 'senhaAprovacao', 'logomarcas', 'equipe'];
 const COMPRAS_TABS = ['transferencias', 'pedidos', 'recebimento', 'conferencia', 'balanco', 'pagamentos', 'conciliacao', 'financeiro'];
 const PAGAMENTO_CATEGORIAS_SAIDA = [
@@ -1084,6 +1103,7 @@ function AppInner({ perfil }) {
   const [conciliacoes, setConciliacoes] = useState([]);
   const [notasFiscais, setNotasFiscais] = useState([]);
   const [categoriasPagamento, setCategoriasPagamento] = useState({ saida: PAGAMENTO_CATEGORIAS_SAIDA, entrada: PAGAMENTO_CATEGORIAS_ENTRADA });
+  const [gruposProduto, setGruposProduto] = useState(GRUPOS_PRODUTO_PADRAO);
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -1320,6 +1340,8 @@ function AppInner({ perfil }) {
           entrada: Array.isArray(cats.entrada) && cats.entrada.length ? cats.entrada : PAGAMENTO_CATEGORIAS_ENTRADA,
         });
       }
+      const gps = await loadConfig('gruposProduto', null);
+      if (gps) setGruposProduto(normalizarGruposProduto(gps));
       const confs = await loadConfig('confirmadores', null);
       if (confs && Array.isArray(confs.emails) && confs.emails.length) confirmadoresAtual = confs.emails;
       const lgm = await loadConfig('logomarcas', null);
@@ -1473,6 +1495,13 @@ function AppInner({ perfil }) {
     setCategoriasPagamento(next);
     return true;
   }
+  async function salvarGruposProduto(next) {
+    const norm = normalizarGruposProduto(next);
+    const ok = await saveConfig('gruposProduto', norm);
+    if (!ok) { notify('⚠️ Não foi possível salvar os grupos. Verifique a conexão e tente de novo.'); return false; }
+    setGruposProduto(norm);
+    return true;
+  }
   async function salvarLogomarcas(next) {
     const ok = await saveConfig('logomarcas', next);
     if (!ok) { notify('⚠️ Não foi possível salvar a logomarca. Verifique a conexão e tente de novo.'); return false; }
@@ -1597,7 +1626,7 @@ function AppInner({ perfil }) {
 
       <main className="max-w-6xl mx-auto px-4 py-5">
         {tab === 'visaoGeral' && <VisaoGeralModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} expedicoes={expedicoes} conciliacoes={conciliacoes} propostas={propostas} indicadores={indicadores} ajustesReposicao={ajustesReposicao} irPara={setTab} />}
-        {tab === 'estoque' && <EstoqueModule estoque={estoque} setEstoque={persistEstoque} depositos={depositos} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
+        {tab === 'estoque' && <EstoqueModule grupos={gruposProduto} salvarGrupos={salvarGruposProduto} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} estoque={estoque} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'transferencias' && (
           <TransferenciasModule
@@ -1611,6 +1640,7 @@ function AppInner({ perfil }) {
         {tab === 'fornecedores' && <FornecedoresModule fornecedores={fornecedores} setFornecedores={persistFornecedores} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'pedidos' && (
           <PedidoCompraModule
+            grupos={gruposProduto}
             estoque={estoque} setEstoque={persistEstoque}
             fornecedores={fornecedores}
             pedidos={pedidosCompra} setPedidos={persistPedidosCompra}
@@ -1677,7 +1707,7 @@ function AppInner({ perfil }) {
         {tab === 'equipe' && <EquipeModule askConfirm={askConfirm} notify={notify} />}
         {tab === 'conciliacao' && <ConciliacaoModule conciliacoes={conciliacoes} setConciliacoes={persistConciliacoes} vendas={vendas} setVendas={persistVendas} pagamentos={pagamentos} setPagamentos={persistPagamentos} pedidosCompra={pedidosCompra} categoriasSaida={categoriasPagamento.saida} askConfirm={askConfirm} notify={notify} />}
         {tab === 'fiscal' && <FiscalModule notasFiscais={notasFiscais} setNotasFiscais={persistNotasFiscais} askSenha={askSenha} notify={notify} />}
-        {tab === 'propostas' && <PropostasModule propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} modelosProposta={modelosProposta} setModelosProposta={persistModelosProposta} notify={notify} askConfirm={askConfirm} />}
+        {tab === 'propostas' && <PropostasModule grupos={gruposProduto} propostas={propostas} setPropostas={persistPropostas} estoque={estoque} clientes={clientes} setClientes={persistClientes} vendas={vendas} setVendas={persistVendas} modelosProposta={modelosProposta} setModelosProposta={persistModelosProposta} notify={notify} askConfirm={askConfirm} />}
         {tab === 'financeiro' && <FinanceiroModule vendas={vendas} setVendas={persistVendas} formasRecebimento={formasRecebimento} indicadores={indicadores} estoque={estoque} setEstoque={persistEstoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} pagamentos={pagamentos} setPagamentos={persistPagamentos} ajustesReposicao={ajustesReposicao} setAjustesReposicao={persistAjustesReposicao} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
       </main>
 
@@ -2997,12 +3027,96 @@ function ExtratoMovimentacoes({ item, vendas, recebimentos, pedidosCompra, trans
   );
 }
 
-function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, pedidosCompra, transferencias, balancos, askConfirm, askSenha, notify }) {
+// Cadastro dos grupos de produto. Renomear migra os produtos do catálogo
+// junto (os registros antigos guardam o nome da época); grupos com 'papel'
+// podem ser renomeados, nunca removidos — a proposta depende deles.
+function GruposProdutoPanel({ grupos, salvarGrupos, estoque, setEstoque, notify, askConfirm, fechar }) {
+  const [linhas, setLinhas] = useState(() => grupos.map(g => ({ ...g, nomeOriginal: g.nome })));
+  const [salvando, setSalvando] = useState(false);
+  const usoPorGrupo = useMemo(() => {
+    const m = {};
+    for (const p of estoque) m[p.categoria] = (m[p.categoria] || 0) + 1;
+    return m;
+  }, [estoque]);
+
+  function mudar(idx, campo, valor) {
+    setLinhas(ls => ls.map((l, i) => i === idx ? { ...l, [campo]: valor } : l));
+  }
+  function remover(idx) {
+    const l = linhas[idx];
+    if (l.papel) { notify(`O grupo "${l.nome}" não pode ser removido — é por ele que a proposta encontra ${l.papel === 'painel' ? 'as placas' : 'os inversores'}. Renomear pode.`); return; }
+    const uso = l.nomeOriginal ? (usoPorGrupo[l.nomeOriginal] || 0) : 0;
+    if (uso > 0) { notify(`O grupo "${l.nomeOriginal}" tem ${uso} produto(s) no catálogo. Mova esses produtos para outro grupo antes de removê-lo.`); return; }
+    setLinhas(ls => ls.filter((_, i) => i !== idx));
+  }
+
+  async function salvar() {
+    if (!podeAcao('cadastros')) { notify('⚠️ Seu perfil não permite editar os grupos de produto.'); return; }
+    const limpos = linhas.map(l => ({ ...l, nome: l.nome.trim() }));
+    if (limpos.some(l => !l.nome)) { notify('Tem grupo sem nome — preencha ou remova a linha.'); return; }
+    const vistos = new Set();
+    for (const l of limpos) {
+      const chave = l.nome.toLowerCase();
+      if (vistos.has(chave)) { notify(`O nome "${l.nome}" está repetido — cada grupo precisa de um nome único.`); return; }
+      vistos.add(chave);
+    }
+    const renomeacoes = limpos.filter(l => l.nomeOriginal && l.nomeOriginal !== l.nome);
+    const migraveis = renomeacoes.filter(r => (usoPorGrupo[r.nomeOriginal] || 0) > 0);
+    if (migraveis.length > 0) {
+      const resumoMig = migraveis.map(r => `"${r.nomeOriginal}" vira "${r.nome}" (${usoPorGrupo[r.nomeOriginal]} produto(s))`).join('; ');
+      if (!(await askConfirm(`Renomear também nos produtos já cadastrados? ${resumoMig}. Vendas e pedidos antigos guardam o nome da época.`))) return;
+    }
+    setSalvando(true);
+    const ok = await salvarGrupos(limpos.map(({ nomeOriginal, ...g }) => g));
+    if (!ok) { setSalvando(false); return; }
+    if (migraveis.length > 0) {
+      const mapa = Object.fromEntries(migraveis.map(r => [r.nomeOriginal, r.nome]));
+      await setEstoque(estoque.map(p => mapa[p.categoria] ? { ...p, categoria: mapa[p.categoria] } : p));
+    }
+    setSalvando(false);
+    notify('Grupos de produto salvos');
+    fechar();
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
+      <div className="flex justify-between items-center">
+        <h3 className="font-medium text-sm">Grupos de produto</h3>
+        <button type="button" onClick={fechar}><X size={16} className="text-slate-400" /></button>
+      </div>
+      <p className="text-xs text-slate-400 -mt-2">Renomear um grupo atualiza os produtos do catálogo junto. A caixa "nº de série" é só o padrão sugerido ao cadastrar produto novo nesse grupo.</p>
+      <div className="space-y-2">
+        {linhas.map((l, idx) => (
+          <div key={idx} className="flex items-center gap-2 flex-wrap">
+            <input value={l.nome} onChange={e => mudar(idx, 'nome', e.target.value)} placeholder="Nome do grupo (ex: Material elétrico)" className="border border-slate-200 rounded-md px-2 py-1.5 text-sm flex-1 min-w-[160px]" />
+            <label className="flex items-center gap-1 text-xs text-slate-600 shrink-0">
+              <input type="checkbox" checked={!!l.serializado} onChange={e => mudar(idx, 'serializado', e.target.checked)} /> nº de série
+            </label>
+            {l.papel && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded shrink-0" title="A proposta usa este grupo — dá para renomear, não para remover">{l.papel === 'painel' ? 'placas da proposta' : 'inversores da proposta'}</span>}
+            {l.nomeOriginal && (usoPorGrupo[l.nomeOriginal] || 0) > 0 && <span className="text-[10px] text-slate-400 shrink-0">{usoPorGrupo[l.nomeOriginal]} produto(s)</span>}
+            <button type="button" onClick={() => remover(idx)} title="Remover grupo"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <button type="button" onClick={adicionarLinha} className="flex items-center gap-1 text-sm text-slate-600 border border-slate-300 hover:bg-slate-100 px-3 py-1.5 rounded-md"><Plus size={14} /> Novo grupo</button>
+        <button type="button" onClick={salvar} disabled={salvando} className="bg-slate-900 text-white text-sm px-4 py-1.5 rounded-md hover:bg-slate-800 disabled:opacity-50">{salvando ? 'Salvando…' : 'Salvar grupos'}</button>
+      </div>
+    </div>
+  );
+
+  function adicionarLinha() {
+    setLinhas(ls => [...ls, { nome: '', serializado: false, nomeOriginal: null }]);
+  }
+}
+
+function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, vendas, recebimentos, pedidosCompra, transferencias, balancos, askConfirm, askSenha, notify }) {
   // A chegar e pré-vendido por produto — pro cadastro mostrar o que está LIVRE de verdade.
   const aCaminhoMapCad = useMemo(() => mapaACaminhoPorProduto(pedidosCompra, recebimentos), [pedidosCompra, recebimentos]);
   const reservadoMapCad = useMemo(() => mapaReservadoPorProduto(vendas), [vendas]);
   const [showForm, setShowForm] = useState(false);
   const [expanded, setExpanded] = useState({});
+  const [showGrupos, setShowGrupos] = useState(false);
   const [filtroCategoria, setFiltroCategoria] = useState('Todos');
   const [ordenacao, setOrdenacao] = useState('alfabetica');
   const [busca, setBusca] = useState('');
@@ -3034,7 +3148,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
   const [editandoProdutoId, setEditandoProdutoId] = useState(null);
 
   function emptyForm() {
-    return { categoria: 'Inversor', marca: '', modelo: '', potencia: '', serializado: true, precoVenda: '', quantidadeMinima: '', observacoes: '' };
+    return { categoria: grupos[0]?.nome || 'Inversor', marca: '', modelo: '', potencia: '', serializado: grupos[0] ? !!grupos[0].serializado : true, precoVenda: '', quantidadeMinima: '', observacoes: '' };
   }
   function resetForm() { setForm(emptyForm()); setEditandoProdutoId(null); setShowForm(false); }
 
@@ -3132,13 +3246,20 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
     return ordenado;
   }, [estoque, filtroCategoria, busca, ordenacao]);
 
+  const nomesGrupos = useMemo(() => {
+    const nomes = grupos.map(g => g.nome);
+    for (const i of estoque) if (i.categoria && !nomes.includes(i.categoria)) nomes.push(i.categoria);
+    return nomes;
+  }, [grupos, estoque]);
+
   const resumo = useMemo(() => {
     const totalItens = estoque.length;
-    const inversoresDisponiveis = estoque.filter(i => i.categoria === 'Inversor').reduce((acc, i) => acc + availableQty(i), 0);
+    const nomeInversor = nomeDoPapel(grupos, 'inversor');
+    const inversoresDisponiveis = estoque.filter(i => i.categoria === nomeInversor).reduce((acc, i) => acc + availableQty(i), 0);
     const estoqueBaixo = estoque.filter(i => availableQty(i) <= (i.quantidadeMinima || 0)).length;
     const semCusto = estoque.filter(temCustoPendente).length;
     return { totalItens, inversoresDisponiveis, estoqueBaixo, semCusto };
-  }, [estoque]);
+  }, [estoque, grupos]);
 
   return (
     <div>
@@ -3156,7 +3277,7 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
         </div>
         <div className="flex flex-col sm:flex-row gap-2">
           <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
-            <option>Todos</option>{CATEGORIAS.map(c => <option key={c}>{c}</option>)}
+            <option>Todos</option>{nomesGrupos.map(c => <option key={c}>{c}</option>)}
           </select>
           <select value={ordenacao} onChange={e => setOrdenacao(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="alfabetica">Ordem alfabética (A-Z)</option>
@@ -3173,8 +3294,15 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
           <button onClick={() => setShowForm(s => !s)} className="flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-medium text-sm px-3 py-2 rounded-md">
             <Plus size={16} /> Novo produto
           </button>
+          <button onClick={() => setShowGrupos(s => !s)} title="Criar, renomear e remover os grupos de produto" className="flex items-center justify-center gap-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium text-sm px-3 py-2 rounded-md">
+            <ClipboardList size={16} /> Grupos
+          </button>
         </div>
       </div>
+
+      {showGrupos && (
+        <GruposProdutoPanel grupos={grupos} salvarGrupos={salvarGrupos} estoque={estoque} setEstoque={setEstoque} notify={notify} askConfirm={askConfirm} fechar={() => setShowGrupos(false)} />
+      )}
 
       {showForm && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
@@ -3184,8 +3312,8 @@ function EstoqueModule({ estoque, setEstoque, depositos, vendas, recebimentos, p
           </div>
           {!editandoProdutoId && <p className="text-xs text-slate-400 -mt-2">A entrada de quantidade e custo é feita via Pedidos de compra → Recebimento.</p>}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <select value={form.categoria} onChange={e => setForm(f => ({ ...f, categoria: e.target.value, serializado: SERIALIZAVEL_PADRAO[e.target.value] }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm col-span-2 sm:col-span-1">
-              {CATEGORIAS.map(c => <option key={c}>{c}</option>)}
+            <select value={form.categoria} onChange={e => { const v = e.target.value; const g = grupos.find(x => x.nome === v); setForm(f => ({ ...f, categoria: v, serializado: g ? !!g.serializado : f.serializado })); }} className="border border-slate-200 rounded-md px-2 py-2 text-sm col-span-2 sm:col-span-1">
+              {(grupos.some(g => g.nome === form.categoria) ? grupos.map(g => g.nome) : [form.categoria, ...grupos.map(g => g.nome)]).map(c => <option key={c}>{c}</option>)}
             </select>
             <input placeholder="Marca" value={form.marca} onChange={e => setForm(f => ({ ...f, marca: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
             <input placeholder="Modelo" value={form.modelo} onChange={e => setForm(f => ({ ...f, modelo: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
@@ -3681,7 +3809,7 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, askSenh
 
 /* ---------------- PEDIDOS DE COMPRA (como um "orçamento" de compra, ainda sem estoque) ---------------- */
 
-function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, vendas, askConfirm, askSenha, notify }) {
+function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, vendas, askConfirm, askSenha, notify }) {
   // Recebido por item de pedido, calculado uma vez — as listas abaixo consultam o mapa.
   const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
   // Pré-vendas distribuídas pelos pedidos (FIFO) — cada pedido mostra o que dele já está prometido.
@@ -3698,13 +3826,13 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
 
   const [modoNovoProduto, setModoNovoProduto] = useState(false);
   const [produtoSel, setProdutoSel] = useState('');
-  const [novoProd, setNovoProd] = useState({ categoria: 'Inversor', marca: '', modelo: '', potencia: '', serializado: true, precoVenda: '', quantidadeMinima: '' });
+  const [novoProd, setNovoProd] = useState({ categoria: grupos[0]?.nome || 'Inversor', marca: '', modelo: '', potencia: '', serializado: grupos[0] ? !!grupos[0].serializado : true, precoVenda: '', quantidadeMinima: '' });
   const [quantidade, setQuantidade] = useState('');
   const [custoUnitario, setCustoUnitario] = useState('');
 
   function resetLinha() {
     setModoNovoProduto(false); setProdutoSel('');
-    setNovoProd({ categoria: 'Inversor', marca: '', modelo: '', potencia: '', serializado: true, precoVenda: '', quantidadeMinima: '' });
+    setNovoProd({ categoria: grupos[0]?.nome || 'Inversor', marca: '', modelo: '', potencia: '', serializado: grupos[0] ? !!grupos[0].serializado : true, precoVenda: '', quantidadeMinima: '' });
     setQuantidade(''); setCustoUnitario('');
   }
 
@@ -3955,8 +4083,8 @@ function PedidoCompraModule({ estoque, setEstoque, fornecedores, pedidos, setPed
               />
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <select value={novoProd.categoria} onChange={e => setNovoProd(p => ({ ...p, categoria: e.target.value, serializado: SERIALIZAVEL_PADRAO[e.target.value] }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
-                  {CATEGORIAS.map(c => <option key={c}>{c}</option>)}
+                <select value={novoProd.categoria} onChange={e => { const v = e.target.value; const g = grupos.find(x => x.nome === v); setNovoProd(p => ({ ...p, categoria: v, serializado: g ? !!g.serializado : p.serializado })); }} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+                  {grupos.map(g => g.nome).map(c => <option key={c}>{c}</option>)}
                 </select>
                 <input placeholder="Marca" value={novoProd.marca} onChange={e => setNovoProd(p => ({ ...p, marca: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input placeholder="Modelo" value={novoProd.modelo} onChange={e => setNovoProd(p => ({ ...p, modelo: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
@@ -4496,18 +4624,26 @@ function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askC
   const [showForm, setShowForm] = useState(false);
   const [nome, setNome] = useState('');
   const [multipla, setMultipla] = useState(false);
+  const [terceiro, setTerceiro] = useState(false);
 
   async function handleAdd() {
     if (!nome.trim()) { notify('Digite o nome da forma de recebimento'); return; }
-    await setFormasRecebimento([...formasRecebimento, { id: uid(), nome: nome.trim(), multipla }]);
+    await setFormasRecebimento([...formasRecebimento, { id: uid(), nome: nome.trim(), multipla, terceiro: multipla ? false : terceiro }]);
     notify('Forma de recebimento cadastrada');
-    setNome(''); setMultipla(false); setShowForm(false);
+    setNome(''); setMultipla(false); setTerceiro(false); setShowForm(false);
   }
 
   async function handleDelete(id) {
     if (!(await askSenha('Remover esta forma de recebimento? Essa exclusão é definitiva.'))) return;
     await setFormasRecebimento(formasRecebimento.filter(f => f.id !== id));
     notify('Forma de recebimento removida');
+  }
+
+  async function alternarTerceiro(f) {
+    await setFormasRecebimento(formasRecebimento.map(x => x.id === f.id ? { ...x, terceiro: !x.terceiro } : x));
+    notify(!f.terceiro
+      ? `"${f.nome}" agora é paga direto a terceiro — ao confirmar o recebimento, a despesa nasce sozinha em Pagamentos`
+      : `"${f.nome}" voltou a ser recebimento normal`);
   }
 
   return (
@@ -4529,6 +4665,10 @@ function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askC
             <input type="checkbox" checked={multipla} onChange={e => setMultipla(e.target.checked)} />
             Marcar como "múltiplas formas de pagamento" (permite anexar vários comprovantes na mesma venda)
           </label>
+          <label className="flex items-start gap-2 text-xs text-slate-600">
+            <input type="checkbox" checked={terceiro} disabled={multipla} onChange={e => setTerceiro(e.target.checked)} className="mt-0.5" />
+            <span>Paga <strong>direto a um terceiro</strong> (ex: Pix terceiro) — ao anexar o comprovante o sistema já pede quem recebeu e, na confirmação do recebimento, lança a despesa sozinho em Pagamentos</span>
+          </label>
           <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar</button>
         </div>
       )}
@@ -4539,8 +4679,16 @@ function FormasRecebimentoModule({ formasRecebimento, setFormasRecebimento, askC
             <p className="text-sm text-slate-700 flex items-center gap-1.5">
               {f.nome}
               {f.multipla && <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">múltiplas</span>}
+              {f.terceiro && !f.multipla && <span className="text-[11px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700" title="Ao anexar comprovante com esta forma, o sistema pede quem recebeu e lança a despesa em Pagamentos na confirmação">paga a terceiro</span>}
             </p>
-            <button onClick={() => handleDelete(f.id)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+            <div className="flex items-center gap-3 shrink-0">
+              {!f.multipla && (
+                <label className="flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer" title="Pago direto a terceiro: ao confirmar o recebimento, a despesa nasce sozinha em Pagamentos">
+                  <input type="checkbox" checked={!!f.terceiro} onChange={() => alternarTerceiro(f)} /> paga a terceiro
+                </label>
+              )}
+              <button onClick={() => handleDelete(f.id)}><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>
+            </div>
           </div>
         ))}
       </div>
@@ -5451,6 +5599,8 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
 
   const formaSelecionada = formasRecebimento.find(f => f.id === formaId);
   const opcoesSimples = formasRecebimento.filter(f => !f.multipla);
+  const exigeTerceiro = !!(formaSelecionada && formaSelecionada.terceiro && !formaSelecionada.multipla);
+  const terceiroLigado = exigeTerceiro || terceiroAtivo;
   const restante = Math.max(0, (valorTotalVenda || 0) - (valorJaAnexado || 0));
 
   function confirmarQuantidade() {
@@ -5470,8 +5620,10 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
     const valor = parseValorBR(slot.valor);
     if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago nessa parcela antes de anexar'); return; }
     if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
+    const terceiro = forma.terceiro ? { nome: (slot.terceiroNome || '').trim(), categoria: slot.terceiroCategoria || (categoriasSaida || [])[0] || 'Outros' } : null;
+    if (terceiro && !terceiro.nome) { notify('Esta forma é paga direto a um terceiro — informe quem recebeu nessa parte antes de anexar'); return; }
     setEnviandoAnexo(true);
-    try { await onAnexar(vendaId, file, forma.id, forma.nome, valor); } finally { setEnviandoAnexo(false); }
+    try { await onAnexar(vendaId, file, forma.id, forma.nome, valor, terceiro); } finally { setEnviandoAnexo(false); }
   }
 
   function resetar() {
@@ -5496,6 +5648,14 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
               {opcoesSimples.map(f => <option key={f.id} value={f.id}>{f.nome}</option>)}
             </select>
             <input type="text" inputMode="decimal" placeholder="Valor (R$)" value={slot.valor} onChange={e => atualizarSlot(idx, 'valor', e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-28" />
+            {formasRecebimento.find(f => f.id === slot.formaId)?.terceiro && (
+              <>
+                <input value={slot.terceiroNome || ''} onChange={e => atualizarSlot(idx, 'terceiroNome', e.target.value)} placeholder="Quem recebeu (terceiro)" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs sm:w-40" />
+                <select value={slot.terceiroCategoria || (categoriasSaida || [])[0] || 'Outros'} onChange={e => atualizarSlot(idx, 'terceiroCategoria', e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
+                  {(categoriasSaida || ['Outros']).map(c => <option key={c}>{c}</option>)}
+                </select>
+              </>
+            )}
             <label className={`inline-flex items-center gap-1 text-xs px-2 py-1.5 rounded-md whitespace-nowrap ${enviandoAnexo ? 'bg-amber-100 text-amber-700' : 'bg-slate-200 hover:bg-slate-300 text-slate-700 cursor-pointer'}`}>
               {enviandoAnexo ? <Loader2 size={11} className="animate-spin" /> : <Camera size={11} />} {enviandoAnexo ? 'Enviando...' : 'Anexar'}
               <input type="file" accept="image/*,application/pdf" className="hidden" disabled={enviandoAnexo} onChange={e => e.target.files[0] && anexarSlot(idx, e.target.files[0])} />
@@ -5539,11 +5699,11 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
                     const valor = parseValorBR(valorUnico);
                     if (isNaN(valor) || valor <= 0) { notify('Informe o valor pago antes de anexar'); return; }
                     if (valor > restante + 0.01) { notify(`Esse valor (${currency(valor)}) é maior que o restante a comprovar (${currency(restante)})`); return; }
-                    if (terceiroAtivo && !terceiroNome.trim()) { notify('Informe quem recebeu o pagamento direto'); return; }
+                    if (terceiroLigado && !terceiroNome.trim()) { notify('Informe quem recebeu o pagamento direto'); return; }
                     setEnviandoAnexo(true);
                     try {
                       await onAnexar(vendaId, e.target.files[0], formaSelecionada.id, formaSelecionada.nome, valor,
-                        terceiroAtivo ? { nome: terceiroNome.trim(), categoria: terceiroCategoria } : null);
+                        terceiroLigado ? { nome: terceiroNome.trim(), categoria: terceiroCategoria } : null);
                     } finally { setEnviandoAnexo(false); }
                     resetar();
                   }} />
@@ -5553,11 +5713,15 @@ function ComprovanteUploader({ vendaId, formasRecebimento, valorTotalVenda, valo
           </div>
           {formaSelecionada && !formaSelecionada.multipla && (
             <div className="mt-1.5">
+              {exigeTerceiro ? (
+                <p className="text-[11px] text-sky-700 flex items-start gap-1.5"><ArrowRightCircle size={12} className="mt-0.5 shrink-0" /><span>Esta forma é <strong>paga direto a um terceiro</strong>: o dinheiro não entra na conta e, ao confirmar o recebimento, a despesa é lançada sozinha em Pagamentos. Diga quem recebeu:</span></p>
+              ) : (
               <label className="flex items-start gap-1.5 text-[11px] text-slate-500 cursor-pointer">
                 <input type="checkbox" checked={terceiroAtivo} onChange={e => setTerceiroAtivo(e.target.checked)} className="mt-0.5" />
                 <span>Cliente pagou <strong>direto a um terceiro</strong> (o dinheiro não entra na conta — ao confirmar, vira despesa lançada em Pagamentos)</span>
               </label>
-              {terceiroAtivo && (
+              )}
+              {terceiroLigado && (
                 <div className="flex flex-col sm:flex-row gap-2 mt-1.5">
                   <input value={terceiroNome} onChange={e => setTerceiroNome(e.target.value)} placeholder="Quem recebeu (ex: fornecedor, prestador...)" className="border border-slate-200 rounded-md px-2 py-1.5 text-xs flex-1" />
                   <select value={terceiroCategoria} onChange={e => setTerceiroCategoria(e.target.value)} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs">
@@ -7844,7 +8008,7 @@ function ModelosPropostaTab({ modelosSalvos, setModelosSalvos, notify, askConfir
   );
 }
 
-function PropostasModule({ propostas, setPropostas, estoque, clientes, setClientes, vendas, setVendas, modelosProposta, setModelosProposta, notify, askConfirm }) {
+function PropostasModule({ grupos, propostas, setPropostas, estoque, clientes, setClientes, vendas, setVendas, modelosProposta, setModelosProposta, notify, askConfirm }) {
   const statusDe = (p) => p.status || 'aberta';
   const [showForm, setShowForm] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
@@ -7907,17 +8071,17 @@ function PropostasModule({ propostas, setPropostas, estoque, clientes, setClient
       .map(i => ({ value: i.id, label: `${i.categoria} · ${descricaoProduto(i)} — ${currency(i.precoVenda)}` })),
   [estoque]);
   const opcoesPlacas = useMemo(() => {
-    const placas = estoque.filter(i => i.categoria === 'Painel');
+    const placas = estoque.filter(i => i.categoria === nomeDoPapel(grupos, 'painel'));
     const base = placas.length > 0 ? placas : estoque;
     return base.slice().sort((a, b) => descricaoProduto(a).localeCompare(descricaoProduto(b), 'pt-BR'))
       .map(i => ({ value: i.id, label: `${descricaoProduto(i)} — ${currency(i.precoVenda)}` }));
-  }, [estoque]);
+  }, [estoque, grupos]);
   const opcoesInversores = useMemo(() => {
-    const invs = estoque.filter(i => i.categoria === 'Inversor');
+    const invs = estoque.filter(i => i.categoria === nomeDoPapel(grupos, 'inversor'));
     const base = invs.length > 0 ? invs : estoque;
     return base.slice().sort((a, b) => descricaoProduto(a).localeCompare(descricaoProduto(b), 'pt-BR'))
       .map(i => ({ value: i.id, label: `${descricaoProduto(i)} — ${currency(i.precoVenda)}` }));
-  }, [estoque]);
+  }, [estoque, grupos]);
 
   function escolherPlaca(id) {
     setPlacaId(id);
