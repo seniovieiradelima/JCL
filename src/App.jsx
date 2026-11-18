@@ -672,6 +672,9 @@ async function baixarDocumento(dadosDocumento, nomeBase, formato) {
 // Comprovante de recebimento confirmado pela senha de aprovação (ou antigo, de antes da
 // conferência existir — esses continuam valendo para não distorcer os indicadores).
 const comprovanteConfirmado = (c) => c && c.confirmado !== false;
+// Pagamento sem o campo (anterior a 18/11/2026) vale como quitado; só o
+// lançamento manual de Saída nasce 'a pagar' — quitar é um ato registrado.
+const pagamentoQuitado = (p) => p && p.quitado !== false;
 
 // Chave de um item dentro de uma venda (para saber o que já foi expedido)
 function chaveItemVenda(vendaId, item) {
@@ -5300,7 +5303,8 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
         id: uid(), tipo: 'Saída', data: comp.data || new Date().toISOString(),
         categoria: comp.terceiroCategoria || 'Outros',
         descricao: `Pagamento direto pelo cliente ${venda.clienteNome} (recebimento da venda)`,
-        beneficiario: comp.terceiroNome || '', valor: comp.valor || 0, comprovante: null,
+        beneficiario: comp.terceiroNome || '', valor: comp.valor || 0,
+        comprovante: comp.arquivoPath ? { nome: comp.nome || 'comprovante do recebimento', tipo: comp.tipo || '', arquivoPath: comp.arquivoPath } : null,
         criadoEm: new Date().toISOString(), autor: autorAtual, viaPagamentoDireto: true,
       };
       if (!(await setPagamentos([pg, ...pagamentos]))) {
@@ -6915,6 +6919,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
   const [beneficiario, setBeneficiario] = useState('');
   const [valor, setValor] = useState('');
   const [comprovante, setComprovante] = useState(null);
+  const [jaPago, setJaPago] = useState(false);
   const [enviando, setEnviando] = useState(false);
 
   const [busca, setBusca] = useState('');
@@ -6930,10 +6935,61 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
 
   function resetForm() {
     setTipo('Saída'); setCategoria(categorias.saida[0]); setData(new Date().toISOString().slice(0, 10));
-    setDescricao(''); setBeneficiario(''); setValor(''); setComprovante(null); setShowForm(false);
+    setDescricao(''); setBeneficiario(''); setValor(''); setComprovante(null); setJaPago(false); setShowForm(false);
   }
 
   const [enviandoComprovante, setEnviandoComprovante] = useState(false);
+
+  const [confirmandoId, setConfirmandoId] = useState(null);
+  const [confData, setConfData] = useState(new Date().toISOString().slice(0, 10));
+  const [confJuros, setConfJuros] = useState('');
+  const [confObs, setConfObs] = useState('');
+  const [confComprovante, setConfComprovante] = useState(null);
+  const [confEnviandoAnexo, setConfEnviandoAnexo] = useState(false);
+  const [confirmando, setConfirmando] = useState(false);
+
+  function abrirConfirmacao(p) {
+    setConfirmandoId(p.id);
+    setConfData(new Date().toISOString().slice(0, 10));
+    setConfJuros(''); setConfObs(''); setConfComprovante(null);
+  }
+
+  async function anexarConfComprovante(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const input = e.target;
+    setConfEnviandoAnexo(true);
+    try {
+      const privado = await comprovantePrivadoUpload(file);
+      setConfComprovante({ nome: file.name, tipo: privado.tipo || file.type, arquivoPath: privado.arquivoPath });
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
+      input.value = '';
+    } finally {
+      setConfEnviandoAnexo(false);
+    }
+  }
+
+  async function confirmarPagamento(p) {
+    if (!confData) { notify('Informe a data em que o pagamento foi feito'); return; }
+    const juros = confJuros.trim() === '' ? 0 : parseValorBR(confJuros);
+    if (isNaN(juros) || juros < 0) { notify('Juros/acréscimo inválido — deixe vazio se não houve'); return; }
+    setConfirmando(true);
+    const valorFinal = Math.round((p.valor + juros) * 100) / 100;
+    const atualizado = {
+      ...p, quitado: true, quitadoEm: new Date().toISOString(), quitadoPor: autorAtual,
+      dataPrevista: p.dataPrevista || p.data, data: new Date(confData + 'T12:00:00').toISOString(),
+      ...(juros > 0 ? { juros, valorOriginal: p.valor, valor: valorFinal } : {}),
+      ...(confObs.trim() ? { observacaoPagamento: confObs.trim() } : {}),
+      ...(confComprovante ? { comprovante: confComprovante } : {}),
+    };
+    const ok = await setPagamentos(pagamentos.map(x => x.id === p.id ? atualizado : x));
+    setConfirmando(false);
+    if (!ok) return;
+    notify(juros > 0 ? `Pagamento confirmado — ${currency(p.valor)} + ${currency(juros)} de juros = ${currency(valorFinal)}` : 'Pagamento confirmado');
+    setConfirmandoId(null);
+  }
 
   async function handleComprovante(e) {
     const file = e.target.files?.[0];
@@ -6961,10 +7017,11 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
       id: uid(), tipo, data: new Date(data + 'T12:00:00').toISOString(), categoria, descricao: descricao.trim(),
       beneficiario: beneficiario.trim(), valor: v, comprovante, criadoEm: new Date().toISOString(),
       autor: autorAtual,
+      ...(tipo === 'Saída' && !jaPago ? { quitado: false } : {}),
     };
     await setPagamentos([novo, ...pagamentos]);
     setEnviando(false);
-    notify(tipo === 'Entrada' ? 'Entrada registrada' : 'Pagamento registrado');
+    notify(tipo === 'Entrada' ? 'Entrada registrada' : (jaPago ? 'Pagamento registrado como quitado' : 'Pagamento lançado — fica "A pagar" até a confirmação'));
     resetForm();
   }
 
@@ -6978,7 +7035,8 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
 
   const pagamentosFiltrados = useMemo(() => {
     let lista = pagamentos.filter(p => `${p.descricao} ${p.beneficiario}`.toLowerCase().includes(busca.toLowerCase()));
-    if (filtroTipo !== 'Todos') lista = lista.filter(p => p.tipo === filtroTipo);
+    if (filtroTipo === 'Pendentes') lista = lista.filter(p => !p.anulado && p.tipo === 'Saída' && !pagamentoQuitado(p));
+    else if (filtroTipo !== 'Todos') lista = lista.filter(p => p.tipo === filtroTipo);
     return lista.slice().sort((a, b) => {
       switch (ordenacao) {
         case 'recente': return new Date(b.data) - new Date(a.data);
@@ -6997,8 +7055,12 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     const margemContribuicao = vendasMes.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - custoEstimadoPendenciasMapa(v, custoUnitEstimadoMapa)), 0);
     const pagamentosMes = pagamentos.filter(p => !p.anulado && new Date(p.data) >= inicioMes);
     const entradasExtras = pagamentosMes.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
-    const saidas = pagamentosMes.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
-    return { margemContribuicao, entradasExtras, saidas, saldo: margemContribuicao + entradasExtras - saidas };
+    const saidas = pagamentosMes.filter(p => p.tipo === 'Saída' && pagamentoQuitado(p)).reduce((acc, p) => acc + p.valor, 0);
+    const pendentes = pagamentos.filter(p => !p.anulado && p.tipo === 'Saída' && !pagamentoQuitado(p));
+    const aPagar = pendentes.reduce((acc, p) => acc + p.valor, 0);
+    const hoje0 = new Date(); hoje0.setHours(0, 0, 0, 0);
+    const vencidos = pendentes.filter(p => new Date(p.data) < hoje0).length;
+    return { margemContribuicao, entradasExtras, saidas, aPagar, qtdPendentes: pendentes.length, vencidos, saldo: margemContribuicao + entradasExtras - saidas };
   }, [vendas, pagamentos, custoUnitEstimadoMapa]);
 
   return (
@@ -7046,7 +7108,12 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
         <div className="flex gap-4 mt-2 text-xs text-slate-500 flex-wrap">
           <span>Margem do mês: {currency(resumoMes.margemContribuicao)}</span>
           <span>Entradas extras: {currency(resumoMes.entradasExtras)}</span>
-          <span>Saídas: {currency(resumoMes.saidas)}</span>
+          <span>Saídas pagas: {currency(resumoMes.saidas)}</span>
+          {resumoMes.qtdPendentes > 0 && (
+            <span className={resumoMes.vencidos > 0 ? 'text-red-600 font-medium' : 'text-amber-700'}>
+              A pagar: {currency(resumoMes.aPagar)} ({resumoMes.qtdPendentes} lançamento(s){resumoMes.vencidos > 0 ? `, ${resumoMes.vencidos} vencido(s)` : ''}) — fora do saldo até quitar
+            </span>
+          )}
         </div>
         {resumoMes.saldo < 0 && <p className="text-[11px] text-red-600 mt-1">As saídas deste mês já ultrapassaram o que entrou até agora.</p>}
       </div>
@@ -7086,6 +7153,15 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
             </label>
             {comprovante && <span className="text-xs text-slate-500 ml-2">{comprovante.nome}</span>}
           </div>
+          {tipo === 'Saída' && (
+            <div>
+              <label className="flex items-center gap-2 text-xs text-slate-600">
+                <input type="checkbox" checked={jaPago} onChange={e => setJaPago(e.target.checked)} />
+                Já está pago (lança direto como quitado)
+              </label>
+              {!jaPago && <p className="text-[11px] text-amber-700 mt-1">A data acima é o <strong>vencimento</strong>: o lançamento fica "A pagar" até alguém confirmar o pagamento, com a data real, juros e observação.</p>}
+            </div>
+          )}
           <button onClick={salvar} disabled={enviando} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800 disabled:opacity-50">Salvar lançamento</button>
         </div>
       )}
@@ -7093,7 +7169,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
       <FiltroBar
         busca={busca} setBusca={setBusca} buscaPlaceholder="Buscar por descrição ou beneficiário..."
         filtroValue={filtroTipo} setFiltro={setFiltroTipo}
-        filtroOptions={[{ value: 'Todos', label: 'Entradas e saídas' }, { value: 'Saída', label: 'Só saídas' }, { value: 'Entrada', label: 'Só entradas' }]}
+        filtroOptions={[{ value: 'Todos', label: 'Entradas e saídas' }, { value: 'Pendentes', label: 'A pagar' }, { value: 'Saída', label: 'Só saídas' }, { value: 'Entrada', label: 'Só entradas' }]}
         ordenacaoValue={ordenacao} setOrdenacao={setOrdenacao}
         ordenacaoOptions={[{ value: 'recente', label: 'Mais recente primeiro' }, { value: 'antigo', label: 'Mais antigo primeiro' }, { value: 'valorDesc', label: 'Maior valor primeiro' }, { value: 'valorAsc', label: 'Menor valor primeiro' }]}
       />
@@ -7101,25 +7177,68 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
       <div className="space-y-2">
         {pagamentos.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum lançamento registrado.</p>}
         {pagamentos.length > 0 && pagamentosFiltrados.length === 0 && <p className="text-sm text-slate-400 text-center py-8">Nenhum lançamento encontrado com esse filtro.</p>}
-        {pagamentosFiltrados.map(p => (
-          <div key={p.id} className={`bg-white border rounded-lg p-3 flex justify-between items-start gap-2 ${p.anulado ? 'border-red-200 opacity-60' : 'border-slate-200'}`}>
+        {pagamentosFiltrados.map(p => {
+          const pendente = !p.anulado && p.tipo === 'Saída' && !pagamentoQuitado(p);
+          const hoje0 = new Date(); hoje0.setHours(0, 0, 0, 0);
+          const vencido = pendente && new Date(p.data) < hoje0;
+          return (
+          <div key={p.id} className={`bg-white border rounded-lg p-3 ${p.anulado ? 'border-red-200 opacity-60' : vencido ? 'border-red-300' : pendente ? 'border-amber-300' : 'border-slate-200'}`}>
+            <div className="flex justify-between items-start gap-2">
             <div className="min-w-0">
               <p className="text-sm font-medium flex items-center gap-1.5">
                 <span className={`text-[11px] px-1.5 py-0.5 rounded ${p.tipo === 'Entrada' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{p.tipo}</span>
                 <span className={p.anulado ? 'line-through' : ''}>{p.descricao}</span>
                 {p.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
+                {pendente && <span className={`text-[11px] px-1.5 py-0.5 rounded ${vencido ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-700'}`}>{vencido ? 'Vencido — a pagar' : 'A pagar'}</span>}
               </p>
-              <p className="text-xs text-slate-500">{p.categoria} {p.beneficiario && `· ${p.beneficiario}`} · {formatDate(p.data)}</p>
+              <p className="text-xs text-slate-500">{p.categoria} {p.beneficiario && `· ${p.beneficiario}`} · {pendente ? 'vence ' : ''}{formatDate(p.data)}</p>
+              {p.juros > 0 && <p className="text-[11px] text-slate-500">Lançado {currency(p.valorOriginal || 0)} + {currency(p.juros)} de juros/acréscimo</p>}
+              {!pendente && p.dataPrevista && formatDate(p.dataPrevista) !== formatDate(p.data) && <p className="text-[11px] text-slate-400">Vencia {formatDate(p.dataPrevista)}</p>}
+              {p.observacaoPagamento && <p className="text-[11px] text-slate-500">Obs: {p.observacaoPagamento}</p>}
+              {p.quitadoVia && <p className="text-[11px] text-emerald-700">Quitado pela {p.quitadoVia}</p>}
               {p.comprovante && (
                 <div className="mt-1.5"><ComprovanteArquivo comp={p.comprovante} className="w-12 h-12 object-cover rounded" /></div>
               )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <span className={`font-medium text-sm ${p.tipo === 'Entrada' ? 'text-emerald-600' : 'text-slate-700'}`}>{p.tipo === 'Entrada' ? '+' : '-'} {currency(p.valor)}</span>
+              {pendente && (
+                <button onClick={() => (confirmandoId === p.id ? setConfirmandoId(null) : abrirConfirmacao(p))} className="text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded-md whitespace-nowrap">Confirmar pagamento</button>
+              )}
               {!p.anulado && <button onClick={() => apagarPagamento(p)} title="Apagar lançamento"><Trash2 size={14} className="text-slate-300 hover:text-red-500" /></button>}
             </div>
+            </div>
+            {confirmandoId === p.id && pendente && (
+              <div className="mt-2 border-t border-slate-100 pt-2 space-y-2">
+                <p className="text-xs font-medium text-slate-700">Confirmar pagamento de {currency(p.valor)}{p.beneficiario ? ` a ${p.beneficiario}` : ''}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <label className="text-[11px] text-slate-500">Pago em
+                    <input type="date" value={confData} onChange={e => setConfData(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs mt-0.5" />
+                  </label>
+                  <label className="text-[11px] text-slate-500">Juros/acréscimo (R$, se houve)
+                    <input type="text" inputMode="decimal" placeholder="Ex: 12,50" value={confJuros} onChange={e => setConfJuros(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs mt-0.5" />
+                  </label>
+                  <label className="text-[11px] text-slate-500">Observação (de que conta saiu, o que foi)
+                    <input value={confObs} onChange={e => setConfObs(e.target.value)} placeholder="Ex: pago pela conta Stone" className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs mt-0.5" />
+                  </label>
+                </div>
+                {confJuros.trim() !== '' && !isNaN(parseValorBR(confJuros)) && parseValorBR(confJuros) > 0 && (
+                  <p className="text-[11px] text-amber-700">Total pago: {currency(p.valor)} + {currency(parseValorBR(confJuros))} = <strong>{currency(p.valor + parseValorBR(confJuros))}</strong> — o valor do lançamento passa a ser o total.</p>
+                )}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="inline-flex items-center gap-1.5 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md cursor-pointer">
+                    <Camera size={12} /> {confComprovante ? 'Trocar comprovante' : (p.comprovante ? 'Trocar o comprovante anexado' : 'Anexar comprovante (opcional)')}
+                    <input type="file" accept="image/*,application/pdf" className="hidden" onChange={anexarConfComprovante} disabled={confEnviandoAnexo} />
+                  </label>
+                  {confEnviandoAnexo && <span className="text-xs text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Enviando...</span>}
+                  {confComprovante && <span className="text-xs text-slate-500">{confComprovante.nome}</span>}
+                  <button onClick={() => confirmarPagamento(p)} disabled={confirmando || confEnviandoAnexo} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-md disabled:opacity-50">{confirmando ? 'Confirmando…' : 'Confirmar'}</button>
+                  <button onClick={() => setConfirmandoId(null)} className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1.5">Cancelar</button>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
+        );})}
       </div>
     </div>
   );
@@ -8763,7 +8882,7 @@ function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
   if (l.tipo === 'saida') {
     for (const p of (pagamentos || [])) {
       if (p.anulado || p.tipo !== 'Saída') continue;
-      if (bate(p.valor)) sug.push({ tipo: 'pagamento', refId: p.id, rotulo: `Pagamento — ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} (${formatDate(p.data)})`, valor: p.valor, dist: dias(p.data) });
+      if (bate(p.valor)) sug.push({ tipo: 'pagamento', refId: p.id, rotulo: `Pagamento — ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} (${formatDate(p.data)})${pagamentoQuitado(p) ? '' : ' · A PAGAR — conciliar quita'}`, valor: p.valor, dist: dias(p.data) });
     }
     for (const pc of (pedidosCompra || [])) {
       if (pc.cancelado || pc.anulado) continue;
@@ -8986,6 +9105,17 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
       });
       if (!(await setVendas(next))) return;
     }
+    // Saída do extrato vinculada a pagamento "a pagar": o débito no banco É a
+    // prova do pagamento, então conciliar também QUITA — o mesmo ato das entradas.
+    const idsVinculoPagamento = l.tipo === 'saida' ? new Set(vinculos.filter(x => x.tipo === 'pagamento').map(x => x.refId)) : new Set();
+    const pendentesQuitar = setPagamentos ? (pagamentos || []).filter(p => idsVinculoPagamento.has(p.id) && !p.anulado && !pagamentoQuitado(p)) : [];
+    if (pendentesQuitar.length > 0) {
+      const idsQ = new Set(pendentesQuitar.map(p => p.id));
+      const nextPg = pagamentos.map(p => idsQ.has(p.id)
+        ? { ...p, quitado: true, quitadoEm: new Date().toISOString(), quitadoPor: autorAtual, quitadoVia: `conciliação ${aberta?.conta || ''}`.trim(), dataPrevista: p.dataPrevista || p.data, data: new Date(l.data + 'T12:00:00').toISOString() }
+        : p);
+      if (!(await setPagamentos(nextPg))) return;
+    }
     let taxaLancada = 0, taxaPagamentoId = null;
     if (lancarTaxa) {
       const pgTaxa = {
@@ -9002,11 +9132,12 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
       taxaLancada = diferenca; taxaPagamentoId = pgTaxa.id;
     }
     if (!(await atualizarLancamento(l.id, { status: 'conciliado', vinculos, conciliadoPor: autorAtual, conciliadoEm: new Date().toISOString(), ...(taxaLancada > 0 ? { taxaLancada, taxaPagamentoId } : {}) }))) {
-      if (confirmacoes.length > 0 || taxaLancada > 0) notify('⚠️ As gravações no sistema foram feitas, mas o lançamento do extrato NÃO ficou marcado como conciliado. Recarregue (F5) e concilie de novo — confirmação e taxa não se repetem.');
+      if (confirmacoes.length > 0 || taxaLancada > 0 || pendentesQuitar.length > 0) notify('⚠️ As gravações no sistema foram feitas, mas o lançamento do extrato NÃO ficou marcado como conciliado. Recarregue (F5) e concilie de novo — confirmação, taxa e quitação não se repetem.');
       return;
     }
     if (taxaLancada > 0) notify(`Conciliado — ${currency(taxaLancada)} de taxa de cartão lançados como despesa${confirmacoes.length > 0 ? ' e recebimento confirmado' : ''}`);
     else if (confirmacoes.length > 0) notify('Conciliado — recebimento confirmado pela prova do extrato');
+    else if (pendentesQuitar.length > 0) notify('Conciliado — pagamento "a pagar" quitado pela prova do extrato');
     setVinculandoId(null); setVinculosManuais([]); setSelManual('');
   }
   // Despesa que está no extrato mas nunca foi lançada no sistema: cria o Pagamento
@@ -9184,7 +9315,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     const ops = [];
     for (const p of (pagamentos || [])) {
       if (p.anulado || p.tipo !== 'Saída') continue;
-      ops.push({ value: `pagamento:${p.id}`, valor: p.valor || 0, label: `Pagamento · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor)} (${formatDate(p.data)})` });
+      ops.push({ value: `pagamento:${p.id}`, valor: p.valor || 0, label: `Pagamento · ${[p.categoria, p.descricao, p.beneficiario].filter(Boolean).join(' · ')} — ${currency(p.valor)} (${formatDate(p.data)})${pagamentoQuitado(p) ? '' : ' · A PAGAR — conciliar quita'}` });
     }
     for (const pc of (pedidosCompra || [])) {
       if (pc.cancelado || pc.anulado) continue;
@@ -9238,7 +9369,7 @@ function ConciliacaoModule({ conciliacoes, setConciliacoes, vendas, setVendas, p
     const pagSemProva = [];
     const pagVerificados = [];
     for (const p of (pagamentos || [])) {
-      if (p.anulado || p.tipo !== 'Saída') continue;
+      if (p.anulado || p.tipo !== 'Saída' || !pagamentoQuitado(p)) continue;
       totalP++;
       if (pagIds.has(p.id) || p.foraExtrato || p.viaPagamentoDireto) cobertosP++;
       else pagSemProva.push(p);
@@ -9828,7 +9959,8 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, formasRecebimento, i
         id: uid(), tipo: 'Saída', data: comp.data || new Date().toISOString(),
         categoria: comp.terceiroCategoria || 'Outros',
         descricao: `Pagamento direto pelo cliente ${venda.clienteNome} (recebimento da venda)`,
-        beneficiario: comp.terceiroNome || '', valor: comp.valor || 0, comprovante: null,
+        beneficiario: comp.terceiroNome || '', valor: comp.valor || 0,
+        comprovante: comp.arquivoPath ? { nome: comp.nome || 'comprovante do recebimento', tipo: comp.tipo || '', arquivoPath: comp.arquivoPath } : null,
         criadoEm: new Date().toISOString(), autor: autorAtual, viaPagamentoDireto: true,
       };
       if (!(await setPagamentos([pg, ...pagamentos]))) {
@@ -9952,7 +10084,7 @@ function FinanceiroModule({ vendas: vendasTodas, setVendas, formasRecebimento, i
     const margemAcumulada = vendas.reduce((acc, v) => acc + (v.totalVenda - v.totalCusto - estimadoDe(v)), 0);
     const pagamentosValidos = (pagamentos || []).filter(p => !p.anulado);
     const entradasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Entrada').reduce((acc, p) => acc + p.valor, 0);
-    const saidasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Saída').reduce((acc, p) => acc + p.valor, 0);
+    const saidasAcumuladas = pagamentosValidos.filter(p => p.tipo === 'Saída' && pagamentoQuitado(p)).reduce((acc, p) => acc + p.valor, 0);
     return margemAcumulada + entradasAcumuladas - saidasAcumuladas;
   }, [vendas, pagamentos, estimadoPorVenda]);
 
