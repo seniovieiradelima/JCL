@@ -6924,6 +6924,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
 
   const [busca, setBusca] = useState('');
   const [filtroTipo, setFiltroTipo] = useState('Todos');
+  const [filtroVencimento, setFiltroVencimento] = useState(null);
   const [ordenacao, setOrdenacao] = useState('recente');
 
   const categoriasDoTipo = tipo === 'Entrada' ? categorias.entrada : categorias.saida;
@@ -7033,8 +7034,44 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     notify('Lançamento anulado');
   }
 
+  // Contas a pagar em quatro períodos EMENDADOS (a semana do dono fecha na
+  // sexta): hoje→sexta desta semana (vencidas inclusas), sábado→sexta da
+  // próxima, os 30 dias a partir do sábado seguinte, e o que vier depois.
+  const contasAPagar = useMemo(() => {
+    const pendentes = pagamentos.filter(p => !p.anulado && p.tipo === 'Saída' && !pagamentoQuitado(p));
+    const hoje0 = new Date(); hoje0.setHours(0, 0, 0, 0);
+    const fimSemana = new Date(hoje0);
+    fimSemana.setDate(fimSemana.getDate() + ((5 - hoje0.getDay() + 7) % 7));
+    fimSemana.setHours(23, 59, 59, 999);
+    const fimProxima = new Date(fimSemana); fimProxima.setDate(fimProxima.getDate() + 7);
+    const fimTrinta = new Date(fimProxima); fimTrinta.setDate(fimTrinta.getDate() + 30);
+    const listas = { semana: [], proxima: [], trinta: [], futuras: [] };
+    for (const p of pendentes) {
+      const d = new Date(p.data);
+      if (d <= fimSemana) listas.semana.push(p);
+      else if (d <= fimProxima) listas.proxima.push(p);
+      else if (d <= fimTrinta) listas.trinta.push(p);
+      else listas.futuras.push(p);
+    }
+    const vencidas = listas.semana.filter(p => new Date(p.data) < hoje0).length;
+    const diaSeguinte = (d) => { const x = new Date(d); x.setDate(x.getDate() + 1); return x; };
+    const caixas = [
+      { chave: 'semana', rotulo: 'Vencem até sexta-feira', faixa: `até ${formatDate(fimSemana)}`, lista: listas.semana },
+      { chave: 'proxima', rotulo: 'Vencem na próxima semana', faixa: `${formatDate(diaSeguinte(fimSemana))} a ${formatDate(fimProxima)}`, lista: listas.proxima },
+      { chave: 'trinta', rotulo: 'Vencem nos 30 dias seguintes', faixa: `${formatDate(diaSeguinte(fimProxima))} a ${formatDate(fimTrinta)}`, lista: listas.trinta },
+      { chave: 'futuras', rotulo: 'Vencimentos futuros', faixa: `depois de ${formatDate(fimTrinta)}`, lista: listas.futuras },
+    ].map(c => ({ ...c, total: c.lista.reduce((a, p) => a + p.valor, 0), qtd: c.lista.length }));
+    return { temPendentes: pendentes.length > 0, vencidas, caixas };
+  }, [pagamentos]);
+
   const pagamentosFiltrados = useMemo(() => {
-    let lista = pagamentos.filter(p => `${p.descricao} ${p.beneficiario}`.toLowerCase().includes(busca.toLowerCase()));
+    let lista = pagamentos;
+    if (filtroVencimento) {
+      const caixa = contasAPagar.caixas.find(c => c.chave === filtroVencimento);
+      const ids = new Set((caixa ? caixa.lista : []).map(p => p.id));
+      lista = lista.filter(p => ids.has(p.id));
+    }
+    lista = lista.filter(p => `${p.descricao} ${p.beneficiario}`.toLowerCase().includes(busca.toLowerCase()));
     if (filtroTipo === 'Pendentes') lista = lista.filter(p => !p.anulado && p.tipo === 'Saída' && !pagamentoQuitado(p));
     else if (filtroTipo !== 'Todos') lista = lista.filter(p => p.tipo === filtroTipo);
     return lista.slice().sort((a, b) => {
@@ -7046,7 +7083,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
         default: return 0;
       }
     });
-  }, [pagamentos, busca, filtroTipo, ordenacao]);
+  }, [pagamentos, busca, filtroTipo, ordenacao, filtroVencimento, contasAPagar]);
 
   // Margem de contribuição do mês (das vendas) + entradas extras - saídas, tudo dentro do mês atual
   const resumoMes = useMemo(() => {
@@ -7066,6 +7103,27 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
   return (
     <div>
       <p className="text-xs text-slate-400 mb-1">Lançamentos de caixa que não são compra de material pro estoque — tanto saídas (despesas) quanto entradas extras. Usam a margem de contribuição, não o saldo de reposição.</p>
+      {contasAPagar.temPendentes && (
+        <div className="mb-4">
+          <p className="text-sm font-medium text-slate-700 mb-1.5">Contas a pagar</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {contasAPagar.caixas.map(c => (
+              <button key={c.chave} type="button" onClick={() => setFiltroVencimento(f => (f === c.chave ? null : c.chave))}
+                className={`text-left bg-white border rounded-lg p-3 transition-shadow ${filtroVencimento === c.chave ? 'ring-2 ring-amber-400 border-amber-300' : c.chave === 'semana' && contasAPagar.vencidas > 0 ? 'border-red-300' : c.qtd > 0 && c.chave === 'semana' ? 'border-amber-300' : 'border-slate-200'} ${c.qtd === 0 ? 'opacity-60' : 'hover:shadow-sm'}`}>
+                <p className="text-[11px] text-slate-500 leading-tight">{c.rotulo}</p>
+                <p className={`text-lg font-semibold ${c.chave === 'semana' && c.qtd > 0 ? (contasAPagar.vencidas > 0 ? 'text-red-700' : 'text-amber-700') : 'text-slate-700'}`}>{currency(c.total)}</p>
+                <p className="text-[11px] text-slate-400">{c.qtd === 0 ? 'nenhuma conta' : `${c.qtd} conta(s)`} · {c.faixa}</p>
+                {c.chave === 'semana' && contasAPagar.vencidas > 0 && <p className="text-[11px] text-red-600 font-medium">{contasAPagar.vencidas} já vencida(s)</p>}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1">
+            {filtroVencimento
+              ? `Mostrando só "${(contasAPagar.caixas.find(c => c.chave === filtroVencimento) || {}).rotulo}" na lista abaixo — clique de novo na caixa para limpar.`
+              : 'Períodos emendados, sem sobreposição — cada conta aparece numa caixa só. Clique numa caixa para ver essas contas na lista.'}
+          </p>
+        </div>
+      )}
       <CategoriasPagamentoEditor categorias={categorias} salvar={salvarCategorias} notify={notify} />
       {(() => {
         const grupos = gruposPagamentosSuspeitos(pagamentos, conciliacoes);
