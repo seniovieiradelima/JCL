@@ -3812,6 +3812,38 @@ function FornecedoresModule({ fornecedores, setFornecedores, askConfirm, askSenh
 
 /* ---------------- PEDIDOS DE COMPRA (como um "orçamento" de compra, ainda sem estoque) ---------------- */
 
+// Vencimentos do parcelamento do pedido de compra. Dois jeitos de contar:
+// 'intervalo' soma N dias corridos a cada parcela (30 em 30 muda o dia do mês);
+// 'diaFixo' crava o dia escolhido nos meses seguintes, recuando quando o mês
+// não tem o dia (31 vira 30; fevereiro vira 28, ou 29 em ano bissexto).
+function gerarVencimentosParcelas({ primeira, qtd, modo, intervaloDias, diaFixo }) {
+  const [a, m, d] = String(primeira || '').split('-').map(Number);
+  if (!a || !m || !d || !(qtd >= 1)) return [];
+  const out = [];
+  for (let i = 0; i < qtd; i++) {
+    if (modo === 'diaFixo') {
+      if (i === 0) { out.push(new Date(a, m - 1, d, 12)); continue; }
+      const ano = a + Math.floor((m - 1 + i) / 12);
+      const mes = (m - 1 + i) % 12;
+      const ultimoDia = new Date(ano, mes + 1, 0).getDate();
+      out.push(new Date(ano, mes, Math.min(diaFixo || d, ultimoDia), 12));
+    } else {
+      const dt = new Date(a, m - 1, d, 12);
+      dt.setDate(dt.getDate() + i * (intervaloDias || 30));
+      out.push(dt);
+    }
+  }
+  return out;
+}
+// Divide o total em parcelas iguais; a última fecha os centavos.
+function dividirValorParcelas(total, qtd) {
+  if (!(qtd >= 1)) return [];
+  const base = Math.floor((total / qtd) * 100) / 100;
+  const parcelas = Array.from({ length: qtd }, () => base);
+  parcelas[qtd - 1] = Math.round((total - base * (qtd - 1)) * 100) / 100;
+  return parcelas;
+}
+
 function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos, setPedidos, recebimentos, vendas, askConfirm, askSenha, notify }) {
   // Recebido por item de pedido, calculado uma vez — as listas abaixo consultam o mapa.
   const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
@@ -3823,6 +3855,21 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
   const [previsaoChegada, setPrevisaoChegada] = useState('');
   const [numeroNotaFiscal, setNumeroNotaFiscal] = useState('');
   const [fornecedorId, setFornecedorId] = useState('');
+  const [formaPagamento, setFormaPagamento] = useState('');
+  const [condicao, setCondicao] = useState('vista');
+  const [qtdParcelas, setQtdParcelas] = useState('');
+  const [modoParcelas, setModoParcelas] = useState('intervalo');
+  const [intervaloDias, setIntervaloDias] = useState('30');
+  const [diaFixo, setDiaFixo] = useState('');
+  const [primeiraParcela, setPrimeiraParcela] = useState('');
+  const [parcelasEdit, setParcelasEdit] = useState(null);
+  const [quitandoParcela, setQuitandoParcela] = useState(null);
+  const [qpData, setQpData] = useState(new Date().toISOString().slice(0, 10));
+  const [qpJuros, setQpJuros] = useState('');
+  const [qpObs, setQpObs] = useState('');
+  const [qpComprovante, setQpComprovante] = useState(null);
+  const [qpEnviando, setQpEnviando] = useState(false);
+  const [qpSalvando, setQpSalvando] = useState(false);
   const [data, setData] = useState(new Date().toISOString().slice(0, 10));
   const [itensStaging, setItensStaging] = useState([]);
   const [expanded, setExpanded] = useState({});
@@ -3863,9 +3910,80 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
   function removeLinha(tempId) { setItensStaging(s => s.filter(i => i.tempId !== tempId)); }
   const valorTotal = itensStaging.reduce((acc, i) => acc + i.custoUnitario * i.quantidade, 0);
 
+  function gerarParcelasForm() {
+    const qtd = parseInt(qtdParcelas) || 0;
+    if (qtd < 1) { notify('Informe a quantidade de parcelas'); return; }
+    if (!primeiraParcela) { notify('Informe a data da primeira parcela'); return; }
+    if (valorTotal <= 0) { notify('Adicione os itens do pedido antes de gerar as parcelas — os valores vêm do total'); return; }
+    const dia = modoParcelas === 'diaFixo' ? (parseInt(diaFixo) || Number(primeiraParcela.slice(8, 10))) : null;
+    const vencimentos = gerarVencimentosParcelas({ primeira: primeiraParcela, qtd, modo: modoParcelas, intervaloDias: parseInt(intervaloDias) || 30, diaFixo: dia });
+    const valores = dividirValorParcelas(valorTotal, qtd);
+    setParcelasEdit(vencimentos.map((v, i) => ({ vencimento: v.toISOString().slice(0, 10), valor: valores[i].toFixed(2).replace('.', ',') })));
+  }
+
+  function abrirQuitacaoParcela(p, par) {
+    setQuitandoParcela(`${p.id}|${par.n}`);
+    setQpData(new Date().toISOString().slice(0, 10));
+    setQpJuros(''); setQpObs(''); setQpComprovante(null);
+  }
+
+  async function anexarQpComprovante(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const input = e.target;
+    setQpEnviando(true);
+    try {
+      const privado = await comprovantePrivadoUpload(file);
+      setQpComprovante({ nome: file.name, tipo: privado.tipo || file.type, arquivoPath: privado.arquivoPath });
+    } catch (err) {
+      console.error(err);
+      notify('⚠️ Não foi possível enviar o comprovante. Verifique a conexão e tente de novo.');
+      input.value = '';
+    } finally {
+      setQpEnviando(false);
+    }
+  }
+
+  async function confirmarParcela(p, par) {
+    if (!qpData) { notify('Informe a data em que a parcela foi paga'); return; }
+    const juros = qpJuros.trim() === '' ? 0 : parseValorBR(qpJuros);
+    if (isNaN(juros) || juros < 0) { notify('Juros/acréscimo inválido — deixe vazio se não houve'); return; }
+    setQpSalvando(true);
+    const atualizada = {
+      ...par, quitada: true, quitadaEm: new Date().toISOString(), quitadaPor: autorAtual,
+      dataPagamento: new Date(qpData + 'T12:00:00').toISOString(),
+      valorPago: Math.round((par.valor + juros) * 100) / 100,
+      ...(juros > 0 ? { jurosPago: juros } : {}),
+      ...(qpObs.trim() ? { observacao: qpObs.trim() } : {}),
+      ...(qpComprovante ? { comprovante: qpComprovante } : {}),
+    };
+    const ok = await setPedidos(pedidos.map(x => x.id === p.id ? { ...x, pagamento: { ...x.pagamento, parcelas: x.pagamento.parcelas.map(pp => pp.n === par.n ? atualizada : pp) } } : x));
+    setQpSalvando(false);
+    if (!ok) return;
+    notify(juros > 0 ? `Parcela ${par.n} paga — ${currency(par.valor)} + ${currency(juros)} de juros = ${currency(par.valor + juros)}` : `Parcela ${par.n} paga`);
+    setQuitandoParcela(null);
+  }
+
   async function confirmarPedido() {
     if (!fornecedorId || !numeroPedidoFornecedor || itensStaging.length === 0) { notify('Informe fornecedor, número do pedido e ao menos um item'); return; }
     const fornecedor = fornecedores.find(f => f.id === fornecedorId);
+    let pagamento = null;
+    if (condicao === 'parcelado') {
+      if (!parcelasEdit || parcelasEdit.length === 0) { notify('Pedido parcelado: gere as parcelas antes de confirmar'); return; }
+      const parcelas = [];
+      for (let i = 0; i < parcelasEdit.length; i++) {
+        const pe = parcelasEdit[i];
+        const v = parseValorBR(pe.valor);
+        if (!pe.vencimento) { notify(`Informe o vencimento da parcela ${i + 1}`); return; }
+        if (isNaN(v) || v <= 0) { notify(`Informe o valor da parcela ${i + 1}`); return; }
+        parcelas.push({ n: i + 1, vencimento: new Date(pe.vencimento + 'T12:00:00').toISOString(), valor: v, quitada: false });
+      }
+      const soma = parcelas.reduce((a, x) => a + x.valor, 0);
+      if (Math.abs(soma - valorTotal) > 0.01) { notify(`A soma das parcelas (${currency(soma)}) não bate com o total do pedido (${currency(valorTotal)}). Ajuste as parcelas antes de confirmar.`); return; }
+      pagamento = { forma: formaPagamento.trim(), condicao: 'parcelado', parcelas };
+    } else if (formaPagamento.trim()) {
+      pagamento = { forma: formaPagamento.trim(), condicao: 'vista' };
+    }
     let novoEstoque = estoque.map(i => ({ ...i }));
     const itensFinal = [];
 
@@ -3891,11 +4009,13 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
       id: uid(), numeroPedidoFornecedor, numeroNotaFiscal, fornecedorId, fornecedorNome: fornecedor?.nome || '',
       data: new Date(data + 'T12:00:00').toISOString(), itens: itensFinal, valorTotal, cancelado: false,
       previsaoChegada: previsaoChegada || null,
+      ...(pagamento ? { pagamento } : {}),
       autor: autorAtual,
     };
     if (!(await setPedidos([pedido, ...pedidos]))) return;
     notify('Pedido de compra registrado. Dê entrada dos itens em "Recebimento" quando a mercadoria chegar.');
     setNumeroPedidoFornecedor(''); setNumeroNotaFiscal(''); setFornecedorId(''); setData(new Date().toISOString().slice(0, 10)); setPrevisaoChegada('');
+    setFormaPagamento(''); setCondicao('vista'); setQtdParcelas(''); setModoParcelas('intervalo'); setIntervaloDias('30'); setDiaFixo(''); setPrimeiraParcela(''); setParcelasEdit(null);
     setItensStaging([]); setShowForm(false);
   }
 
@@ -4070,6 +4190,56 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
             </div>
           </div>
 
+          <div className="border border-slate-200 rounded-md p-3 space-y-2">
+            <p className="text-xs text-slate-500 font-medium">Condição de pagamento</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input placeholder="Forma de pagamento (Pix, boleto, cartão...)" value={formaPagamento} onChange={e => setFormaPagamento(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+              <div className="flex gap-4 items-center text-xs text-slate-600">
+                <label className="flex items-center gap-1"><input type="radio" checked={condicao === 'vista'} onChange={() => { setCondicao('vista'); setParcelasEdit(null); }} /> À vista / já pago</label>
+                <label className="flex items-center gap-1"><input type="radio" checked={condicao === 'parcelado'} onChange={() => setCondicao('parcelado')} /> Parcelado</label>
+              </div>
+            </div>
+            {condicao === 'parcelado' && (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-end">
+                  <input type="number" min={1} placeholder="Qtd. de parcelas" value={qtdParcelas} onChange={e => setQtdParcelas(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+                  <label className="text-[11px] text-slate-500">1ª parcela em
+                    <input type="date" value={primeiraParcela} onChange={e => setPrimeiraParcela(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-sm mt-0.5" />
+                  </label>
+                  <select value={modoParcelas} onChange={e => setModoParcelas(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
+                    <option value="intervalo">A cada N dias (30 em 30 muda o dia)</option>
+                    <option value="diaFixo">Dia fixo do mês (data cravada)</option>
+                  </select>
+                  {modoParcelas === 'intervalo' ? (
+                    <input type="number" min={1} placeholder="Intervalo (dias)" value={intervaloDias} onChange={e => setIntervaloDias(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+                  ) : (
+                    <input type="number" min={1} max={31} placeholder="Dia do mês (1–31)" value={diaFixo} onChange={e => setDiaFixo(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button type="button" onClick={gerarParcelasForm} className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-md hover:bg-slate-800">Gerar parcelas</button>
+                  <span className="text-[11px] text-slate-400">Divide o total do pedido em partes iguais (a última fecha os centavos). Mês sem o dia escolhido recua pro último dia — fevereiro e ano bissexto inclusos. Depois dá pra ajustar a data e o valor de cada parcela.</span>
+                </div>
+                {parcelasEdit && (
+                  <div className="space-y-1">
+                    {parcelasEdit.map((pe, i) => (
+                      <div key={i} className="flex items-center gap-2 text-xs">
+                        <span className="w-16 shrink-0 text-slate-500">Parcela {i + 1}</span>
+                        <input type="date" value={pe.vencimento} onChange={e => setParcelasEdit(ps => ps.map((x, j) => j === i ? { ...x, vencimento: e.target.value } : x))} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs" />
+                        <input type="text" inputMode="decimal" value={pe.valor} onChange={e => setParcelasEdit(ps => ps.map((x, j) => j === i ? { ...x, valor: e.target.value } : x))} className="border border-slate-200 rounded-md px-2 py-1.5 text-xs w-28" />
+                      </div>
+                    ))}
+                    {(() => {
+                      const soma = parcelasEdit.reduce((a, pe) => a + (parseValorBR(pe.valor) || 0), 0);
+                      const dif = Math.round((soma - valorTotal) * 100) / 100;
+                      return <p className={`text-[11px] ${Math.abs(dif) < 0.01 ? 'text-emerald-600' : 'text-red-600 font-medium'}`}>Soma das parcelas: {currency(soma)} de {currency(valorTotal)} do pedido{Math.abs(dif) < 0.01 ? ' ✓' : ` — diferença de ${currency(dif)}`}</p>;
+                    })()}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
           <div className="border border-dashed border-slate-200 rounded-md p-3 space-y-2">
             <p className="text-xs text-slate-500 font-medium">Adicionar item do pedido</p>
             <div className="flex gap-3 text-xs">
@@ -4156,10 +4326,11 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
                   <ChevronRight size={16} className={`text-slate-400 transition-transform shrink-0 ${expanded[p.id] ? 'rotate-90' : ''}`} />
                   <div className="min-w-0">
                     <p className="font-medium text-sm truncate flex items-center gap-1.5"><span className={p.anulado ? 'line-through' : ''}>{p.fornecedorNome}</span> <span className={`text-[11px] px-1.5 py-0.5 rounded ${status.style}`}>{status.label}</span></p>
-                    <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} · {formatDate(p.data)} {p.previsaoChegada && `· chegada prevista ${formatDate(p.previsaoChegada + 'T12:00:00')}`} {p.anulado && `· anulado em ${formatDate(p.anuladoEm)}`}</p>
+                    <p className="text-xs text-slate-400">Pedido {p.numeroPedidoFornecedor} {p.numeroNotaFiscal && `· NF ${p.numeroNotaFiscal}`} · {formatDate(p.data)} {p.pagamento?.forma && `· ${p.pagamento.forma}`} {p.previsaoChegada && `· chegada prevista ${formatDate(p.previsaoChegada + 'T12:00:00')}`} {p.anulado && `· anulado em ${formatDate(p.anuladoEm)}`}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {p.pagamento?.condicao === 'parcelado' && (() => { const t = p.pagamento.parcelas.length; const q = p.pagamento.parcelas.filter(x => x.quitada).length; return <span className={`text-[11px] px-1.5 py-0.5 rounded ${q === t ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{q}/{t} pagas</span>; })()}
                   <span className="font-medium text-sm">{currency(p.valorTotal)}</span>
                   {!p.anulado && !p.cancelado && status.label !== 'Recebido' && (
                     <button onClick={(e) => { e.stopPropagation(); cancelarPedido(p.id); }} title="Cancelar (antes de receber)"><Ban size={14} className="text-slate-300 hover:text-red-500" /></button>
@@ -4208,6 +4379,64 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
                       </div>
                     );
                   })}
+
+                  {p.pagamento && (
+                    <div className="bg-white border border-slate-200 rounded-md p-2 mt-1 space-y-1.5">
+                      <p className="text-xs font-medium text-slate-600">Pagamento{p.pagamento.forma ? ` — ${p.pagamento.forma}` : ''}{p.pagamento.condicao === 'parcelado' ? ` · ${p.pagamento.parcelas.length} parcela(s)` : ' · à vista'}</p>
+                      {(p.pagamento.parcelas || []).map(par => {
+                        const chaveQ = `${p.id}|${par.n}`;
+                        const hoje0 = new Date(); hoje0.setHours(0, 0, 0, 0);
+                        const vencidaPar = !par.quitada && new Date(par.vencimento) < hoje0;
+                        return (
+                          <div key={par.n} className="text-xs">
+                            <div className="flex justify-between items-center gap-2 flex-wrap">
+                              <span className="min-w-0">
+                                Parcela {par.n}/{p.pagamento.parcelas.length} — {currency(par.valor)} · {par.quitada ? `paga em ${formatDate(par.dataPagamento || par.quitadaEm)}` : `vence ${formatDate(par.vencimento)}`}
+                                {par.quitada && par.jurosPago > 0 && <span className="text-slate-500"> · pagou {currency(par.valorPago)} ({currency(par.jurosPago)} de juros)</span>}
+                                {par.quitada && par.observacao && <span className="text-slate-400"> · {par.observacao}</span>}
+                              </span>
+                              <span className="flex items-center gap-1.5 shrink-0">
+                                {par.quitada && par.comprovante && <ComprovanteArquivo comp={par.comprovante} className="w-8 h-8 object-cover rounded" />}
+                                {par.quitada ? <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">Paga</span> : (
+                                  <>
+                                    {vencidaPar && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Vencida</span>}
+                                    {!p.anulado && !p.cancelado && (
+                                      <button onClick={() => (quitandoParcela === chaveQ ? setQuitandoParcela(null) : abrirQuitacaoParcela(p, par))} className="text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded-md">Confirmar pagamento</button>
+                                    )}
+                                  </>
+                                )}
+                              </span>
+                            </div>
+                            {quitandoParcela === chaveQ && !par.quitada && (
+                              <div className="mt-1.5 border-t border-slate-100 pt-1.5 space-y-1.5">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                  <label className="text-[11px] text-slate-500">Paga em
+                                    <input type="date" value={qpData} onChange={e => setQpData(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs mt-0.5" />
+                                  </label>
+                                  <label className="text-[11px] text-slate-500">Juros/acréscimo (R$, se houve)
+                                    <input type="text" inputMode="decimal" placeholder="Ex: 12,50" value={qpJuros} onChange={e => setQpJuros(e.target.value)} className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs mt-0.5" />
+                                  </label>
+                                  <label className="text-[11px] text-slate-500">Observação (de que conta saiu)
+                                    <input value={qpObs} onChange={e => setQpObs(e.target.value)} placeholder="Ex: pago pela conta Stone" className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-xs mt-0.5" />
+                                  </label>
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <label className="inline-flex items-center gap-1.5 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-md cursor-pointer">
+                                    <Camera size={12} /> {qpComprovante ? 'Trocar comprovante' : 'Anexar comprovante (opcional)'}
+                                    <input type="file" accept="image/*,application/pdf" className="hidden" onChange={anexarQpComprovante} disabled={qpEnviando} />
+                                  </label>
+                                  {qpEnviando && <span className="text-xs text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Enviando...</span>}
+                                  {qpComprovante && <span className="text-xs text-slate-500">{qpComprovante.nome}</span>}
+                                  <button onClick={() => confirmarParcela(p, par)} disabled={qpSalvando || qpEnviando} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-md disabled:opacity-50">{qpSalvando ? 'Confirmando…' : 'Confirmar'}</button>
+                                  <button onClick={() => setQuitandoParcela(null)} className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1.5">Cancelar</button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
 
                   {!p.anulado && (
                     adicionandoItemEm === p.id ? (
@@ -7039,6 +7268,16 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
   // próxima, os 30 dias a partir do sábado seguinte, e o que vier depois.
   const contasAPagar = useMemo(() => {
     const pendentes = pagamentos.filter(p => !p.anulado && p.tipo === 'Saída' && !pagamentoQuitado(p));
+    const parcelasPedidos = [];
+    for (const pc of (pedidosCompra || [])) {
+      if (pc.anulado || pc.cancelado) continue;
+      const pars = (pc.pagamento && Array.isArray(pc.pagamento.parcelas)) ? pc.pagamento.parcelas : [];
+      for (const par of pars) {
+        if (par.quitada) continue;
+        parcelasPedidos.push({ id: `pedido:${pc.id}:${par.n}`, data: par.vencimento, valor: par.valor, origemPedido: true, descricao: `Parcela ${par.n}/${pars.length} do pedido ${pc.numeroPedidoFornecedor} — ${pc.fornecedorNome}` });
+      }
+    }
+    const abertas = [...pendentes, ...parcelasPedidos];
     const hoje0 = new Date(); hoje0.setHours(0, 0, 0, 0);
     const fimSemana = new Date(hoje0);
     fimSemana.setDate(fimSemana.getDate() + ((5 - hoje0.getDay() + 7) % 7));
@@ -7046,7 +7285,7 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
     const fimProxima = new Date(fimSemana); fimProxima.setDate(fimProxima.getDate() + 7);
     const fimTrinta = new Date(fimProxima); fimTrinta.setDate(fimTrinta.getDate() + 30);
     const listas = { semana: [], proxima: [], trinta: [], futuras: [] };
-    for (const p of pendentes) {
+    for (const p of abertas) {
       const d = new Date(p.data);
       if (d <= fimSemana) listas.semana.push(p);
       else if (d <= fimProxima) listas.proxima.push(p);
@@ -7061,8 +7300,8 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
       { chave: 'trinta', rotulo: 'Vencem nos 30 dias seguintes', faixa: `${formatDate(diaSeguinte(fimProxima))} a ${formatDate(fimTrinta)}`, lista: listas.trinta },
       { chave: 'futuras', rotulo: 'Vencimentos futuros', faixa: `depois de ${formatDate(fimTrinta)}`, lista: listas.futuras },
     ].map(c => ({ ...c, total: c.lista.reduce((a, p) => a + p.valor, 0), qtd: c.lista.length }));
-    return { temPendentes: pendentes.length > 0, vencidas, caixas };
-  }, [pagamentos]);
+    return { temPendentes: abertas.length > 0, vencidas, caixas };
+  }, [pagamentos, pedidosCompra]);
 
   const pagamentosFiltrados = useMemo(() => {
     let lista = pagamentos;
@@ -7120,8 +7359,21 @@ function PagamentosModule({ pagamentos, setPagamentos, vendas, estoque, pedidosC
           <p className="text-[11px] text-slate-400 mt-1">
             {filtroVencimento
               ? `Mostrando só "${(contasAPagar.caixas.find(c => c.chave === filtroVencimento) || {}).rotulo}" na lista abaixo — clique de novo na caixa para limpar.`
-              : 'Períodos emendados, sem sobreposição — cada conta aparece numa caixa só. Clique numa caixa para ver essas contas na lista.'}
+              : 'Períodos emendados, sem sobreposição — cada conta aparece numa caixa só (parcelas de pedidos de compra inclusas). Clique numa caixa para ver essas contas na lista.'}
           </p>
+          {filtroVencimento && (() => {
+            const caixa = contasAPagar.caixas.find(c => c.chave === filtroVencimento);
+            const parcelas = (caixa ? caixa.lista : []).filter(x => x.origemPedido);
+            if (parcelas.length === 0) return null;
+            return (
+              <div className="mt-2 bg-white border border-slate-200 rounded-lg p-3 space-y-1">
+                <p className="text-xs font-medium text-slate-600">Parcelas de pedidos de compra neste período — a quitação é na aba Pedidos de compra</p>
+                {parcelas.map(x => (
+                  <p key={x.id} className="text-xs text-slate-500 flex justify-between gap-2"><span className="min-w-0">{x.descricao} · vence {formatDate(x.data)}</span><span className="font-medium shrink-0">{currency(x.valor)}</span></p>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
       <CategoriasPagamentoEditor categorias={categorias} salvar={salvarCategorias} notify={notify} />
@@ -8945,6 +9197,10 @@ function sugerirVinculos(l, { vendas, pagamentos, pedidosCompra }) {
     for (const pc of (pedidosCompra || [])) {
       if (pc.cancelado || pc.anulado) continue;
       if (bate(pc.valorTotal)) sug.push({ tipo: 'pedido', refId: pc.id, rotulo: `Pedido ${pc.numeroPedidoFornecedor} — ${pc.fornecedorNome} (${formatDate(pc.data)})`, valor: pc.valorTotal, dist: dias(pc.data) });
+      for (const par of ((pc.pagamento && pc.pagamento.parcelas) || [])) {
+        const vPar = par.valorPago ?? par.valor;
+        if (bate(vPar)) sug.push({ tipo: 'pedido', refId: pc.id, rotulo: `Pedido ${pc.numeroPedidoFornecedor} — ${pc.fornecedorNome} · parcela ${par.n}/${pc.pagamento.parcelas.length}${par.quitada ? '' : ' · A PAGAR'} (${formatDate(par.vencimento)})`, valor: vPar, dist: dias(par.vencimento) });
+      }
     }
   } else {
     for (const v of (vendas || [])) {
