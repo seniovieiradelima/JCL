@@ -2043,7 +2043,25 @@ function SelectPesquisavel({ opcoes, value, onChange, placeholder, compacto }) {
   );
 }
 
-function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, pedidosCompra, recebimentos, vendas }) {
+/* ---------------- TABELAS DE PREÇO (kit solar / avulso / varejo) ---------------- */
+
+// O campo antigo precoVenda é o preço de KIT SOLAR (gerador completo, isento de ICMS,
+// margem mais justa) — é também o que a proposta da integradora usa como base, por isso
+// o nome do campo não muda. Avulso (item solto, com ICMS) e varejo (consumidor final,
+// preço cheio) são campos novos: em branco ou zerados, valem o preço do kit.
+const TABELAS_PRECO = [
+  { id: 'kit', rotulo: 'Kit solar', descricao: 'Gerador completo, isento de ICMS — margem mais justa' },
+  { id: 'avulso', rotulo: 'Avulso distribuidora', descricao: 'Item avulso para integrador, com ICMS' },
+  { id: 'varejo', rotulo: 'Varejo', descricao: 'Consumidor final — preço cheio' },
+];
+function rotuloTabelaPreco(id) { return TABELAS_PRECO.find(t => t.id === id)?.rotulo || id || ''; }
+function precoDaTabela(produto, tabela) {
+  if (!produto) return 0;
+  const especifico = tabela === 'avulso' ? produto.precoAvulso : tabela === 'varejo' ? produto.precoVarejo : produto.precoVenda;
+  return especifico > 0 ? especifico : (produto.precoVenda || 0);
+}
+
+function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, pedidosCompra, recebimentos, vendas, tabelaPreco }) {
   const [produtoSel, setProdutoSel] = useState('');
   const [depositoSel, setDepositoSel] = useState(depositos.length === 1 ? depositos[0].id : '');
   const [preVendaSel, setPreVendaSel] = useState(false);
@@ -2051,7 +2069,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
   const [precoSel, setPrecoSel] = useState('');
 
   const produtoAtual = estoque.find(i => i.id === produtoSel);
-  useEffect(() => { if (produtoAtual) setPrecoSel(produtoAtual.precoVenda); }, [produtoSel]);
+  useEffect(() => { if (produtoAtual) setPrecoSel(precoDaTabela(produtoAtual, tabelaPreco)); }, [produtoSel, tabelaPreco]);
 
   // Calculados uma vez por mudança de dados — não a cada tecla digitada.
   const aCaminhoMap = useMemo(() => mapaACaminhoPorProduto(pedidosCompra, recebimentos), [pedidosCompra, recebimentos]);
@@ -3128,37 +3146,46 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
   const [novoPreco, setNovoPreco] = useState('');
   const [novoCusto, setNovoCusto] = useState('');
 
-  function abrirEdicaoPreco(item) { setEditandoPrecoId(item.id); setNovoPreco(item.precoVenda); setNovoCusto(item.custoReferencia || ''); }
-  function cancelarEdicaoPreco() { setEditandoPrecoId(null); setNovoPreco(''); setNovoCusto(''); }
+  const [novoPrecoAvulso, setNovoPrecoAvulso] = useState('');
+  const [novoPrecoVarejo, setNovoPrecoVarejo] = useState('');
+
+  function abrirEdicaoPreco(item) { setEditandoPrecoId(item.id); setNovoPreco(item.precoVenda); setNovoPrecoAvulso(item.precoAvulso || ''); setNovoPrecoVarejo(item.precoVarejo || ''); setNovoCusto(item.custoReferencia || ''); }
+  function cancelarEdicaoPreco() { setEditandoPrecoId(null); setNovoPreco(''); setNovoPrecoAvulso(''); setNovoPrecoVarejo(''); setNovoCusto(''); }
 
   async function confirmarAtualizacaoPreco(item) {
     const valorVenda = parseValorBR(novoPreco);
     if (isNaN(valorVenda) || valorVenda < 0) { notify('Informe um preço de venda válido'); return; }
+    const valorAvulso = novoPrecoAvulso === '' ? 0 : parseValorBR(novoPrecoAvulso);
+    if (isNaN(valorAvulso) || valorAvulso < 0) { notify('Informe um preço avulso válido'); return; }
+    const valorVarejo = novoPrecoVarejo === '' ? 0 : parseValorBR(novoPrecoVarejo);
+    if (isNaN(valorVarejo) || valorVarejo < 0) { notify('Informe um preço de varejo válido'); return; }
     const valorCusto = novoCusto === '' ? (item.custoReferencia || 0) : parseValorBR(novoCusto);
     if (isNaN(valorCusto) || valorCusto < 0) { notify('Informe um custo de referência válido'); return; }
-    if (valorVenda === item.precoVenda && valorCusto === (item.custoReferencia || 0)) { cancelarEdicaoPreco(); return; }
+    if (valorVenda === item.precoVenda && valorAvulso === (item.precoAvulso || 0) && valorVarejo === (item.precoVarejo || 0) && valorCusto === (item.custoReferencia || 0)) { cancelarEdicaoPreco(); return; }
     const registro = {
       data: new Date().toISOString(),
       precoAnterior: item.precoVenda, precoNovo: valorVenda,
+      avulsoAnterior: item.precoAvulso || 0, avulsoNovo: valorAvulso,
+      varejoAnterior: item.precoVarejo || 0, varejoNovo: valorVarejo,
       custoAnterior: item.custoReferencia || 0, custoNovo: valorCusto,
     };
-    const next = estoque.map(i => i.id === item.id ? { ...i, precoVenda: valorVenda, custoReferencia: valorCusto, historicoPrecos: [registro, ...(i.historicoPrecos || [])] } : i);
+    const next = estoque.map(i => i.id === item.id ? { ...i, precoVenda: valorVenda, precoAvulso: valorAvulso, precoVarejo: valorVarejo, custoReferencia: valorCusto, historicoPrecos: [registro, ...(i.historicoPrecos || [])] } : i);
     await setEstoque(next);
-    notify(`Preço atualizado: venda ${currency(item.precoVenda)} → ${currency(valorVenda)}, custo ref. ${currency(item.custoReferencia || 0)} → ${currency(valorCusto)}`);
+    notify(`Preços atualizados: kit ${currency(valorVenda)} · avulso ${currency(valorAvulso)} · varejo ${currency(valorVarejo)} · custo ref. ${currency(valorCusto)}`);
     cancelarEdicaoPreco();
   }
 
   const [editandoProdutoId, setEditandoProdutoId] = useState(null);
 
   function emptyForm() {
-    return { categoria: grupos[0]?.nome || 'Inversor', marca: '', modelo: '', potencia: '', serializado: grupos[0] ? !!grupos[0].serializado : true, precoVenda: '', quantidadeMinima: '', observacoes: '' };
+    return { categoria: grupos[0]?.nome || 'Inversor', marca: '', modelo: '', potencia: '', serializado: grupos[0] ? !!grupos[0].serializado : true, precoVenda: '', precoAvulso: '', precoVarejo: '', quantidadeMinima: '', observacoes: '' };
   }
   function resetForm() { setForm(emptyForm()); setEditandoProdutoId(null); setShowForm(false); }
 
   function abrirEdicaoProduto(item) {
     setForm({
       categoria: item.categoria, marca: item.marca, modelo: item.modelo, potencia: item.potencia || '',
-      serializado: item.serializado, precoVenda: String(item.precoVenda), quantidadeMinima: String(item.quantidadeMinima || 0),
+      serializado: item.serializado, precoVenda: String(item.precoVenda), precoAvulso: item.precoAvulso ? String(item.precoAvulso) : '', precoVarejo: item.precoVarejo ? String(item.precoVarejo) : '', quantidadeMinima: String(item.quantidadeMinima || 0),
       observacoes: item.observacoes || '',
     });
     setEditandoProdutoId(item.id);
@@ -3170,6 +3197,8 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
     e.preventDefault();
     if (!form.marca || !form.modelo) { notify('Preencha marca e modelo antes de salvar'); return; }
     const precoVenda = parseValorBR(form.precoVenda) || 0;
+    const precoAvulso = parseValorBR(form.precoAvulso) || 0;
+    const precoVarejo = parseValorBR(form.precoVarejo) || 0;
 
     if (editandoProdutoId) {
       const atual = estoque.find(i => i.id === editandoProdutoId);
@@ -3179,13 +3208,14 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
         notify('Não é possível mudar categoria/tipo de controle de série de um produto que já tem estoque lançado');
         return;
       }
-      const historicoPrecos = precoVenda !== atual.precoVenda
-        ? [{ data: new Date().toISOString(), precoAnterior: atual.precoVenda, precoNovo: precoVenda }, ...(atual.historicoPrecos || [])]
+      const mudouPreco = precoVenda !== atual.precoVenda || precoAvulso !== (atual.precoAvulso || 0) || precoVarejo !== (atual.precoVarejo || 0);
+      const historicoPrecos = mudouPreco
+        ? [{ data: new Date().toISOString(), precoAnterior: atual.precoVenda, precoNovo: precoVenda, avulsoAnterior: atual.precoAvulso || 0, avulsoNovo: precoAvulso, varejoAnterior: atual.precoVarejo || 0, varejoNovo: precoVarejo }, ...(atual.historicoPrecos || [])]
         : (atual.historicoPrecos || []);
       const atualizado = {
         ...atual,
         categoria: form.categoria, marca: form.marca.trim(), modelo: form.modelo.trim(), potencia: form.potencia.trim(),
-        serializado: form.serializado, precoVenda, quantidadeMinima: parseInt(form.quantidadeMinima) || 0,
+        serializado: form.serializado, precoVenda, precoAvulso, precoVarejo, quantidadeMinima: parseInt(form.quantidadeMinima) || 0,
         observacoes: form.observacoes.trim(), historicoPrecos,
       };
       await setEstoque(estoque.map(i => i.id === editandoProdutoId ? atualizado : i));
@@ -3197,7 +3227,7 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
     const novo = {
       id: uid(), categoria: form.categoria, marca: form.marca.trim(), modelo: form.modelo.trim(),
       potencia: form.potencia.trim(), serializado: form.serializado,
-      precoVenda,
+      precoVenda, precoAvulso, precoVarejo,
       quantidadeMinima: parseInt(form.quantidadeMinima) || 0,
       observacoes: form.observacoes.trim(),
       unidades: form.serializado ? [] : undefined,
@@ -3285,8 +3315,8 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
           <select value={ordenacao} onChange={e => setOrdenacao(e.target.value)} className="border border-slate-200 rounded-md px-2 py-2 text-sm">
             <option value="alfabetica">Ordem alfabética (A-Z)</option>
             <option value="categoria">Categoria</option>
-            <option value="precoDesc">Preço de venda (maior primeiro)</option>
-            <option value="precoAsc">Preço de venda (menor primeiro)</option>
+            <option value="precoDesc">Preço kit solar (maior primeiro)</option>
+            <option value="precoAsc">Preço kit solar (menor primeiro)</option>
             <option value="valorTotalDesc">Valor total em estoque (maior primeiro)</option>
             <option value="qtdDesc">Quantidade disponível (maior primeiro)</option>
             <option value="qtdAsc">Quantidade disponível (menor primeiro)</option>
@@ -3326,10 +3356,13 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
             <input type="checkbox" checked={form.serializado} onChange={e => setForm(f => ({ ...f, serializado: e.target.checked }))} />
             Controlar por número de série (recomendado para inversores)
           </label>
-          <div className="grid grid-cols-2 gap-2">
-            <input type="text" inputMode="decimal" placeholder="Preço de venda (R$) ex: 518,42" value={form.precoVenda} onChange={e => setForm(f => ({ ...f, precoVenda: e.target.value }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços'} className="border border-slate-200 rounded-md px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <input type="text" inputMode="decimal" placeholder="Preço kit solar (R$) ex: 518,42" value={form.precoVenda} onChange={e => setForm(f => ({ ...f, precoVenda: e.target.value }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços'} className="border border-slate-200 rounded-md px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" />
+            <input type="text" inputMode="decimal" placeholder="Preço avulso distribuidora (R$)" value={form.precoAvulso} onChange={e => setForm(f => ({ ...f, precoAvulso: e.target.value }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços'} className="border border-slate-200 rounded-md px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" />
+            <input type="text" inputMode="decimal" placeholder="Preço varejo (R$)" value={form.precoVarejo} onChange={e => setForm(f => ({ ...f, precoVarejo: e.target.value }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços'} className="border border-slate-200 rounded-md px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" />
             <input type="number" placeholder="Estoque mínimo (alerta)" value={form.quantidadeMinima} onChange={e => setForm(f => ({ ...f, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
           </div>
+          <p className="text-[11px] text-slate-400 -mt-1">Kit solar = gerador completo, isento de ICMS (é o preço que a proposta da integradora usa). Avulso ou varejo em branco valem o preço do kit.</p>
           <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
           <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">{editandoProdutoId ? 'Salvar alterações' : 'Salvar produto'}</button>
         </div>
@@ -3354,7 +3387,7 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-400">{item.potencia} · venda {currency(item.precoVenda)}</p>
+                    <p className="text-xs text-slate-400">{item.potencia} · kit {currency(item.precoVenda)} · avulso {currency(precoDaTabela(item, 'avulso'))} · varejo {currency(precoDaTabela(item, 'varejo'))}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
@@ -3385,8 +3418,16 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                     {editandoPrecoId === item.id ? (
                       <div className="flex flex-col gap-2 w-full">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-slate-500 shrink-0 w-32">Preço de venda:</span>
+                          <span className="text-xs text-slate-500 shrink-0 w-32">Preço kit solar:</span>
                           <input type="text" inputMode="decimal" autoFocus value={novoPreco} onChange={e => setNovoPreco(e.target.value)} placeholder="Ex: 518,42" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500 shrink-0 w-32">Preço avulso:</span>
+                          <input type="text" inputMode="decimal" value={novoPrecoAvulso} onChange={e => setNovoPrecoAvulso(e.target.value)} placeholder="Em branco = kit" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500 shrink-0 w-32">Preço varejo:</span>
+                          <input type="text" inputMode="decimal" value={novoPrecoVarejo} onChange={e => setNovoPrecoVarejo(e.target.value)} placeholder="Em branco = kit" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 shrink-0 w-32">Custo de referência:</span>
@@ -3401,7 +3442,9 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                     ) : (
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-slate-500">
-                          Venda: <span className="font-medium text-slate-700">{currency(item.precoVenda)}</span>
+                          Kit: <span className="font-medium text-slate-700">{currency(item.precoVenda)}</span>
+                          {' · '}Avulso: <span className="font-medium text-slate-700">{currency(precoDaTabela(item, 'avulso'))}</span>
+                          {' · '}Varejo: <span className="font-medium text-slate-700">{currency(precoDaTabela(item, 'varejo'))}</span>
                           {' · '}Custo ref.: <span className="font-medium text-slate-700">{currency(item.custoReferencia || 0)}</span>
                         </span>
                         <button onClick={() => abrirEdicaoPreco(item)} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1 rounded-md"><Pencil size={11} /> Atualizar preço</button>
@@ -3414,7 +3457,9 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                       <div className="space-y-0.5">
                         {item.historicoPrecos.map((h, i) => (
                           <p key={i} className="text-slate-500">
-                            {formatDate(h.data)} — venda {currency(h.precoAnterior)} → <span className="font-medium">{currency(h.precoNovo)}</span>
+                            {formatDate(h.data)} — kit {currency(h.precoAnterior)} → <span className="font-medium">{currency(h.precoNovo)}</span>
+                            {h.avulsoNovo !== undefined && h.avulsoAnterior !== h.avulsoNovo && <> · avulso {currency(h.avulsoAnterior)} → <span className="font-medium">{currency(h.avulsoNovo)}</span></>}
+                            {h.varejoNovo !== undefined && h.varejoAnterior !== h.varejoNovo && <> · varejo {currency(h.varejoAnterior)} → <span className="font-medium">{currency(h.varejoNovo)}</span></>}
                             {h.custoNovo !== undefined && h.custoAnterior !== h.custoNovo && <> · custo ref. {currency(h.custoAnterior)} → <span className="font-medium">{currency(h.custoNovo)}</span></>}
                           </p>
                         ))}
@@ -4262,7 +4307,7 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
                 <input placeholder="Marca" value={novoProd.marca} onChange={e => setNovoProd(p => ({ ...p, marca: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input placeholder="Modelo" value={novoProd.modelo} onChange={e => setNovoProd(p => ({ ...p, modelo: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input placeholder="Potência" value={novoProd.potencia} onChange={e => setNovoProd(p => ({ ...p, potencia: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
-                <input type="text" inputMode="decimal" placeholder="Preço de venda (R$) ex: 518,42" value={novoProd.precoVenda} onChange={e => setNovoProd(p => ({ ...p, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
+                <input type="text" inputMode="decimal" placeholder="Preço kit solar (R$) ex: 518,42" value={novoProd.precoVenda} onChange={e => setNovoProd(p => ({ ...p, precoVenda: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <input type="number" placeholder="Estoque mínimo" value={novoProd.quantidadeMinima} onChange={e => setNovoProd(p => ({ ...p, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
                 <label className="flex items-center gap-1.5 text-xs text-slate-600 col-span-2">
                   <input type="checkbox" checked={novoProd.serializado} onChange={e => setNovoProd(p => ({ ...p, serializado: e.target.checked }))} /> Controlar por número de série
@@ -5027,21 +5072,37 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
   const [observacoes, setObservacoes] = useState('');
   const [expanded, setExpanded] = useState({});
 
-  function novoOrcamento() { setEditingId(null); setClienteId(''); setCarrinho([]); setObservacoes(''); setShowForm(true); }
-  function editarOrcamento(orc) { setEditingId(orc.id); setClienteId(orc.clienteId); setCarrinho(orc.itens.map(i => ({ ...i }))); setObservacoes(orc.observacoes || ''); setShowForm(true); }
-  function cancelarForm() { setShowForm(false); setEditingId(null); setClienteId(''); setCarrinho([]); setObservacoes(''); }
+  const [tabelaPreco, setTabelaPreco] = useState('');
+
+  function novoOrcamento() { setEditingId(null); setClienteId(''); setCarrinho([]); setObservacoes(''); setTabelaPreco(''); setShowForm(true); }
+  // Orçamentos de antes das tabelas foram feitos com o preço único, que é o do kit.
+  function editarOrcamento(orc) { setEditingId(orc.id); setClienteId(orc.clienteId); setCarrinho(orc.itens.map(i => ({ ...i }))); setObservacoes(orc.observacoes || ''); setTabelaPreco(orc.tabelaPreco || 'kit'); setShowForm(true); }
+  function cancelarForm() { setShowForm(false); setEditingId(null); setClienteId(''); setCarrinho([]); setObservacoes(''); setTabelaPreco(''); }
+
+  function mudarTabela(nova) {
+    if (nova === tabelaPreco) return;
+    setTabelaPreco(nova);
+    if (carrinho.length > 0) {
+      setCarrinho(c => c.map(it => {
+        const prod = estoque.find(p => p.id === it.itemId);
+        return prod ? { ...it, precoVendaUnitario: precoDaTabela(prod, nova) } : it;
+      }));
+      notify(`Itens do carrinho reprecificados pela tabela ${rotuloTabelaPreco(nova)} — confira os valores`);
+    }
+  }
 
   const total = carrinho.reduce((acc, it) => acc + it.precoVendaUnitario * it.quantidade, 0);
 
   async function salvarOrcamento() {
     if (!clienteId || carrinho.length === 0) { notify('Selecione o cliente e adicione ao menos um item'); return; }
+    if (!tabelaPreco) { notify('Escolha a tabela de preço do orçamento'); return; }
     const cliente = clientes.find(c => c.id === clienteId);
     if (editingId) {
-      const next = orcamentos.map(o => o.id === editingId ? { ...o, clienteId, clienteNome: cliente?.nome || o.clienteNome, itens: carrinho, total, observacoes } : o);
+      const next = orcamentos.map(o => o.id === editingId ? { ...o, clienteId, clienteNome: cliente?.nome || o.clienteNome, itens: carrinho, total, observacoes, tabelaPreco } : o);
       await setOrcamentos(next);
       notify('Orçamento atualizado');
     } else {
-      const novo = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: carrinho, total, observacoes, status: 'Aberto', vendaId: null, autor: autorAtual };
+      const novo = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: carrinho, total, observacoes, tabelaPreco, status: 'Aberto', vendaId: null, autor: autorAtual };
       await setOrcamentos([novo, ...orcamentos]);
       notify('Orçamento salvo');
     }
@@ -5072,7 +5133,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     const emReserva = itensInvadindoReserva(itensResultado, estoque, vendas, pedidosCompra, recebimentos);
     if (emReserva.length > 0 && !(await askConfirm(`⚠️ Depois desta venda, o estoque restante (mesmo somando o que está a caminho) NÃO cobre as pré-vendas já reservadas de: ${emReserva.join(', ')}. Confirme com quem fez a(s) pré-venda(s) antes de prometer.`))) return;
     if (!(await setEstoque(novoEstoque))) return;
-    const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, observacoes: orc.observacoes || '', autor: autorAtual };
+    const venda = { id: uid(), clienteId: orc.clienteId, clienteNome: orc.clienteNome, data: new Date().toISOString(), itens: itensResultado, totalVenda: orc.total, totalCusto, origemOrcamentoId: orc.id, ...(orc.tabelaPreco ? { tabelaPreco: orc.tabelaPreco } : {}), observacoes: orc.observacoes || '', autor: autorAtual };
     if (!(await setVendas([venda, ...vendas]))) return;
     if (!(await setOrcamentos(orcamentos.map(o => o.id === orc.id ? { ...o, status: 'Convertido', vendaId: venda.id } : o)))) return;
     notify('Orçamento convertido em venda e estoque atualizado');
@@ -5147,11 +5208,26 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
             {setClientes && <NovoClienteInline clientes={clientes} setClientes={setClientes} onCriado={setClienteId} notify={notify} />}
           </div>
 
-          <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} />
+          <div>
+            <p className="text-xs text-slate-500 font-medium mb-1">Tabela de preço deste orçamento</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {TABELAS_PRECO.map(t => (
+                <button key={t.id} type="button" onClick={() => mudarTabela(t.id)} className={`text-left border rounded-md px-3 py-2 ${tabelaPreco === t.id ? 'border-amber-500 ring-1 ring-amber-500 bg-amber-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                  <p className="text-sm font-medium">{t.rotulo}</p>
+                  <p className="text-[11px] text-slate-500">{t.descricao}</p>
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">O preço da tabela vem sugerido ao adicionar cada item e pode ser ajustado. Trocar a tabela reprecifica os itens já no carrinho. A tabela escolhida não aparece no documento do cliente.</p>
+          </div>
+
+          {tabelaPreco
+            ? <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} tabelaPreco={tabelaPreco} />
+            : <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">Escolha a tabela de preço acima para liberar a adição de itens.</p>}
 
           <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} placeholder="Observações da negociação (condições combinadas, prazo, forma de pagamento acertada, detalhes de instalação etc.) — ficam visíveis pra quem for tocar as próximas etapas, inclusive a expedição." rows={3} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm resize-none" />
 
-          <button onClick={salvarOrcamento} disabled={!clienteId || carrinho.length === 0} className="w-full bg-amber-500 disabled:opacity-30 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">
+          <button onClick={salvarOrcamento} disabled={!clienteId || carrinho.length === 0 || !tabelaPreco} className="w-full bg-amber-500 disabled:opacity-30 hover:bg-amber-600 text-slate-900 font-medium text-sm px-4 py-2 rounded-md">
             {editingId ? 'Salvar alterações' : 'Salvar orçamento'}
           </button>
         </div>
@@ -5178,7 +5254,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
                     <span className={o.anulado ? 'line-through' : ''}>{o.clienteNome}</span> {statusBadge(o.status)}
                     {o.anulado && <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">Anulado</span>}
                   </p>
-                  <p className="text-xs text-slate-400">{formatDate(o.data)} · {o.itens.length} item(ns) {o.anulado && `· anulado em ${formatDate(o.anuladoEm)}`}</p>
+                  <p className="text-xs text-slate-400">{formatDate(o.data)} · {o.itens.length} item(ns) {o.tabelaPreco && `· tabela ${rotuloTabelaPreco(o.tabelaPreco)}`} {o.anulado && `· anulado em ${formatDate(o.anuladoEm)}`}</p>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -5296,7 +5372,8 @@ function VendasModule({ vendas, setVendas, clientes, setClientes, estoque, setEs
     // A venda só é gravada se a baixa de estoque foi confirmada no banco. Sem isso, uma
     // baixa recusada deixava a venda registrada com o estoque intacto.
     if (!(await setEstoque(novoEstoque))) return;
-    const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined, observacoes, autor: autorAtual };
+    const orcOrigem = orcamentoOrigemId ? orcamentosAbertos.find(o => o.id === orcamentoOrigemId) : null;
+    const venda = { id: uid(), clienteId, clienteNome: cliente?.nome || 'Cliente removido', data: new Date().toISOString(), itens: itensResultado, totalVenda: total, totalCusto, origemOrcamentoId: orcamentoOrigemId || undefined, ...(orcOrigem?.tabelaPreco ? { tabelaPreco: orcOrigem.tabelaPreco } : {}), observacoes, autor: autorAtual };
     if (!(await setVendas([venda, ...vendas]))) return;
     if (orcamentoOrigemId && setOrcamentos) {
       await setOrcamentos(orcamentos.map(o => o.id === orcamentoOrigemId ? { ...o, status: 'Convertido', vendaId: venda.id } : o));
