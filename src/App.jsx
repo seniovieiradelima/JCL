@@ -1107,6 +1107,7 @@ function AppInner({ perfil }) {
   const [notasFiscais, setNotasFiscais] = useState([]);
   const [categoriasPagamento, setCategoriasPagamento] = useState({ saida: PAGAMENTO_CATEGORIAS_SAIDA, entrada: PAGAMENTO_CATEGORIAS_ENTRADA });
   const [gruposProduto, setGruposProduto] = useState(GRUPOS_PRODUTO_PADRAO);
+  const [formulasPreco, setFormulasPreco] = useState(FORMULAS_PRECO_PADRAO);
   const [toasts, setToasts] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState(null); // { message, resolve }
 
@@ -1345,6 +1346,8 @@ function AppInner({ perfil }) {
       }
       const gps = await loadConfig('gruposProduto', null);
       if (gps) setGruposProduto(normalizarGruposProduto(gps));
+      const fps = await loadConfig('formulasPreco', null);
+      if (fps) setFormulasPreco(normalizarFormulasPreco(fps));
       const confs = await loadConfig('confirmadores', null);
       if (confs && Array.isArray(confs.emails) && confs.emails.length) confirmadoresAtual = confs.emails;
       const lgm = await loadConfig('logomarcas', null);
@@ -1505,6 +1508,13 @@ function AppInner({ perfil }) {
     setGruposProduto(norm);
     return true;
   }
+  async function salvarFormulasPreco(next) {
+    const norm = normalizarFormulasPreco(next);
+    const ok = await saveConfig('formulasPreco', norm);
+    if (!ok) { notify('⚠️ Não foi possível salvar as fórmulas. Verifique a conexão e tente de novo.'); return false; }
+    setFormulasPreco(norm);
+    return true;
+  }
   async function salvarLogomarcas(next) {
     const ok = await saveConfig('logomarcas', next);
     if (!ok) { notify('⚠️ Não foi possível salvar a logomarca. Verifique a conexão e tente de novo.'); return false; }
@@ -1629,7 +1639,7 @@ function AppInner({ perfil }) {
 
       <main className="max-w-6xl mx-auto px-4 py-5">
         {tab === 'visaoGeral' && <VisaoGeralModule vendas={vendas} estoque={estoque} pedidosCompra={pedidosCompra} recebimentos={recebimentos} expedicoes={expedicoes} conciliacoes={conciliacoes} propostas={propostas} indicadores={indicadores} ajustesReposicao={ajustesReposicao} irPara={setTab} />}
-        {tab === 'estoque' && <EstoqueModule grupos={gruposProduto} salvarGrupos={salvarGruposProduto} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
+        {tab === 'estoque' && <EstoqueModule grupos={gruposProduto} salvarGrupos={salvarGruposProduto} estoque={estoque} setEstoque={persistEstoque} depositos={depositos} vendas={vendas} recebimentos={recebimentos} pedidosCompra={pedidosCompra} transferencias={transferencias} balancos={balancos} formulas={formulasPreco} salvarFormulas={salvarFormulasPreco} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'depositos' && <DepositosModule depositos={depositos} setDepositos={persistDepositos} estoque={estoque} askConfirm={askConfirm} askSenha={askSenha} notify={notify} />}
         {tab === 'transferencias' && (
           <TransferenciasModule
@@ -1661,6 +1671,7 @@ function AppInner({ perfil }) {
             estoque={estoque} setEstoque={persistEstoque}
             depositos={depositos}
             vendas={vendas}
+            grupos={gruposProduto} formulas={formulasPreco}
             askSenha={askSenha}
             notify={notify}
           />
@@ -1696,6 +1707,7 @@ function AppInner({ perfil }) {
             vendas={vendas} setVendas={persistVendas}
             clientes={clientes} setClientes={persistClientes} estoque={estoque} setEstoque={persistEstoque} depositos={depositos}
             pedidosCompra={pedidosCompra} recebimentos={recebimentos}
+            grupos={gruposProduto} formulas={formulasPreco}
             askConfirm={askConfirm} askSenha={askSenha} notify={notify}
           />
         )}
@@ -2055,13 +2067,60 @@ const TABELAS_PRECO = [
   { id: 'varejo', rotulo: 'Varejo', descricao: 'Consumidor final — preço cheio' },
 ];
 function rotuloTabelaPreco(id) { return TABELAS_PRECO.find(t => t.id === id)?.rotulo || id || ''; }
-function precoDaTabela(produto, tabela) {
+
+// Fórmulas dos preços derivados: avulso é % sobre o kit, varejo é % sobre o AVULSO
+// (em cascata). Inversores têm régua própria; o resto usa "demais". As margens mínimas
+// alimentam o alerta de custo subindo: placas têm piso próprio, o resto usa "demais".
+const FORMULAS_PRECO_PADRAO = {
+  inversor: { avulso: 50, varejo: 35 },
+  demais: { avulso: 20, varejo: 35 },
+  margemMinima: { painel: 10, demais: 30 },
+};
+function normalizarFormulasPreco(f) {
+  const num = (v, padrao) => { const n = typeof v === 'number' ? v : parseFloat(v); return isFinite(n) && n >= 0 ? n : padrao; };
+  const p = FORMULAS_PRECO_PADRAO;
+  return {
+    inversor: { avulso: num(f?.inversor?.avulso, p.inversor.avulso), varejo: num(f?.inversor?.varejo, p.inversor.varejo) },
+    demais: { avulso: num(f?.demais?.avulso, p.demais.avulso), varejo: num(f?.demais?.varejo, p.demais.varejo) },
+    margemMinima: { painel: num(f?.margemMinima?.painel, p.margemMinima.painel), demais: num(f?.margemMinima?.demais, p.margemMinima.demais) },
+  };
+}
+function papelDoProduto(produto, grupos) { return (grupos || []).find(g => g.nome === produto?.categoria)?.papel || null; }
+
+// Preço efetivo de uma tabela: valor digitado prevalece; em branco, a fórmula deriva do
+// kit na hora (acompanha o kit e a fórmula). Sem opts (chamada antiga), cai no kit puro.
+function precoDaTabela(produto, tabela, opts) {
   if (!produto) return 0;
-  const especifico = tabela === 'avulso' ? produto.precoAvulso : tabela === 'varejo' ? produto.precoVarejo : produto.precoVenda;
-  return especifico > 0 ? especifico : (produto.precoVenda || 0);
+  const kit = produto.precoVenda || 0;
+  if (tabela !== 'avulso' && tabela !== 'varejo') return kit;
+  const regra = opts?.formulas ? (papelDoProduto(produto, opts.grupos) === 'inversor' ? opts.formulas.inversor : opts.formulas.demais) : null;
+  const arred = v => Math.round(v * 100) / 100;
+  const avulso = produto.precoAvulso > 0 ? produto.precoAvulso : (regra && kit > 0 ? arred(kit * (1 + regra.avulso / 100)) : kit);
+  if (tabela === 'avulso') return avulso;
+  if (produto.precoVarejo > 0) return produto.precoVarejo;
+  return regra && avulso > 0 ? arred(avulso * (1 + regra.varejo / 100)) : kit;
 }
 
-function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, pedidosCompra, recebimentos, vendas, tabelaPreco }) {
+// Custo de reposição de hoje: a entrada mais recente; sem entradas, a referência manual.
+function custoAtualProduto(produto) {
+  const entradas = produto.serializado
+    ? (produto.unidades || []).map(u => ({ data: u.dataEntrada, custo: u.custoCompra || 0 }))
+    : (produto.lotes || []).map(l => ({ data: l.dataEntrada, custo: l.custoUnitario || 0 }));
+  const comCusto = entradas.filter(e => e.custo > 0);
+  if (comCusto.length === 0) return produto.custoReferencia || 0;
+  return comCusto.sort((a, b) => new Date(b.data) - new Date(a.data))[0].custo;
+}
+function margemKitInsuficiente(produto, formulas, grupos) {
+  const kit = produto?.precoVenda || 0;
+  const custo = produto ? custoAtualProduto(produto) : 0;
+  if (!(kit > 0) || !(custo > 0) || !formulas) return null;
+  const margem = ((kit - custo) / kit) * 100;
+  const minimo = papelDoProduto(produto, grupos) === 'painel' ? formulas.margemMinima.painel : formulas.margemMinima.demais;
+  return margem < minimo ? { margem, minimo, custo } : null;
+}
+function fmtPct(v) { return (Math.round(v * 10) / 10).toFixed(1).replace('.', ','); }
+
+function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, pedidosCompra, recebimentos, vendas, tabelaPreco, grupos, formulas }) {
   const [produtoSel, setProdutoSel] = useState('');
   const [depositoSel, setDepositoSel] = useState(depositos.length === 1 ? depositos[0].id : '');
   const [preVendaSel, setPreVendaSel] = useState(false);
@@ -2069,7 +2128,7 @@ function CarrinhoEditor({ estoque, depositos, carrinho, setCarrinho, notify, ped
   const [precoSel, setPrecoSel] = useState('');
 
   const produtoAtual = estoque.find(i => i.id === produtoSel);
-  useEffect(() => { if (produtoAtual) setPrecoSel(precoDaTabela(produtoAtual, tabelaPreco)); }, [produtoSel, tabelaPreco]);
+  useEffect(() => { if (produtoAtual) setPrecoSel(precoDaTabela(produtoAtual, tabelaPreco, { formulas, grupos })); }, [produtoSel, tabelaPreco]);
 
   // Calculados uma vez por mudança de dados — não a cada tecla digitada.
   const aCaminhoMap = useMemo(() => mapaACaminhoPorProduto(pedidosCompra, recebimentos), [pedidosCompra, recebimentos]);
@@ -3131,13 +3190,81 @@ function GruposProdutoPanel({ grupos, salvarGrupos, estoque, setEstoque, notify,
   }
 }
 
-function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, vendas, recebimentos, pedidosCompra, transferencias, balancos, askConfirm, askSenha, notify }) {
+function FormulasPrecoPanel({ formulas, salvarFormulas, notify, fechar }) {
+  const [form, setForm] = useState({
+    invAvulso: String(formulas.inversor.avulso), invVarejo: String(formulas.inversor.varejo),
+    demAvulso: String(formulas.demais.avulso), demVarejo: String(formulas.demais.varejo),
+    margemPainel: String(formulas.margemMinima.painel), margemDemais: String(formulas.margemMinima.demais),
+  });
+  const pct = chave => { const n = parseFloat(String(form[chave]).replace(',', '.')); return isFinite(n) && n >= 0 ? n : null; };
+  const campo = chave => (
+    <input type="text" inputMode="decimal" value={form[chave]} onChange={e => setForm(f => ({ ...f, [chave]: e.target.value }))} className="w-16 border border-slate-200 rounded-md px-2 py-1 text-sm text-right" />
+  );
+  const exemplo = (a, v) => {
+    const pa = pct(a), pv = pct(v);
+    if (pa === null || pv === null) return '—';
+    const avulso = Math.round(1000 * (1 + pa / 100) * 100) / 100;
+    const varejo = Math.round(avulso * (1 + pv / 100) * 100) / 100;
+    return `kit ${currency(1000)} → avulso ${currency(avulso)} → varejo ${currency(varejo)}`;
+  };
+
+  async function salvar() {
+    if (!podeAcao('precos')) { notify('⚠️ Seu perfil não permite editar preços.'); return; }
+    const chaves = [['invAvulso', 'avulso dos inversores'], ['invVarejo', 'varejo dos inversores'], ['demAvulso', 'avulso dos demais'], ['demVarejo', 'varejo dos demais'], ['margemPainel', 'margem mínima das placas'], ['margemDemais', 'margem mínima dos demais']];
+    for (const [chave, rotulo] of chaves) {
+      if (pct(chave) === null) { notify(`Informe um percentual válido no campo "${rotulo}"`); return; }
+    }
+    const next = normalizarFormulasPreco({
+      inversor: { avulso: pct('invAvulso'), varejo: pct('invVarejo') },
+      demais: { avulso: pct('demAvulso'), varejo: pct('demVarejo') },
+      margemMinima: { painel: pct('margemPainel'), demais: pct('margemDemais') },
+    });
+    if (await salvarFormulas(next)) { notify('Fórmulas de preço salvas'); fechar(); }
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
+      <div className="flex justify-between items-center">
+        <h3 className="font-medium text-sm">Fórmulas de preço e margem mínima</h3>
+        <button type="button" onClick={fechar}><X size={16} className="text-slate-400" /></button>
+      </div>
+      <p className="text-xs text-slate-400 -mt-2">Valem para todo produto SEM preço avulso/varejo digitado: o preço deriva do kit na hora e acompanha quando o kit muda. Valor digitado no produto prevalece sobre a fórmula.</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="border border-slate-200 rounded-md p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-600">Inversores</p>
+          <div className="flex items-center gap-2 text-sm text-slate-600">Avulso = kit + {campo('invAvulso')} %</div>
+          <div className="flex items-center gap-2 text-sm text-slate-600">Varejo = avulso + {campo('invVarejo')} %</div>
+          <p className="text-[11px] text-slate-400">{exemplo('invAvulso', 'invVarejo')}</p>
+        </div>
+        <div className="border border-slate-200 rounded-md p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-600">Demais itens</p>
+          <div className="flex items-center gap-2 text-sm text-slate-600">Avulso = kit + {campo('demAvulso')} %</div>
+          <div className="flex items-center gap-2 text-sm text-slate-600">Varejo = avulso + {campo('demVarejo')} %</div>
+          <p className="text-[11px] text-slate-400">{exemplo('demAvulso', 'demVarejo')}</p>
+        </div>
+      </div>
+      <div className="border border-amber-200 bg-amber-50 rounded-md p-3 space-y-2">
+        <p className="text-xs font-medium text-amber-800">Alerta de margem mínima no kit</p>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-amber-800">
+          <span className="flex items-center gap-2">Placas solares: {campo('margemPainel')} %</span>
+          <span className="flex items-center gap-2">Demais itens: {campo('margemDemais')} %</span>
+        </div>
+        <p className="text-[11px] text-amber-700">Quando o custo mais recente de compra deixa o preço de kit com margem abaixo do mínimo, o produto ganha um aviso na lista do estoque e o recebimento avisa na hora.</p>
+      </div>
+      <button type="button" onClick={salvar} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">Salvar fórmulas</button>
+    </div>
+  );
+}
+
+function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, vendas, recebimentos, pedidosCompra, transferencias, balancos, formulas, salvarFormulas, askConfirm, askSenha, notify }) {
   // A chegar e pré-vendido por produto — pro cadastro mostrar o que está LIVRE de verdade.
   const aCaminhoMapCad = useMemo(() => mapaACaminhoPorProduto(pedidosCompra, recebimentos), [pedidosCompra, recebimentos]);
   const reservadoMapCad = useMemo(() => mapaReservadoPorProduto(vendas), [vendas]);
   const [showForm, setShowForm] = useState(false);
   const [expanded, setExpanded] = useState({});
   const [showGrupos, setShowGrupos] = useState(false);
+  const [showFormulas, setShowFormulas] = useState(false);
+  const optsPreco = { formulas, grupos };
   const [filtroCategoria, setFiltroCategoria] = useState('Todos');
   const [ordenacao, setOrdenacao] = useState('alfabetica');
   const [busca, setBusca] = useState('');
@@ -3330,11 +3457,18 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
           <button onClick={() => setShowGrupos(s => !s)} title="Criar, renomear e remover os grupos de produto" className="flex items-center justify-center gap-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium text-sm px-3 py-2 rounded-md">
             <ClipboardList size={16} /> Grupos
           </button>
+          <button onClick={() => setShowFormulas(s => !s)} title="Percentuais do avulso e do varejo sobre o kit, e margens mínimas do alerta" className="flex items-center justify-center gap-1.5 border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium text-sm px-3 py-2 rounded-md">
+            <Scale size={16} /> Fórmulas
+          </button>
         </div>
       </div>
 
       {showGrupos && (
         <GruposProdutoPanel grupos={grupos} salvarGrupos={salvarGrupos} estoque={estoque} setEstoque={setEstoque} notify={notify} askConfirm={askConfirm} fechar={() => setShowGrupos(false)} />
+      )}
+
+      {showFormulas && (
+        <FormulasPrecoPanel formulas={formulas} salvarFormulas={salvarFormulas} notify={notify} fechar={() => setShowFormulas(false)} />
       )}
 
       {showForm && (
@@ -3362,7 +3496,13 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
             <input type="text" inputMode="decimal" placeholder="Preço varejo (R$)" value={form.precoVarejo} onChange={e => setForm(f => ({ ...f, precoVarejo: e.target.value }))} disabled={!podeAcao('precos')} title={podeAcao('precos') ? undefined : 'Seu perfil não permite editar preços'} className="border border-slate-200 rounded-md px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" />
             <input type="number" placeholder="Estoque mínimo (alerta)" value={form.quantidadeMinima} onChange={e => setForm(f => ({ ...f, quantidadeMinima: e.target.value }))} className="border border-slate-200 rounded-md px-2 py-2 text-sm" />
           </div>
-          <p className="text-[11px] text-slate-400 -mt-1">Kit solar = gerador completo, isento de ICMS (é o preço que a proposta da integradora usa). Avulso ou varejo em branco valem o preço do kit.</p>
+          <p className="text-[11px] text-slate-400 -mt-1">Kit solar = gerador completo, isento de ICMS (é o preço que a proposta da integradora usa). Avulso ou varejo em branco seguem a fórmula (botão Fórmulas) e acompanham o kit; valor digitado prevalece e fica travado.</p>
+          {(() => {
+            const kitNum = parseValorBR(form.precoVenda);
+            if (!(kitNum > 0)) return null;
+            const previa = { categoria: form.categoria, precoVenda: kitNum, precoAvulso: parseValorBR(form.precoAvulso) || 0, precoVarejo: parseValorBR(form.precoVarejo) || 0 };
+            return <p className="text-[11px] text-slate-500 -mt-1">Com este kit: avulso {currency(precoDaTabela(previa, 'avulso', optsPreco))} · varejo {currency(precoDaTabela(previa, 'varejo', optsPreco))}</p>;
+          })()}
           <input placeholder="Observações" value={form.observacoes} onChange={e => setForm(f => ({ ...f, observacoes: e.target.value }))} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm" />
           <button type="button" onClick={handleAdd} className="bg-slate-900 text-white text-sm px-4 py-2 rounded-md hover:bg-slate-800">{editandoProdutoId ? 'Salvar alterações' : 'Salvar produto'}</button>
         </div>
@@ -3386,8 +3526,16 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                           <AlertTriangle size={10} /> sem custo
                         </span>
                       )}
+                      {(() => {
+                        const m = margemKitInsuficiente(item, formulas, grupos);
+                        return m ? (
+                          <span className="flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0" title={`Pelo custo mais recente (${currency(m.custo)}), o preço de kit dá ${fmtPct(m.margem)}% de margem — o mínimo configurado é ${m.minimo}% (botão Fórmulas)`}>
+                            <AlertTriangle size={10} /> margem kit {fmtPct(m.margem)}% — mín. {m.minimo}%
+                          </span>
+                        ) : null;
+                      })()}
                     </div>
-                    <p className="text-xs text-slate-400">{item.potencia} · kit {currency(item.precoVenda)} · avulso {currency(precoDaTabela(item, 'avulso'))} · varejo {currency(precoDaTabela(item, 'varejo'))}</p>
+                    <p className="text-xs text-slate-400">{item.potencia} · kit {currency(item.precoVenda)} · avulso {currency(precoDaTabela(item, 'avulso', optsPreco))} · varejo {currency(precoDaTabela(item, 'varejo', optsPreco))}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
@@ -3423,11 +3571,11 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 shrink-0 w-32">Preço avulso:</span>
-                          <input type="text" inputMode="decimal" value={novoPrecoAvulso} onChange={e => setNovoPrecoAvulso(e.target.value)} placeholder="Em branco = kit" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                          <input type="text" inputMode="decimal" value={novoPrecoAvulso} onChange={e => setNovoPrecoAvulso(e.target.value)} placeholder="Em branco = fórmula" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 shrink-0 w-32">Preço varejo:</span>
-                          <input type="text" inputMode="decimal" value={novoPrecoVarejo} onChange={e => setNovoPrecoVarejo(e.target.value)} placeholder="Em branco = kit" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
+                          <input type="text" inputMode="decimal" value={novoPrecoVarejo} onChange={e => setNovoPrecoVarejo(e.target.value)} placeholder="Em branco = fórmula" className="border border-slate-200 rounded-md px-2 py-1 text-sm w-28" />
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 shrink-0 w-32">Custo de referência:</span>
@@ -3443,8 +3591,8 @@ function EstoqueModule({ grupos, salvarGrupos, estoque, setEstoque, depositos, v
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-slate-500">
                           Kit: <span className="font-medium text-slate-700">{currency(item.precoVenda)}</span>
-                          {' · '}Avulso: <span className="font-medium text-slate-700">{currency(precoDaTabela(item, 'avulso'))}</span>
-                          {' · '}Varejo: <span className="font-medium text-slate-700">{currency(precoDaTabela(item, 'varejo'))}</span>
+                          {' · '}Avulso: <span className="font-medium text-slate-700">{currency(precoDaTabela(item, 'avulso', optsPreco))}</span>{!(item.precoAvulso > 0) && <span className="text-slate-400"> (fórmula)</span>}
+                          {' · '}Varejo: <span className="font-medium text-slate-700">{currency(precoDaTabela(item, 'varejo', optsPreco))}</span>{!(item.precoVarejo > 0) && <span className="text-slate-400"> (fórmula)</span>}
                           {' · '}Custo ref.: <span className="font-medium text-slate-700">{currency(item.custoReferencia || 0)}</span>
                         </span>
                         <button onClick={() => abrirEdicaoPreco(item)} className="flex items-center gap-1 text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1 rounded-md"><Pencil size={11} /> Atualizar preço</button>
@@ -4519,7 +4667,7 @@ function PedidoCompraModule({ grupos, estoque, setEstoque, fornecedores, pedidos
 
 /* ---------------- RECEBIMENTO (entrada item a item, com foto e nº de série) ---------------- */
 
-function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, vendas, askSenha, notify }) {
+function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos, estoque, setEstoque, depositos, vendas, grupos, formulas, askSenha, notify }) {
   const recebidoPorItem = useMemo(() => mapaRecebidoPorItem(recebimentos), [recebimentos]);
   const recebidoDe = (pedidoId, itemId) => recebidoPorItem.get(`${pedidoId}|${itemId}`) || 0;
   const [busca, setBusca] = useState('');
@@ -4651,6 +4799,8 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
                         setRecebimentos={setRecebimentos}
                         depositos={depositos}
                         vendas={vendas}
+                        grupos={grupos}
+                        formulas={formulas}
                         notify={notify}
                         onDone={() => setFormItem(null)}
                         onCancel={() => setFormItem(null)}
@@ -4712,7 +4862,14 @@ function RecebimentoModule({ pedidos, setPedidos, recebimentos, setRecebimentos,
   );
 }
 
-function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebimentos, setRecebimentos, depositos, vendas, notify, onDone, onCancel }) {
+function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebimentos, setRecebimentos, depositos, vendas, grupos, formulas, notify, onDone, onCancel }) {
+  // O custo que acabou de entrar deixou o preço de kit abaixo da margem mínima? Avisa já.
+  function avisarMargemKit(estoqueNovo) {
+    const produto = estoqueNovo.find(p => p.id === item.produtoId);
+    const m = produto ? margemKitInsuficiente(produto, formulas, grupos) : null;
+    if (m) notify(`⚠️ Custo subiu: pelo custo de ${currency(m.custo)}, o kit de "${descricaoProduto(produto)}" (${currency(produto.precoVenda)}) dá ${fmtPct(m.margem)}% de margem — mínimo: ${m.minimo}%. Atualize o preço na aba Estoque.`);
+  }
+
   // Chegou mercadoria que pré-vendas esperam? Avisa na hora — a baixa é na aba Vendas.
   function avisarPendencias() {
     const aguardando = qtdReservadaPreVenda(vendas, item.produtoId);
@@ -4773,6 +4930,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     }
     setEnviando(false);
     notify(`Unidade SN ${serialLimpo} recebida em ${depositoNome}`);
+    avisarMargemKit(novoEstoque);
     avisarPendencias();
     if (pendente - 1 <= 0) { onDone(); } else { setSerial(''); setFoto(null); }
   }
@@ -4800,6 +4958,7 @@ function RecebimentoForm({ pedido, item, pendente, estoque, setEstoque, recebime
     }
     setEnviando(false);
     notify('Entrada registrada no estoque');
+    avisarMargemKit(novoEstoque);
     avisarPendencias();
     onDone();
   }
@@ -5064,7 +5223,7 @@ function ClientesModule({ clientes, setClientes, askConfirm, askSenha, notify })
 
 /* ---------------- ORÇAMENTOS (carrinho que não baixa estoque até ser convertido) ---------------- */
 
-function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, setClientes, estoque, setEstoque, depositos, pedidosCompra, recebimentos, askConfirm, askSenha, notify }) {
+function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, clientes, setClientes, estoque, setEstoque, depositos, pedidosCompra, recebimentos, grupos, formulas, askConfirm, askSenha, notify }) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [clienteId, setClienteId] = useState('');
@@ -5085,7 +5244,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
     if (carrinho.length > 0) {
       setCarrinho(c => c.map(it => {
         const prod = estoque.find(p => p.id === it.itemId);
-        return prod ? { ...it, precoVendaUnitario: precoDaTabela(prod, nova) } : it;
+        return prod ? { ...it, precoVendaUnitario: precoDaTabela(prod, nova, { formulas, grupos }) } : it;
       }));
       notify(`Itens do carrinho reprecificados pela tabela ${rotuloTabelaPreco(nova)} — confira os valores`);
     }
@@ -5222,7 +5381,7 @@ function OrcamentoModule({ orcamentos, setOrcamentos, vendas, setVendas, cliente
           </div>
 
           {tabelaPreco
-            ? <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} tabelaPreco={tabelaPreco} />
+            ? <CarrinhoEditor estoque={estoque} depositos={depositos} carrinho={carrinho} setCarrinho={setCarrinho} notify={notify} pedidosCompra={pedidosCompra} recebimentos={recebimentos} vendas={vendas} tabelaPreco={tabelaPreco} grupos={grupos} formulas={formulas} />
             : <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">Escolha a tabela de preço acima para liberar a adição de itens.</p>}
 
           <textarea value={observacoes} onChange={e => setObservacoes(e.target.value)} placeholder="Observações da negociação (condições combinadas, prazo, forma de pagamento acertada, detalhes de instalação etc.) — ficam visíveis pra quem for tocar as próximas etapas, inclusive a expedição." rows={3} className="w-full border border-slate-200 rounded-md px-2 py-2 text-sm resize-none" />
